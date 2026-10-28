@@ -22,7 +22,7 @@
 
 ### 3. 版本与发布约定
 
-- **版本号（2026-10-28 用户重新定义）**：从 `v0.5` 起，每次发版 **+0.1**（`v0.5` → `v0.6` → … → `v0.999`）。`package.json` 写三段式 `0.5.0 / 0.6.0 / …`，tag 与 Release 用 `v0.5 / v0.6 / …`；功能与修复都按 +0.1 递增，不再用 patch 号。
+- **版本号（2026-10-28 用户重新定义）**：从 `v0.5` 起，每次发版 **+0.1**（`v0.5` → `v0.6` → … → `v0.999`）。electron-builder 要求三段式，`package.json` 内部写 `0.5.0 / 0.6.0 / …`，但对外显示、安装包文件名、tag 与 Release 一律去掉末尾 `.0`（`0.5 / v0.5`），由 `main.ts` 的 `displayVersion()` 统一转换；功能与修复都按 +0.1 递增，不再用 patch 号。
 - **发版必须经用户主动要求**：改完只在本地 `release/` 生成 exe 并删除旧版本，用户本地测试通过并明确说「发版」后才创建/上传 GitHub Release。
 - **Release 说明必须用 UTF-8 写入**：优先用 Node `fetch` 或 curl 提交 JSON；不要用 PowerShell `Invoke-RestMethod` 手拼中文字符串，否则 GitHub 上会显示乱码。
 - 构建产物 `out/`、安装包 `release/`、`node_modules/` 一律不入库（`.gitignore` 已按通配符写好）。

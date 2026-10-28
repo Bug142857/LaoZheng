@@ -65,6 +65,11 @@ import type { VodSourceInput } from '../src/shared/vod'
 
 const isDev = !app.isPackaged
 
+/** electron-builder 要求三段式版本，对外显示与安装包名去掉末尾的 .0（0.5.0 → 0.5） */
+function displayVersion(): string {
+  return app.getVersion().replace(/\.0$/, '')
+}
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1280,
@@ -543,7 +548,7 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('app:checkUpdate', async (): Promise<UpdateCheckResult> => {
-    const current = app.getVersion()
+    const current = displayVersion()
 
     // 优先读公开清单（私有仓库也能查）；清单不可用时回退 GitHub Releases
     try {
@@ -634,7 +639,7 @@ function registerIpc(): void {
     await saveData(data)
   })
 
-  ipcMain.handle('app:version', () => app.getVersion())
+  ipcMain.handle('app:version', () => displayVersion())
 
   ipcMain.handle('data:dir', () => app.getPath('userData'))
 
