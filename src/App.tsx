@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
+  BookHeart,
   Download,
   Globe,
   Heart,
   Home,
+  Images,
   ListChecks,
   MonitorPlay,
   Music,
@@ -23,6 +25,8 @@ import { MusicPage } from './pages/MusicPage'
 import { DownloadsPage } from './pages/DownloadsPage'
 import { XSitePage } from './pages/XSitePage'
 import { PsitePage } from './pages/PsitePage'
+import { BikaPage } from './pages/BikaPage'
+import { ComicPage } from './pages/ComicPage'
 import { CollectionPage } from './pages/CollectionPage'
 import { MelonPage } from './pages/MelonPage'
 import { ListsPage } from './pages/ListsPage'
@@ -41,6 +45,8 @@ type Route =
   | { name: 'music' }
   | { name: 'xsite' }
   | { name: 'psite' }
+  | { name: 'bika' }
+  | { name: 'comic' }
   | { name: 'melon' }
   | { name: 'h1'; index: number }
   | { name: 'book' }
@@ -60,6 +66,8 @@ interface NavItem {
     | 'music'
     | 'xsite'
     | 'psite'
+    | 'bika'
+    | 'comic'
     | 'melon'
     | 'lists'
     | 'favorites'
@@ -78,6 +86,8 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'music', label: '音乐', icon: Music, ready: true },
   { key: 'xsite', label: 'X站', icon: Globe, ready: true },
   { key: 'psite', label: 'P站', icon: PlayCircle, ready: true },
+  { key: 'bika', label: '本子', icon: BookHeart, ready: true },
+  { key: 'comic', label: '漫画', icon: Images, ready: true },
   { key: 'melon', label: '吃瓜', icon: Popcorn, ready: true },
   { key: 'lists', label: '清单', icon: ListChecks, ready: true },
   { key: 'favorites', label: '收藏', icon: Heart, ready: true },
@@ -101,6 +111,10 @@ function leafRoute(key: NavItem['key']): Route {
       return { name: 'xsite' }
     case 'psite':
       return { name: 'psite' }
+    case 'bika':
+      return { name: 'bika' }
+    case 'comic':
+      return { name: 'comic' }
     case 'melon':
       return { name: 'melon' }
     case 'lists':
@@ -118,6 +132,11 @@ function Shell() {
   const { ready, saveState, data } = useData()
   const [route, setRoute] = useState<Route>({ name: 'home' })
   const [notice, setNotice] = useState<string | null>(null)
+  const contentRef = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0 })
+  }, [route.name])
 
   useEffect(() => {
     if (!notice) return
@@ -160,6 +179,14 @@ function Shell() {
     }
     if (m.key === 'psite') {
       setRoute({ name: 'psite' })
+      return
+    }
+    if (m.key === 'h2') {
+      setRoute({ name: 'bika' })
+      return
+    }
+    if (m.key === 'comic') {
+      setRoute({ name: 'comic' })
       return
     }
     if (m.key === 'melon') {
@@ -231,7 +258,7 @@ function Shell() {
         </div>
       </aside>
 
-      <main className="content">
+      <main className="content" ref={contentRef}>
         {route.name === 'home' && <HomePage onOpen={openModule} />}
         {route.name === 'search' && <SearchPage onNotice={setNotice} />}
         {route.name === 'watch' && <WatchPage onNotice={setNotice} />}
@@ -239,6 +266,8 @@ function Shell() {
         {route.name === 'music' && <MusicPage onNotice={setNotice} />}
         {route.name === 'xsite' && <XSitePage onNotice={setNotice} />}
         {route.name === 'psite' && <PsitePage onNotice={setNotice} />}
+        {route.name === 'bika' && <BikaPage onNotice={setNotice} />}
+        {route.name === 'comic' && <ComicPage onNotice={setNotice} />}
         {route.name === 'melon' && <MelonPage onNotice={setNotice} />}
         {route.name === 'h1' && (
           <WatchPage

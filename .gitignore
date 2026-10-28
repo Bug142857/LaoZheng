@@ -7,3 +7,5 @@ dist/
 .DS_Store
 Thumbs.db
 *.tsbuildinfo
+# 本机账号凭据（绝不入库）
+.secrets/

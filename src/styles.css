@@ -1214,3 +1214,239 @@ button:disabled {
   max-width: min(560px, calc(100vw - 64px));
   text-align: center;
 }
+
+/* ---------- 本子 / 漫画 ---------- */
+.comic-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 14px;
+}
+
+.comic-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 0;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  overflow: hidden;
+  text-align: left;
+}
+
+.comic-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-2px);
+}
+
+.comic-cover {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  background: var(--bg-input);
+  overflow: hidden;
+}
+
+.comic-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.comic-badge {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(8, 7, 12, 0.75);
+  color: #fff;
+  font-size: 10.5px;
+}
+
+.comic-title {
+  padding: 0 9px;
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.comic-sub {
+  padding: 0 9px 9px;
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comic-detail {
+  display: flex;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.comic-detail-cover {
+  width: 170px;
+  flex: 0 0 170px;
+  aspect-ratio: 3 / 4;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-input);
+}
+
+.comic-detail-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.comic-detail-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.comic-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.comic-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.comic-desc {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.chapter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.chapter-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+}
+
+.chapter-chip:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.chapter-size {
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.reader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.reader img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.reader-footer {
+  display: flex;
+  gap: 10px;
+  padding: 18px 0 30px;
+}
+
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.settings-card .account-row:nth-of-type(1) {
+  border-top: none;
+}
+
+.account-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.account-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.account-meta {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-state {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.account-state.ok {
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.35);
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.account-state.failed {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.account-state.pending {
+  color: var(--brand);
+  border-color: rgba(139, 124, 255, 0.35);
+  background: var(--brand-soft);
+}
+
+.account-state.unknown {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.08);
+}

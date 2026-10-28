@@ -1,9 +1,17 @@
 import { useEffect, useState } from 'react'
 import { Cloud, Download, FolderOpen, Upload } from 'lucide-react'
 import type { AppData } from '../shared/types'
+import type { AccountSite, AccountsView } from '../shared/accounts'
 import type { SyncConfigView } from '../shared/sync'
 import { useData } from '../state/DataContext'
 import { ConfirmDialog } from '../components/ui'
+
+const ACCOUNT_STATE_LABEL: Record<string, string> = {
+  ok: '已登录',
+  failed: '失败',
+  pending: '登录中',
+  unknown: '待确认'
+}
 
 export function SettingsPage({ onNotice }: { onNotice: (text: string) => void }) {
   const { data, replaceData } = useData()
@@ -11,6 +19,8 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
   const [dataDir, setDataDir] = useState('')
   const [pendingImport, setPendingImport] = useState<AppData | null>(null)
   const [sync, setSync] = useState<SyncConfigView | null>(null)
+  const [accounts, setAccounts] = useState<AccountsView | null>(null)
+  const [accountBusy, setAccountBusy] = useState<AccountSite | null>(null)
   const [syncUrl, setSyncUrl] = useState('')
   const [syncUser, setSyncUser] = useState('')
   const [syncPass, setSyncPass] = useState('')
@@ -27,6 +37,26 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
       setSyncUser(cfg.username)
     })
   }, [])
+
+  useEffect(() => {
+    const refresh = () => {
+      void window.laozheng.listAccounts().then(setAccounts)
+    }
+    refresh()
+    return window.laozheng.onAccountsChanged(refresh)
+  }, [])
+
+  const loginAccount = async (site: AccountSite) => {
+    setAccountBusy(site)
+    const res = await window.laozheng.loginAccount(site)
+    setAccountBusy(null)
+    void window.laozheng.listAccounts().then(setAccounts)
+    onNotice(res.message)
+  }
+
+  const openAccountLogin = async (site: AccountSite) => {
+    await window.laozheng.openAccountLogin(site)
+  }
 
   const doImport = async () => {
     const res = await window.laozheng.importData()
@@ -190,6 +220,43 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
             </button>
             <span className="settings-value">{dataDir || 'data.json'}</span>
           </div>
+        </section>
+
+        <section className="settings-card">
+          <h3>账号管理（已内置）</h3>
+          <p className="settings-hint">
+            哔咔 / Komiic / 无忧三个站点的账号已加密保存在本机，启动时自动登录：哔咔与
+            Komiic 静默换 token 并自动续期；无忧会自动完成滑块验证，并复用持久化会话。
+            账号密码不会出现在备份文件、日志或代码里。
+          </p>
+          {accounts?.items.map((item) => (
+            <div className="account-row" key={item.site}>
+              <div className="account-main">
+                <div className="account-title">
+                  {item.title}
+                  <span className={`account-state ${item.status}`}>
+                    {ACCOUNT_STATE_LABEL[item.status] ?? item.status}
+                  </span>
+                </div>
+                <div className="account-meta">
+                  {item.username || '未配置账号'} · {item.message}
+                </div>
+              </div>
+              <button
+                className="btn"
+                disabled={accountBusy === item.site}
+                onClick={() => void loginAccount(item.site)}
+              >
+                {accountBusy === item.site ? '登录中…' : '重新登录'}
+              </button>
+              {item.site === 'wygamer' ? (
+                <button className="btn ghost" onClick={() => void openAccountLogin(item.site)}>
+                  打开登录窗口
+                </button>
+              ) : null}
+            </div>
+          ))}
+          {!accounts ? <div className="settings-hint">正在读取账号状态…</div> : null}
         </section>
 
         <section className="settings-card">

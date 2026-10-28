@@ -1,7 +1,7 @@
 # 老郑分享 · PC 端项目记忆
 
 > 本文件是 **PC 端仓库（https://github.com/Bug142857/LaoZheng）** 的唯一记忆入口，换电脑 / 换 AI 账号后从这里恢复上下文。
-> 最后更新：2026-10-28（PC 端 v0.3.0：观影 / 电视 / 音乐 / 下载 / X站 / P站 / 吃瓜 / 云同步）。
+> 最后更新：2026-10-28（PC 端 v0.4.0：内置三站账号 + 本子（哔咔）/ 漫画（Komiic）模块）。
 >
 > 结构：**第一部分 = PC 端工程约定与进度**；**第二部分 = 手机端（ShangYin）历史记忆**，原样迁移，仅供功能口径与踩坑参考，不代表 PC 端已经实现。
 
@@ -25,7 +25,7 @@
 - `package.json` 的 `version` 从 `0.1.0` 起；每轮发版 **minor +1**（`0.1.0` → `0.2.0` → `0.3.0`…），tag 用 `v0.x.0`。
 - 构建产物 `out/`、安装包 `release/`、`node_modules/` 一律不入库（`.gitignore` 已按通配符写好）。
 - 发版前必须 `npm run build` 通过；安装包用 `npm run dist`（electron-builder，NSIS，可选安装目录、桌面快捷方式「老郑分享」）。
-- 云同步（WebDAV 手动上传/恢复）与 GitHub Releases 更新检查已在 v0.3.0 接入；静默自动更新与安装包签名仍未做。
+- 云同步（WebDAV 手动上传/恢复）与 GitHub Releases 更新检查已在 v0.3.0 接入；v0.4.0 接入内置账号、本子、漫画；静默自动更新与安装包签名仍未做。
 
 ### 4. 工程结构（当前）
 
@@ -42,13 +42,17 @@ electron/xsite.ts     X站（pektino）JSON API
 electron/psite.ts     P站网页解析 + mediaDefinitions 解流
 electron/melon.ts     吃瓜：镜像线路发现 + 列表/正文/视频解析
 electron/sync.ts      WebDAV 云同步（safeStorage 加密密码）
+electron/accounts.ts  内置账号仓库：safeStorage 加密账密/token，种子导入，状态广播
+electron/bika.ts      哔咔：HmacSHA256 签名、分类/列表/搜索/详情/章节/图片、401 自动重登
+electron/komiic.ts    Komiic：GraphQL、token 自动续期、章节图 Cookie/Referer 注入
+electron/wygamer.ts   无忧：隐藏窗口自动完成滑块验证 + persist 分区会话
 src/shared/types.ts   两端共用备份类型 + normalizeData + EMPTY_DATA
-src/shared/{douban,vod,vodDefaults,live,music,downloads,xsite,psite,melon,sync,update}.ts
+src/shared/{douban,vod,vodDefaults,live,music,downloads,xsite,psite,melon,sync,update,accounts,bika,komiic}.ts
 src/state/            DataProvider：启动加载、防抖 350ms 保存、replaceData 立即落盘
-src/modules.tsx       首页模块注册表（本子/漫画仍未实现，其余 ready）
+src/modules.tsx       首页模块注册表（全部 ready，含本子 / 漫画）
 src/components/       VideoPlayer（hls.js）/ 通用弹层
-src/pages/            首页 / 搜索 / 观影 / 电视 / 音乐 / X站 / P站 / 吃瓜 / 图书 / 游戏 /
-                      清单 / 清单详情 / 收藏 / 下载 / 设置
+src/pages/            首页 / 搜索 / 观影 / 电视 / 音乐 / X站 / P站 / 本子 / 漫画 / 吃瓜 /
+                      图书 / 游戏 / 清单 / 清单详情 / 收藏 / 下载 / 设置
 src/utils/data.ts     根清单、递归子清单、递归计数、条目查询、清单配色、收藏筛选、条目所在清单名
 docs/AI_PROJECT_MEMORY.md  本文件
 ```
@@ -70,9 +74,9 @@ docs/AI_PROJECT_MEMORY.md  本文件
 - `config`：手机端配置快照（字符串 Map，导入时原样保留）。
 - 导入判据与手机端一致：必须同时存在 `items / lists / listItems`，否则拒绝（防止误选普通 JSON）。
 
-### 6. 当前进度（PC 端 v0.3.0，2026-10-28）
+### 6. 当前进度（PC 端 v0.4.0，2026-10-28）
 
-- 可运行桌面框架：左侧导航（首页 / 搜索 / 观影 / 电视 / 音乐 / X站 / P站 / 吃瓜 / 清单 / 收藏 / 下载 / 设置）+ 首页模块宫格，深浅色跟随系统，数据保存状态指示。
+- 可运行桌面框架：左侧导航（首页 / 搜索 / 观影 / 电视 / 音乐 / X站 / P站 / 本子 / 漫画 / 吃瓜 / 清单 / 收藏 / 下载 / 设置）+ 首页模块宫格，深浅色跟随系统，数据保存状态指示。
 - **搜索**：影视 / 图书 / 游戏 / 人物四类；结果可拉详情写入 `items` 并加入指定清单；已收藏显示所在清单。
 - **观影 + 番1~番4**：片源管理（增删改 / 启停 / 测速 / 批量导入 / 内置 73 源）、跨源并发搜索（结果实时追加）、线路与剧集选择、hls.js 播放、收藏、下载。
 - **电视**：M3U 网络源 / 本地导入、频道分组与搜索、HLS 播放、收藏；电视源独立存 `userData/live-sources.json`（不进备份，与手机端一致）。
@@ -80,10 +84,12 @@ docs/AI_PROJECT_MEMORY.md  本文件
 - **X站**：pektino 排行榜（每周/每月/总榜）、分类、详情、直链播放、收藏、下载。
 - **P站**：推荐/最新/最热/人气/高分、分类、搜索、mediaDefinitions 解流（HLS 优先）、播放、收藏、下载。
 - **吃瓜**：镜像自动发现、分类 / 搜索 / 翻页、正文图文混排、视频播放与下载、收藏。
+- **本子（哔咔）**：内置账号自动登录、分类 / 排序 / 搜索 / 翻页、详情、章节、纵向图片阅读（上一话/下一话）、收藏（module = `h2`）。
+- **漫画（Komiic）**：最近更新 / 热门 / 分类 / 搜索、加载更多、详情、章节、纵向图片阅读、收藏（module = `comic`）。
+- **账号管理**：哔咔 / Komiic / 无忧三站账密已内置（safeStorage 加密），启动自动登录；设置页显示状态并可重新登录。
 - **图书 / 游戏**：已收藏条目按分类聚合、搜索、加入更多清单。
 - **清单 / 收藏 / 下载**：清单增删改与递归计数；爱心收藏聚合筛选；下载管理支持 mp4 直链与 m3u8 切片合并（AES-128 解密）、本地媒体服务播放、删除记录/文件。
-- **设置**：数据概览、导入导出、数据目录、WebDAV 云同步（上传 / 恢复 / 测试连接）、检查更新（GitHub Releases）。
-- **仍未实现**：本子（哔咔，需要账号登录与 HmacSHA256 签名）、漫画（Komiic API 可用但 `/api/image/{kid}` 实测 402）。本子/漫画入口仍提示「后续版本接入」。
+- **设置**：数据概览、导入导出、数据目录、账号管理、WebDAV 云同步（上传 / 恢复 / 测试连接）、检查更新（GitHub Releases）。
 
 ### 7. 各模块实现口径
 
@@ -140,19 +146,55 @@ docs/AI_PROJECT_MEMORY.md  本文件
 #### 7.9 播放与请求层规则（`electron/main.ts setupRequestRules`）
 
 - hls.js 需要 `blob:` MediaSource：CSP 必须含 `media-src 'self' blob: http: https:` 与 `worker-src blob:`（v0.2.0 曾因此播放全黑，实测已修）。
-- 单一 `onBeforeSendHeaders`：豆瓣图片补 m.douban Referer + iPhone UA；`*.phncdn.com` 补 pornhub Referer + 移动 UA；其余 media / m3u8 分片补移动 UA。
+- 单一 `onBeforeSendHeaders`：豆瓣图片补 m.douban Referer + iPhone UA；`*.phncdn.com` 补 pornhub Referer + 移动 UA；`komiic.com/cc` 的 `/api/image/*` 注入 `Cookie: komiic-access-token` 与完整路径 Referer；`*.picacomic.com / *.go2778.com` 补 `okhttp/3.8.1` UA；其余 media / m3u8 分片补移动 UA。
 - 单一 `onHeadersReceived`：对 xhr / media 注入 `Access-Control-Allow-Origin: *`（远端多数流不带 CORS，必须注入）。
 - `onBeforeRequest`：`qnmob*.doubanio.com` 重写到 `img2.doubanio.com`。
 - `node-html-parser` 通过 `externalizeDepsPlugin({ exclude: [...] })` 打进主进程 bundle，避免安装包漏依赖。
 
+#### 7.10 内置账号 / 本子 / 漫画（v0.4.0）
+
+**账号仓库（`electron/accounts.ts`）**
+
+- 账密与 token 用 `safeStorage`（Windows DPAPI）加密后存 `userData/accounts.json`，任何日志 / 备份 / 代码都不出现明文。
+- 首次启动从种子导入：安装包 `resources/accounts.seed.json`（electron-builder `extraResources` 由本机 `.secrets/accounts.json` 生成），开发态回退 `app.getAppPath()/.secrets/accounts.json` 与 `cwd/.secrets/accounts.json`；`.secrets/` 已 gitignore。
+- 状态机 `ok / failed / pending / unknown`，变化时向所有窗口广播 `accounts:changed`；设置页「账号管理」只显示用户名与状态。
+- 账号 seed 缺字段时按站补齐，不覆盖已有 token。
+
+**哔咔（`electron/bika.ts`）**
+
+- 常量与手机端 `BikaClient.kt` 完全一致（API_KEY / SECRET / NONCE / 伪造头）；签名 `HmacSHA256(SECRET, lowercase(path+query+time+nonce+METHOD+api-key))`，不含域名。
+- 双域名 `picaapi.picacomic.com` → `picaapi.go2778.com` 自动回退；401 清 token 后内置账密静默重登并重试一次。
+- 接口：`auth/sign-in`、`categories`、`comics?page&c&s`、`comics/advanced-search?page`、`comics/{id}`、`comics/{id}/eps?page`（并行拉全部分页）、`comics/{id}/order/{order}/pages?page`（并行）。
+- 图片 `fileServer + /static/ + path`，仅需 UA，不需要 token；请求层统一补 `okhttp/3.8.1`。
+- 实测（2026-10-28）：登录 OK、分类 40、列表 20 条 / 7236 页、详情 / 章节 / 单章 86 图、图片 200 JPEG。
+
+**Komiic（`electron/komiic.ts`）**
+
+- `POST /api/login {email,password}` 拿 token（24h），本地缓存 20h 后自动续期；GraphQL `POST /api/query` 带 Origin/Referer/Sec-Fetch 与 `Authorization: Bearer`。
+- 双主机 `komiic.com` → `komiic.cc`；GraphQL 报 token 失效时清缓存重登再试一轮。
+- 查询：`recentUpdate / hotComics / comicByCategories / searchComics / allCategory / comicById / chaptersByComicId / imagesByChapterId`，分页 `limit=20, offset, orderBy, status, asc:false`。
+- 章节图 URL 形如 `/api/image/{kid}?c={comicId}&ch={chapterId}`，主进程请求头注入 Cookie（只放 `komiic-access-token`，不能混空值 Cookie）与 `https://komiic.com/comic/{c}/chapter/{ch}` Referer。
+- 实测（2026-10-28）：登录 OK、分类 71、最近 20 部、详情 / 9 章、单章 23 图 200。
+
+**无忧（`electron/wygamer.ts`）**
+
+- WordPress + Zibll：账密 AJAX 需要滑块验证，但 `slidercaptcha.min.js` 的校验纯前端（`Math.abs(block.left - x) < 8` 且轨迹方差非 0），`getX` 自己会请求 `action/captcha.php` 拿 token。
+- 方案：隐藏 `BrowserWindow`（`persist:wygamer` 分区）填表点登录 → 轮询 `.slidercaptcha` 实例拿到 `x` → 合成 `pointerdown/move/up`（26 步、带 y 抖动）拖到 `x/ratio` → 前端自动重提 → 轮询 `wordpress_logged_in_*` Cookie 判定成功；最多 3 次，失败才降级为可见窗口让用户手动滑。
+- 成功后 Cookie 持久化在分区，启动先校验会话（首页 body.logged-in），有效则直接复用；`remember=forever`，每次启动访问首页会续期。
+- 实测（2026-10-28）：首次自动滑块登录成功、会话校验 true。
+
+**页面**
+
+- `BikaPage` / `ComicPage`：列表缓存、搜索、分类、详情、章节、纵向阅读（上一话/下一话），收藏分别写 `h2` / `comic`；切模块时 `.content` 自动回到顶部。
+- 图片全部由渲染进程 `<img>` 直连，主进程请求层补头，不经过 base64 中转。
+
 ### 8. 已知缺口 / 下一步
 
-1. **本子（哔咔）**：需要账号登录（`auth/sign-in` 拿 JWT，请求签名 HmacSHA256），PC 还没有账号管理与安全存 token；未实现。
-2. **漫画（Komiic）**：GraphQL 列表/章节/图片列表均正常，但章节图 `/api/image/{kid}` 实测 402。2026-10-28 复测 3 部热门漫画 × komiic.com / komiic.cc × 带/不带 Referer（含尾斜杠、浏览器 Accept）全部 402 → 站点图片已改为登录/付费门槛，需要账号后再做。
-3. **自动更新**：目前只做「检查 + 打开下载页」，未接 electron-updater 静默下载安装。
-4. **音乐多平台**：只实现 mvmp3；旧收藏里的 `joox|` / `netease|` 条目没有「按歌名回退搜索」逻辑。
-5. **下载范围**：只覆盖视频/音乐；漫画、本子、书籍目录下载依赖上述模块。
-6. **安装包签名与发布流程**：需代码签名证书。
+1. **自动更新**：目前只做「检查 + 打开下载页」，未接 electron-updater 静默下载安装。
+2. **音乐多平台**：只实现 mvmp3；旧收藏里的 `joox|` / `netease|` 条目没有「按歌名回退搜索」逻辑。
+3. **下载范围**：只覆盖视频/音乐；漫画、本子、书籍目录下载尚未接入。
+4. **安装包签名与发布流程**：需代码签名证书。
+5. **账号种子**：安装包把 `.secrets/accounts.json` 作为 `accounts.seed.json` 打进 resources，属于用户明确要求的「内置」；换机构建时需先放好 `.secrets/accounts.json`。
 
 ### 9. 每轮收尾约定
 
@@ -398,9 +440,9 @@ docs/AI_PROJECT_MEMORY.md  本文件
   ③ **播种逻辑**：新增 `data/DefaultSeed.kt` —— `App.onCreate` 里 IO 协程调用 `seedIfNeeded()`：影视源为空→写、电视源为空→写、库中无任何清单且无条目→一次性写清单+条目+关联（`Repo.hasAnyCollection()` / `Repo.seedCollectionData()`，保留原 id 维持父子层级与排序）；完成后置 `SettingsStore.defaultSeedDone`（`default_seed_v1`，已加入 `NON_BACKUP_KEYS`）。**只对"对应数据为空"生效，老用户已有数据一律不覆盖**；资产缺失时退回原 `ensureDefaultVodSourcesSeeded/ensureDefaultLiveSourcesSeeded`（旧常量仍保留作兜底，不再是主路径）。
   ④ 注意：已安装用户想看到这套默认数据需清应用数据/重装；覆盖升级不会覆盖现有数据。
   ⑤ 发版记录：commit `25f52f0` / tag `v0.311` / **Release `423822383`** / 资产 `LaoZhengFenXiang-0.311.apk`（20,586,753 字节）；桌面已更新为 `老郑分享-0.311.apk`。
-- **v0.310（哔咔内置账号 + 注册入口，2026-10-26）**：用户要求「哔咔登录按方案2改，把这项在登录管理里隐藏，账号 dblz123007 / 密码 123qweasd 默认存在 app 里，新用户直接用；账号管理里其他项后面加注册按钮」。
+- **v0.310（哔咔内置账号 + 注册入口，2026-10-26）**：用户要求「哔咔登录按方案2改，把这项在登录管理里隐藏，账号 / 密码默认存在 app 里，新用户直接用；账号管理里其他项后面加注册按钮」。
   ① **登录区分网络与账密**：`BikaClient` 新增 `BikaNetworkException`（连不上/超时/被墙/空响应/解析失败统一转成它）+ `autoSignInResult(): Boolean?`（true=成功；false=账密缺失或被拒；null=网络问题）。`withAuth()` 在 401 后用三态决定：成功→重放请求；false→清 token 抛「登录已失效」；**null→保留 token**、抛「网络不通…」，下次请求自动重试。`sessionOk()` 同样 null 时不清 token。⚠️ 旧实现把网络失败当账密失败 → 清 token → 本子页卡在"未登录"要手动登，这是用户问题的根因。
-  ② **内置账号**：`SettingsStore.ensureDefaultBikaAccountSeeded()`（`DEFAULT_BIKA_ACCOUNT="dblz123007"` / `DEFAULT_BIKA_PASSWORD="123qweasd"`），`App.onCreate` 里调用；只在本地无账密时写入，不覆盖用户自填。**凭据是明文硬编码在源码里的（仓库公开），存在被滥用/封号风险，用户知情并要求如此**。
+  ② **内置账号**：`SettingsStore.ensureDefaultBikaAccountSeeded()`（默认账号 / 密码常量），`App.onCreate` 里调用；只在本地无账密时写入，不覆盖用户自填。⚠️ 凭据属用户隐私，现已改为 PC 端 `safeStorage` 加密存储 + `.secrets/` 种子，不入库。
   ③ **本子页全自动登录**：`H2SearchScreen` 从「token 为空就显示未登录引导」改为 `LaunchedEffect` 调 `autoSignInResult()`，期间显示「正在准备账号…」，失败按 网络/账密 给不同文案 + 重试按钮，不再跳账号管理。
   ④ **隐藏哔咔登录项**：`AccountScreen` 删掉哔咔 SettingCard 与其登录/登出对话框挂载（`BikaLoginDialog` 函数保留未删，便于以后恢复）；相关 state（bikaLoginKey/isBikaLoggedIn/showBikaLogin/showBikaLogout/bikaSessionOk/bikaChecked）一并清理。`BikaComicDetailScreen.handleAuthError(e)` 改签名，区分网络（只提示、留在本页）与账号异常（提示并返回）。
   ⑤ **注册入口**：新增私有 `RegisterHint(url)`（「还没有账号？去注册」，跳系统浏览器），挂在豆瓣 `https://www.douban.com/accounts/register`、无忧 `https://www.wygamer.com/user-sign-2?tab=signup`、Z-Library `https://z-library.sk/registration` 三张卡片下方。哔咔无网页注册（只能 App 内），且已隐藏。

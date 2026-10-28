@@ -27,6 +27,21 @@ import type { PListResponse, PMediaResponse } from './psite'
 import type { MelonDetailResponse, MelonListResponse } from './melon'
 import type { SyncActionResult, SyncConfigInput, SyncConfigView } from './sync'
 import type { UpdateCheckResult } from './update'
+import type { AccountActionResult, AccountsView, AccountSite } from './accounts'
+import type {
+  BikaCategoriesResponse,
+  BikaChaptersResponse,
+  BikaDetailResponse,
+  BikaImagesResponse,
+  BikaListResponse
+} from './bika'
+import type {
+  KomiicCategoriesResponse,
+  KomiicChaptersResponse,
+  KomiicDetailResponse,
+  KomiicImagesResponse,
+  KomiicListResponse
+} from './komiic'
 
 export interface CollectionItem {
   id: number
@@ -159,6 +174,24 @@ export interface LaozhengApi {
   downloadSync: () => Promise<SyncActionResult>
   checkUpdate: () => Promise<UpdateCheckResult>
   openExternal: (url: string) => Promise<void>
+  listAccounts: () => Promise<AccountsView>
+  loginAccount: (site: AccountSite) => Promise<AccountActionResult>
+  openAccountLogin: (site: AccountSite) => Promise<void>
+  onAccountsChanged: (callback: () => void) => () => void
+  bikaCategories: () => Promise<BikaCategoriesResponse>
+  bikaList: (page: number, category: string, sort: string) => Promise<BikaListResponse>
+  bikaSearch: (keyword: string, page: number, sort: string) => Promise<BikaListResponse>
+  bikaDetail: (id: string) => Promise<BikaDetailResponse>
+  bikaChapters: (id: string) => Promise<BikaChaptersResponse>
+  bikaImages: (id: string, order: number) => Promise<BikaImagesResponse>
+  komiicRecent: (offset: number) => Promise<KomiicListResponse>
+  komiicHot: (offset: number) => Promise<KomiicListResponse>
+  komiicByCategory: (categoryId: string, offset: number) => Promise<KomiicListResponse>
+  komiicSearch: (keyword: string, offset: number) => Promise<KomiicListResponse>
+  komiicCategories: () => Promise<KomiicCategoriesResponse>
+  komiicDetail: (id: string) => Promise<KomiicDetailResponse>
+  komiicChapters: (comicId: string) => Promise<KomiicChaptersResponse>
+  komiicImages: (comicId: string, chapterId: string) => Promise<KomiicImagesResponse>
 }
 
 export const EMPTY_DATA: AppData = {

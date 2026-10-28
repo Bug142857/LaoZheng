@@ -24,6 +24,30 @@ import type { DownloadAddInput } from '../src/shared/downloads'
 import { xCategories, xDetail, xList } from './xsite'
 import { pList, pResolve } from './psite'
 import { melonDetail, melonList } from './melon'
+import { initAccounts, listAccounts } from './accounts'
+import {
+  bikaCategories,
+  bikaChapters,
+  bikaDetail,
+  bikaEnsureLogin,
+  bikaImages,
+  bikaList,
+  bikaSearch
+} from './bika'
+import {
+  komiicByCategory,
+  komiicCategories,
+  komiicChapters,
+  komiicDetail,
+  komiicEnsureLogin,
+  komiicHot,
+  komiicImageAuth,
+  komiicImages,
+  komiicRecent,
+  komiicSearch
+} from './komiic'
+import { openWygamerLogin, wygamerEnsureLogin } from './wygamer'
+import type { AccountActionResult, AccountSite } from '../src/shared/accounts'
 import {
   downloadSync,
   getSyncConfig,
@@ -80,6 +104,9 @@ const IMAGE_UA =
 const IMAGE_URLS = ['*://*.doubanio.com/*', '*://*.douban.com/*']
 const VOD_UA =
   'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36'
+const KOMIIC_UA =
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36'
+const BIKA_UA = 'okhttp/3.8.1'
 
 function setResponseHeader(headers: Record<string, string[]>, name: string, value: string): void {
   const key = Object.keys(headers).find((k) => k.toLowerCase() === name.toLowerCase()) ?? name
@@ -109,6 +136,22 @@ function setupRequestRules(): void {
       // P站 CDN 对部分节点校验来源页，补 Referer + 移动 UA
       headers['Referer'] = 'https://www.pornhub.com/'
       headers['User-Agent'] = VOD_UA
+    } else if (/(^|\.)komiic\.(com|cc)$/.test(host)) {
+      // Komiic 章节图：注入登录 Cookie + 完整路径 Referer（防盗链），缺口归属在查询参数里
+      try {
+        const auth = komiicImageAuth(new URL(details.url))
+        if (auth) {
+          headers['Cookie'] = auth.cookie
+          headers['Referer'] = auth.referer
+          headers['User-Agent'] = KOMIIC_UA
+        }
+      } catch {
+        // 非法 URL 交给默认处理
+      }
+    } else if (/(^|\.)picacomic\.com$|(^|\.)go2778\.com$/.test(host)) {
+      // 哔咔图床只校验 UA（不需要 token）
+      headers['User-Agent'] = BIKA_UA
+      headers['Referer'] = 'https://picaapi.picacomic.com/'
     } else if (
       details.resourceType === 'media' ||
       (details.resourceType === 'xhr' && /\.(m3u8|ts|key|mp4|flv)(\?|$)/i.test(details.url))
@@ -336,6 +379,155 @@ function registerIpc(): void {
     return melonDetail(id)
   })
 
+  // ---------- 内置账号（哔咔 / Komiic / 无忧） ----------
+  const ACCOUNT_SITES = new Set<AccountSite>(['bika', 'komiic', 'wygamer'])
+
+  ipcMain.handle('accounts:list', () => listAccounts())
+
+  ipcMain.handle(
+    'accounts:login',
+    async (_e, site: AccountSite): Promise<AccountActionResult> => {
+      if (!ACCOUNT_SITES.has(site)) return { ok: false, message: '站点参数无效' }
+      let ok = false
+      if (site === 'bika') ok = await bikaEnsureLogin()
+      else if (site === 'komiic') ok = await komiicEnsureLogin()
+      else ok = await wygamerEnsureLogin(true)
+      const item = listAccounts().items.find((i) => i.site === site)
+      return { ok, message: item?.message ?? (ok ? '登录成功' : '登录失败') }
+    }
+  )
+
+  ipcMain.handle('accounts:openLogin', async (_e, site: AccountSite) => {
+    if (site === 'wygamer') await openWygamerLogin()
+  })
+
+  // ---------- 哔咔 ----------
+  ipcMain.handle('bika:categories', () => bikaCategories())
+
+  ipcMain.handle('bika:list', (_e, page: number, category: string, sort: string) => {
+    if (
+      !Number.isInteger(page) ||
+      page < 1 ||
+      page > 1000 ||
+      typeof category !== 'string' ||
+      category.length > 60 ||
+      typeof sort !== 'string' ||
+      sort.length > 10
+    ) {
+      return { ok: false, items: [], page: 1, pages: 1, total: 0, error: '参数无效' }
+    }
+    return bikaList(page, category, sort)
+  })
+
+  ipcMain.handle('bika:search', (_e, keyword: string, page: number, sort: string) => {
+    if (
+      typeof keyword !== 'string' ||
+      !keyword.trim() ||
+      keyword.length > 80 ||
+      !Number.isInteger(page) ||
+      page < 1 ||
+      page > 1000 ||
+      typeof sort !== 'string'
+    ) {
+      return { ok: false, items: [], page: 1, pages: 1, total: 0, error: '参数无效' }
+    }
+    return bikaSearch(keyword.trim(), page, sort)
+  })
+
+  ipcMain.handle('bika:detail', (_e, id: string) => {
+    if (typeof id !== 'string' || !id || id.length > 80) {
+      return { ok: false, comic: null, error: '参数无效' }
+    }
+    return bikaDetail(id)
+  })
+
+  ipcMain.handle('bika:chapters', (_e, id: string) => {
+    if (typeof id !== 'string' || !id || id.length > 80) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    return bikaChapters(id)
+  })
+
+  ipcMain.handle('bika:images', (_e, id: string, order: number) => {
+    if (typeof id !== 'string' || !id || id.length > 80 || !Number.isInteger(order) || order < 0) {
+      return { ok: false, urls: [], error: '参数无效' }
+    }
+    return bikaImages(id, order)
+  })
+
+  // ---------- Komiic ----------
+  ipcMain.handle('komiic:recent', (_e, offset: number) => {
+    if (!Number.isInteger(offset) || offset < 0 || offset > 100_000) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    return komiicRecent(offset)
+  })
+
+  ipcMain.handle('komiic:hot', (_e, offset: number) => {
+    if (!Number.isInteger(offset) || offset < 0 || offset > 100_000) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    return komiicHot(offset)
+  })
+
+  ipcMain.handle('komiic:byCategory', (_e, categoryId: string, offset: number) => {
+    if (
+      typeof categoryId !== 'string' ||
+      !categoryId ||
+      categoryId.length > 60 ||
+      !Number.isInteger(offset) ||
+      offset < 0 ||
+      offset > 100_000
+    ) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    return komiicByCategory(categoryId, offset)
+  })
+
+  ipcMain.handle('komiic:search', (_e, keyword: string, offset: number) => {
+    if (
+      typeof keyword !== 'string' ||
+      !keyword.trim() ||
+      keyword.length > 80 ||
+      !Number.isInteger(offset) ||
+      offset < 0 ||
+      offset > 100_000
+    ) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    return komiicSearch(keyword.trim(), offset)
+  })
+
+  ipcMain.handle('komiic:categories', () => komiicCategories())
+
+  ipcMain.handle('komiic:detail', (_e, id: string) => {
+    if (typeof id !== 'string' || !id || id.length > 80) {
+      return { ok: false, comic: null, error: '参数无效' }
+    }
+    return komiicDetail(id)
+  })
+
+  ipcMain.handle('komiic:chapters', (_e, comicId: string) => {
+    if (typeof comicId !== 'string' || !comicId || comicId.length > 80) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    return komiicChapters(comicId)
+  })
+
+  ipcMain.handle('komiic:images', (_e, comicId: string, chapterId: string) => {
+    if (
+      typeof comicId !== 'string' ||
+      !comicId ||
+      comicId.length > 80 ||
+      typeof chapterId !== 'string' ||
+      !chapterId ||
+      chapterId.length > 80
+    ) {
+      return { ok: false, urls: [], error: '参数无效' }
+    }
+    return komiicImages(comicId, chapterId)
+  })
+
   ipcMain.handle('sync:getConfig', () => getSyncConfig())
 
   ipcMain.handle('sync:saveConfig', (_e, input: SyncConfigInput) => {
@@ -475,11 +667,17 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     app.setAppUserModelId('com.laozheng.pc')
     Menu.setApplicationMenu(null)
+    initAccounts()
     setupRequestRules()
     registerIpc()
     await startMediaServer()
     createWindow()
     console.log('[app] data file:', dataFilePath())
+
+    // 内置账号静默登录：哔咔 / Komiic 直接换 token，无忧恢复持久化会话（失效时自动过滑块）
+    void bikaEnsureLogin()
+    void komiicEnsureLogin()
+    void wygamerEnsureLogin()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

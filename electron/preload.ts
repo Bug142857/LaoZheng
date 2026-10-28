@@ -44,7 +44,31 @@ const api: LaozhengApi = {
   uploadSync: (data) => ipcRenderer.invoke('sync:upload', data),
   downloadSync: () => ipcRenderer.invoke('sync:download'),
   checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
-  openExternal: (url) => ipcRenderer.invoke('app:openExternal', url)
+  openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
+  listAccounts: () => ipcRenderer.invoke('accounts:list'),
+  loginAccount: (site) => ipcRenderer.invoke('accounts:login', site),
+  openAccountLogin: (site) => ipcRenderer.invoke('accounts:openLogin', site) as Promise<void>,
+  onAccountsChanged: (callback) => {
+    const handler = (): void => callback()
+    ipcRenderer.on('accounts:changed', handler)
+    return () => ipcRenderer.removeListener('accounts:changed', handler)
+  },
+  bikaCategories: () => ipcRenderer.invoke('bika:categories'),
+  bikaList: (page, category, sort) => ipcRenderer.invoke('bika:list', page, category, sort),
+  bikaSearch: (keyword, page, sort) => ipcRenderer.invoke('bika:search', keyword, page, sort),
+  bikaDetail: (id) => ipcRenderer.invoke('bika:detail', id),
+  bikaChapters: (id) => ipcRenderer.invoke('bika:chapters', id),
+  bikaImages: (id, order) => ipcRenderer.invoke('bika:images', id, order),
+  komiicRecent: (offset) => ipcRenderer.invoke('komiic:recent', offset),
+  komiicHot: (offset) => ipcRenderer.invoke('komiic:hot', offset),
+  komiicByCategory: (categoryId, offset) =>
+    ipcRenderer.invoke('komiic:byCategory', categoryId, offset),
+  komiicSearch: (keyword, offset) => ipcRenderer.invoke('komiic:search', keyword, offset),
+  komiicCategories: () => ipcRenderer.invoke('komiic:categories'),
+  komiicDetail: (id) => ipcRenderer.invoke('komiic:detail', id),
+  komiicChapters: (comicId) => ipcRenderer.invoke('komiic:chapters', comicId),
+  komiicImages: (comicId, chapterId) =>
+    ipcRenderer.invoke('komiic:images', comicId, chapterId)
 }
 
 contextBridge.exposeInMainWorld('laozheng', api)
