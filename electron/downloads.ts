@@ -1,8 +1,8 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
-import { extname, join, resolve, sep } from 'node:path'
+import { extname, join, relative, resolve, sep } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createDecipheriv } from 'node:crypto'
@@ -12,8 +12,10 @@ import type {
   DownloadItem,
   DownloadKind,
   DownloadListResponse,
-  DownloadTask
+  DownloadTask,
+  ImageDownloadInput
 } from '../src/shared/downloads'
+import { komiicImageAuth } from './komiic'
 
 /**
  * 下载管理：视频（mp4 直链 / m3u8 切片合并）与音乐直链。
@@ -55,7 +57,11 @@ function safeName(raw: string): string {
 }
 
 function kindDir(kind: DownloadKind): string {
-  return kind === 'video' ? '视频' : kind === 'music' ? '音乐' : '其他'
+  if (kind === 'video') return '视频'
+  if (kind === 'music') return '音乐'
+  if (kind === 'comic') return '漫画'
+  if (kind === 'book') return '图书'
+  return '其他'
 }
 
 function hashUrl(url: string): string {
@@ -173,6 +179,217 @@ export async function addDownload(input: DownloadAddInput): Promise<DownloadAddR
 
   notify()
   return { ok: true }
+}
+
+/* ---------------- 漫画 / 本子整章图片下载 ---------------- */
+
+function guessImageExt(url: string, contentType: string): string {
+  const type = contentType.toLowerCase()
+  if (type.includes('image/png')) return '.png'
+  if (type.includes('image/webp')) return '.webp'
+  if (type.includes('image/gif')) return '.gif'
+  if (type.includes('image/jpeg')) return '.jpg'
+  const path = (() => {
+    try {
+      return new URL(url).pathname
+    } catch {
+      return url
+    }
+  })()
+  const ext = extname(path).toLowerCase()
+  return /^\.(jpe?g|png|webp|gif)$/.test(ext) ? ext : '.jpg'
+}
+
+async function uniqueDir(parent: string, base: string): Promise<string> {
+  let dir = join(parent, base)
+  let n = 2
+  for (;;) {
+    try {
+      await stat(dir)
+      dir = join(parent, `${base} (${n++})`)
+    } catch {
+      return dir
+    }
+  }
+}
+
+async function dirSize(dir: string): Promise<number> {
+  let total = 0
+  const files = await readdirSafe(dir)
+  for (const entry of files) {
+    const abs = join(dir, entry.name)
+    if (entry.isDirectory()) total += await dirSize(abs)
+    else total += (await stat(abs).catch(() => ({ size: 0 }))).size
+  }
+  return total
+}
+
+async function readdirSafe(dir: string): Promise<{ name: string; isDirectory: () => boolean }[]> {
+  try {
+    return await readdir(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+}
+
+export async function addImageDownload(input: ImageDownloadInput): Promise<DownloadAddResult> {
+  await loadLibrary()
+  const urls = (Array.isArray(input.urls) ? input.urls : [])
+    .filter((u): u is string => typeof u === 'string' && /^https?:\/\//i.test(u))
+    .slice(0, 300)
+  if (!urls.length) return { ok: false, error: '没有可下载的图片' }
+  const title = input.title.trim().slice(0, 120) || '漫画章节'
+  if (tasks.size > 0 && [...tasks.values()].some((t) => t.title === title && t.kind === 'comic')) {
+    return { ok: false, error: '这一章正在下载中' }
+  }
+
+  const task: DownloadTask = {
+    id: `img_${hashUrl(`${title}|${urls[0]}`)}_${Date.now()}`,
+    title,
+    kind: 'comic',
+    url: urls[0],
+    sourceName: input.sourceName ?? '',
+    coverUrl: input.coverUrl ?? '',
+    state: 'running',
+    progress: 0,
+    bytes: 0,
+    totalBytes: 0
+  }
+  const controller = new AbortController()
+  controllers.set(task.id, controller)
+  tasks.set(task.id, task)
+
+  void (async () => {
+    try {
+      const item = await downloadImages(input, urls, task, controller.signal)
+      items.push(item)
+      await saveLibrary()
+      tasks.delete(task.id)
+      controllers.delete(task.id)
+    } catch (err) {
+      controllers.delete(task.id)
+      if (controller.signal.aborted) {
+        tasks.delete(task.id)
+      } else {
+        task.state = 'failed'
+        task.error = err instanceof Error ? err.message : '下载失败'
+      }
+    }
+    notify()
+  })()
+
+  notify()
+  return { ok: true }
+}
+
+async function downloadImages(
+  input: ImageDownloadInput,
+  urls: string[],
+  task: DownloadTask,
+  signal: AbortSignal
+): Promise<StoredItem> {
+  const parent = join(downloadsRoot(), '漫画')
+  await mkdir(parent, { recursive: true })
+  const folder = await uniqueDir(parent, safeName(input.title))
+  await mkdir(folder, { recursive: true })
+
+  let cursor = 0
+  let done = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = cursor++
+      const url = urls[index]
+      if (!url) return
+      const headers: Record<string, string> = {
+        'User-Agent': UA,
+        Accept: 'image/avif,image/webp,image/*,*/*;q=0.8'
+      }
+      if (input.referer) headers.Referer = input.referer
+      // Komiic 章节图需要登录 Cookie 与完整路径 Referer（与渲染进程请求层同一套规则）
+      try {
+        const auth = komiicImageAuth(new URL(url))
+        if (auth) {
+          headers.Cookie = auth.cookie
+          headers.Referer = auth.referer
+        }
+      } catch {
+        // 非 Komiic 图片走默认头
+      }
+      const res = await fetch(url, { headers, signal })
+      if (!res.ok) throw new Error(`第 ${index + 1} 张图片下载失败 HTTP ${res.status}`)
+      const buf = Buffer.from(await res.arrayBuffer())
+      const ext = guessImageExt(url, res.headers.get('content-type') ?? '')
+      await writeFile(join(folder, `${String(index + 1).padStart(4, '0')}${ext}`), buf)
+      task.bytes += buf.length
+      done += 1
+      task.progress = done / urls.length
+      notify()
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(5, urls.length) }, worker))
+
+  const rel = relative(downloadsRoot(), folder).replace(/\\/g, '/')
+  return {
+    id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    title: input.title.trim().slice(0, 120) || '漫画章节',
+    kind: 'comic',
+    sourceUrl: urls[0],
+    playPath: rel,
+    displayPath: rel,
+    sizeBytes: task.bytes,
+    createdAt: Date.now(),
+    coverUrl: input.coverUrl ?? '',
+    sourceName: input.sourceName ?? '',
+    hls: false,
+    folder: true
+  }
+}
+
+/** 登记外部模块（如 Z-Library）已经写入下载目录的文件 */
+export async function registerLocalFile(input: {
+  title: string
+  kind: DownloadKind
+  absPath: string
+  sourceName?: string
+  coverUrl?: string
+  folder?: boolean
+}): Promise<void> {
+  await loadLibrary()
+  const root = resolve(downloadsRoot())
+  const abs = resolve(input.absPath)
+  if (!abs.startsWith(root + sep)) throw new Error('文件不在下载目录内')
+  const rel = relative(root, abs).replace(/\\/g, '/')
+  if (items.some((i) => i.playPath === rel)) return
+  const size = input.folder ? await dirSize(abs) : (await stat(abs)).size
+  items.push({
+    id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    title: input.title.slice(0, 160) || '未命名下载',
+    kind: input.kind,
+    sourceUrl: '',
+    playPath: rel,
+    displayPath: rel,
+    sizeBytes: size,
+    createdAt: Date.now(),
+    coverUrl: input.coverUrl ?? '',
+    sourceName: input.sourceName ?? '',
+    hls: false,
+    folder: !!input.folder
+  })
+  await saveLibrary()
+  notify()
+}
+
+/** 在系统里打开下载项（文件或目录） */
+export async function openDownloadItem(id: string): Promise<void> {
+  await loadLibrary()
+  const item = items.find((i) => i.id === id)
+  if (!item) throw new Error('下载记录不存在')
+  const root = resolve(downloadsRoot())
+  const abs = resolve(root, item.playPath)
+  if (!abs.startsWith(root + sep)) throw new Error('路径无效')
+  const target = item.hls || item.folder ? resolve(abs, '..') : abs
+  const err = await shell.openPath(target)
+  if (err) throw new Error(err)
 }
 
 export async function removeDownload(id: string, deleteFile: boolean): Promise<void> {
@@ -537,7 +754,13 @@ const MIME: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.png': 'image/png',
-  '.webp': 'image/webp'
+  '.webp': 'image/webp',
+  '.epub': 'application/epub+zip',
+  '.pdf': 'application/pdf',
+  '.mobi': 'application/x-mobipocket-ebook',
+  '.azw3': 'application/vnd.amazon.ebook',
+  '.txt': 'text/plain',
+  '.zip': 'application/zip'
 }
 
 export async function startMediaServer(): Promise<void> {

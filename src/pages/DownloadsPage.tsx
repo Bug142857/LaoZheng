@@ -5,7 +5,19 @@ import { VideoPlayer } from '../components/VideoPlayer'
 import { formatBytes, type DownloadItem, type DownloadListResponse } from '../shared/downloads'
 
 function kindLabel(kind: DownloadItem['kind']): string {
-  return kind === 'video' ? '视频' : kind === 'music' ? '音乐' : '文件'
+  return kind === 'video'
+    ? '视频'
+    : kind === 'music'
+      ? '音乐'
+      : kind === 'comic'
+        ? '漫画'
+        : kind === 'book'
+          ? '图书'
+          : '文件'
+}
+
+function canPlay(item: DownloadItem): boolean {
+  return !item.folder && !item.hls && (item.kind === 'video' || item.kind === 'music')
 }
 
 function formatTime(ms: number): string {
@@ -50,6 +62,14 @@ export function DownloadsPage({ onNotice }: { onNotice: (text: string) => void }
     void refresh()
   }
 
+  const openItem = async (item: DownloadItem) => {
+    try {
+      await window.laozheng.openDownloadItem(item.id)
+    } catch (err) {
+      onNotice(`打开失败：${(err as Error).message}`)
+    }
+  }
+
   const doRemove = async (deleteFile: boolean) => {
     if (!removing) return
     await window.laozheng.removeDownload(removing.id, deleteFile)
@@ -87,6 +107,11 @@ export function DownloadsPage({ onNotice }: { onNotice: (text: string) => void }
         <div className="page-desc" style={{ marginTop: 12 }}>
           文件位置：{playing.displayPath}
         </div>
+        <div className="toolbar" style={{ marginTop: 8 }}>
+          <button className="btn" onClick={() => void openItem(playing)}>
+            <FolderOpen size={14} /> 在文件夹中打开
+          </button>
+        </div>
       </>
     )
   }
@@ -96,7 +121,7 @@ export function DownloadsPage({ onNotice }: { onNotice: (text: string) => void }
       <header className="page-header">
         <h1 className="page-title">下载</h1>
         <span className="page-desc">
-          视频 / 音乐下载到系统下载目录下的「老郑分享」文件夹
+          视频 / 音乐 / 漫画 / 图书下载到系统下载目录下的「老郑分享」文件夹
         </span>
         <div className="page-actions">
           <button className="btn" onClick={() => void refresh()}>
@@ -149,7 +174,7 @@ export function DownloadsPage({ onNotice }: { onNotice: (text: string) => void }
       {items.length === 0 ? (
         <EmptyState
           title="还没有下载"
-          desc="在观影播放页点「下载」，或在音乐播放条点「下载」，文件会保存到「老郑分享」目录。"
+          desc="在观影 / 音乐 / 漫画 / 本子 / 图书页面点「下载」，文件会保存到「老郑分享」目录。"
         />
       ) : (
         <div className="rows">
@@ -173,9 +198,15 @@ export function DownloadsPage({ onNotice }: { onNotice: (text: string) => void }
                 </div>
                 <div className="row-meta">{item.displayPath}</div>
               </div>
-              <button className="btn" onClick={() => setPlaying(item)}>
-                <Play size={14} /> 播放
-              </button>
+              {canPlay(item) ? (
+                <button className="btn" onClick={() => setPlaying(item)}>
+                  <Play size={14} /> 播放
+                </button>
+              ) : (
+                <button className="btn" onClick={() => void openItem(item)}>
+                  <FolderOpen size={14} /> 打开
+                </button>
+              )}
               <button className="icon-btn danger" title="删除" onClick={() => setRemoving(item)}>
                 <Trash2 size={14} />
               </button>

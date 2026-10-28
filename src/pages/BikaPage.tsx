@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Heart, RefreshCw, Search } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Download, Heart, RefreshCw, Search } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import { EmptyState } from '../components/ui'
 import {
@@ -46,7 +46,13 @@ interface ReaderState {
   error: string | null
 }
 
-export function BikaPage({ onNotice }: { onNotice: (text: string) => void }) {
+export function BikaPage({
+  onNotice,
+  focusId
+}: {
+  onNotice: (text: string) => void
+  focusId?: string
+}) {
   const { data, update } = useData()
   const [categories, setCategories] = useState<BikaCategory[]>(cache.categories)
   const [category, setCategory] = useState(cache.category)
@@ -161,6 +167,49 @@ export function BikaPage({ onNotice }: { onNotice: (text: string) => void }) {
     })
   }
 
+  const openDetailById = async (id: string) => {
+    const placeholder: BikaComic = {
+      id,
+      title: '本子',
+      author: '',
+      thumb: '',
+      likes: 0,
+      views: 0,
+      finished: false,
+      categories: [],
+      tags: [],
+      epsCount: 0,
+      pagesCount: 0,
+      description: '',
+      chineseTeam: '',
+      updatedAt: ''
+    }
+    setDetail({ comic: placeholder, chapters: [], loading: true, error: null })
+    const [detailRes, chapterRes] = await Promise.all([
+      window.laozheng.bikaDetail(id),
+      window.laozheng.bikaChapters(id)
+    ])
+    setDetail({
+      comic: detailRes.ok && detailRes.comic ? detailRes.comic : placeholder,
+      chapters: chapterRes.ok ? chapterRes.items : [],
+      loading: false,
+      error: detailRes.ok
+        ? chapterRes.ok
+          ? null
+          : chapterRes.error ?? '章节加载失败'
+        : detailRes.error ?? '详情加载失败'
+    })
+  }
+
+  useEffect(() => {
+    if (focusId) void openDetailById(focusId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId])
+
+  const progressKey = (id: string): string => `bika/${id}`
+  const progress = detail ? data.readProgress[progressKey(detail.comic.id)] : undefined
+  const resumeChapter = detail?.chapters.find((c) => String(c.order) === progress)
+
   const openChapter = async (chapter: BikaChapter) => {
     const comic = detail?.comic
     if (!comic) return
@@ -173,6 +222,24 @@ export function BikaPage({ onNotice }: { onNotice: (text: string) => void }) {
       loading: false,
       error: res.ok ? (res.urls.length ? null : '本章没有图片') : res.error ?? '图片加载失败'
     })
+    if (res.ok && res.urls.length) {
+      update((d) => ({
+        ...d,
+        readProgress: { ...d.readProgress, [progressKey(comic.id)]: String(chapter.order) }
+      }))
+    }
+  }
+
+  const downloadChapter = async () => {
+    if (!reader || !reader.urls.length) return
+    const res = await window.laozheng.addImageDownload({
+      title: `${reader.comic.title} ${reader.chapter.title}`.slice(0, 120),
+      urls: reader.urls,
+      referer: 'https://picaapi.picacomic.com/',
+      coverUrl: reader.comic.thumb,
+      sourceName: '本子'
+    })
+    onNotice(res.ok ? '已加入下载队列，可在「下载」页查看进度' : `下载失败：${res.error}`)
   }
 
   const stepChapter = (delta: number) => {
@@ -195,6 +262,9 @@ export function BikaPage({ onNotice }: { onNotice: (text: string) => void }) {
           <h1 className="page-title">{reader.comic.title}</h1>
           <span className="page-desc">{reader.chapter.title}</span>
           <div className="page-actions">
+            <button className="btn" disabled={!reader.urls.length} onClick={() => void downloadChapter()}>
+              <Download size={14} /> 下载本章
+            </button>
             <button className="btn" disabled={!hasPrev} onClick={() => stepChapter(-1)}>
               上一话
             </button>
@@ -244,6 +314,11 @@ export function BikaPage({ onNotice }: { onNotice: (text: string) => void }) {
           </button>
           <h1 className="page-title">{detail.comic.title}</h1>
           <div className="page-actions">
+            {resumeChapter ? (
+              <button className="btn primary" onClick={() => void openChapter(resumeChapter)}>
+                继续阅读 · {resumeChapter.title}
+              </button>
+            ) : null}
             <button className="btn" onClick={() => toggleFav(detail.comic)}>
               <Heart size={15} fill={favOf(detail.comic.id) ? 'currentColor' : 'none'} />{' '}
               {favOf(detail.comic.id) ? '已收藏' : '收藏'}
@@ -303,10 +378,11 @@ export function BikaPage({ onNotice }: { onNotice: (text: string) => void }) {
             {detail.chapters.map((chapter) => (
               <button
                 key={chapter.id}
-                className="chapter-chip"
+                className={`chapter-chip ${String(chapter.order) === progress ? 'active' : ''}`}
                 onClick={() => void openChapter(chapter)}
               >
                 {chapter.title}
+                {String(chapter.order) === progress ? <span className="chapter-size">上次看到</span> : null}
               </button>
             ))}
           </div>

@@ -23,7 +23,13 @@ interface XCache {
 
 const cache: XCache = { range: 'weekly', category: '', page: 1, lastPage: 0, total: 0, items: [] }
 
-export function XSitePage({ onNotice }: { onNotice: (text: string) => void }) {
+export function XSitePage({
+  onNotice,
+  focusId
+}: {
+  onNotice: (text: string) => void
+  focusId?: string
+}) {
   const { data, update } = useData()
   const [range, setRange] = useState(cache.range)
   const [category, setCategory] = useState(cache.category)
@@ -69,6 +75,21 @@ export function XSitePage({ onNotice }: { onNotice: (text: string) => void }) {
     if (!cache.items.length) void load(cache.range, cache.category, 1)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!focusId) return
+    setDetail(null)
+    setDetailError(null)
+    setDetailLoading(true)
+    void window.laozheng.xDetail(focusId).then((res) => {
+      setDetailLoading(false)
+      if (!res.ok || !res.detail) {
+        setDetailError(res.error ?? '加载失败')
+        return
+      }
+      setDetail(res.detail)
+    })
+  }, [focusId])
 
   const openDetail = async (post: XPost) => {
     setDetail(null)

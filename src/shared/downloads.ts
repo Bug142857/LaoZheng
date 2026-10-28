@@ -1,6 +1,6 @@
-/** 下载管理共用类型（视频 / 音乐 / 其他文件；漫画、书籍等模块接入后复用） */
+/** 下载管理共用类型（视频 / 音乐 / 漫画 / 图书 / 其他文件） */
 
-export type DownloadKind = 'video' | 'music' | 'file'
+export type DownloadKind = 'video' | 'music' | 'comic' | 'book' | 'file'
 
 export interface DownloadItem {
   id: string
@@ -16,6 +16,8 @@ export interface DownloadItem {
   coverUrl: string
   sourceName: string
   hls: boolean
+  /** 目录型下载（漫画章节等），不能直接播放，只能打开目录 */
+  folder?: boolean
 }
 
 export interface DownloadTask {
@@ -50,6 +52,16 @@ export interface DownloadAddInput {
 export interface DownloadAddResult {
   ok: boolean
   error?: string
+}
+
+/** 漫画 / 本子整章图片下载 */
+export interface ImageDownloadInput {
+  title: string
+  urls: string[]
+  kind?: 'comic'
+  referer?: string
+  coverUrl?: string
+  sourceName?: string
 }
 
 export function formatBytes(bytes: number): string {

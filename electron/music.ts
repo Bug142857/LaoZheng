@@ -154,3 +154,28 @@ export async function resolveMusic(songId: string): Promise<MusicResolveResponse
   }
   return { ok: false, error: lastError }
 }
+
+/**
+ * 旧收藏（手机端 joox| / netease| 条目）回退：
+ * 拿「歌名 + 歌手」去 mvmp3 搜同名歌，命中后解析直链。
+ */
+export async function resolveLegacyMusic(
+  name: string,
+  artists: string
+): Promise<MusicResolveResponse> {
+  const title = name.trim()
+  const keyword = [title, artists.trim()].filter(Boolean).join(' ').trim()
+  if (!title) return { ok: false, error: '收藏缺少歌名，无法回退搜索' }
+  const found = await searchMusic(keyword || title, 1)
+  if (!found.ok) return { ok: false, error: found.error ?? '回退搜索失败' }
+  const norm = (s: string): string => s.trim().toLowerCase()
+  const firstArtist = artists.split(/[/&、,]/)[0]?.trim() ?? ''
+  const target =
+    found.items.find(
+      (s) => norm(s.name) === norm(title) && !!firstArtist && norm(s.artists).includes(norm(firstArtist))
+    ) ??
+    found.items.find((s) => norm(s.name) === norm(title)) ??
+    found.items.find((s) => norm(s.name).includes(norm(title)))
+  if (!target) return { ok: false, error: 'mvmp3 里也没有找到同名歌曲' }
+  return resolveMusic(target.id)
+}

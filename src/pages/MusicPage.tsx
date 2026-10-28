@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Download, Heart, Music as MusicIcon, Play, Search } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import { EmptyState } from '../components/ui'
@@ -25,7 +25,13 @@ function lyricLines(lrc: string): string[] {
     .filter(Boolean)
 }
 
-export function MusicPage({ onNotice }: { onNotice: (text: string) => void }) {
+export function MusicPage({
+  onNotice,
+  focus
+}: {
+  onNotice: (text: string) => void
+  focus?: { id: string; title: string; subtitle: string; cover: string | null; durationSec: number }
+}) {
   const { data, update } = useData()
   const [query, setQuery] = useState('')
   const [keyword, setKeyword] = useState('')
@@ -41,6 +47,40 @@ export function MusicPage({ onNotice }: { onNotice: (text: string) => void }) {
   const audioRef = useRef<HTMLAudioElement>(null)
 
   const lyrics = useMemo(() => (playing ? lyricLines(playing.lrc) : []), [playing])
+
+  useEffect(() => {
+    if (!focus?.id) return
+    let alive = true
+    void (async () => {
+      const rawId = focus.id.includes('|') ? focus.id.split('|').slice(1).join('|') : focus.id
+      const res = /^[0-9a-f]{32}$/i.test(rawId)
+        ? await window.laozheng.resolveMusic(rawId)
+        : await window.laozheng.resolveLegacyMusic(focus.title, focus.subtitle)
+      if (!alive) return
+      if (!res.ok || !res.url) {
+        onNotice(`「${focus.title}」播放失败：${res.error ?? '没有可用直链'}`)
+        return
+      }
+      setPlaying({
+        song: {
+          id: rawId,
+          name: focus.title,
+          artists: focus.subtitle,
+          album: '',
+          cover: focus.cover ?? '',
+          durationMs: focus.durationSec * 1000
+        },
+        url: res.url,
+        lrc: res.lrc ?? '',
+        cover: res.cover || focus.cover || ''
+      })
+      setShowLyrics(false)
+    })()
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.id])
 
   const doSearch = async (raw: string, nextPage = 1) => {
     const kw = raw.trim()

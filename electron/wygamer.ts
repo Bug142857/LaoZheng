@@ -1,5 +1,18 @@
 import { BrowserWindow, session } from 'electron'
+import { parse } from 'node-html-parser'
 import { getCredentials, setAccountStatus } from './accounts'
+import type {
+  GameAttr,
+  GameBlock,
+  GameCategoriesResponse,
+  GameCategory,
+  GameDetail,
+  GameDetailResponse,
+  GameDownload,
+  GameItem,
+  GameListResponse,
+  GameResolveResponse
+} from '../src/shared/wygamer'
 
 /**
  * 无忧游戏（wygamer.com，WordPress + Zibll 主题）自动登录。
@@ -258,4 +271,275 @@ async function waitLoginCookie(timeoutMs: number): Promise<boolean> {
     await sleep(600)
   }
   return false
+}
+
+/* ==================== 游戏库（列表 / 搜索 / 分类 / 详情 / 网盘链接） ==================== */
+
+/** 封面占位图文件名，出现即代表该 img 没有真实图 */
+const PLACEHOLDER = 'thumbnail-lg.svg'
+
+function absUrl(raw: string, base = `${BASE}/`): string {
+  const value = raw.trim()
+  if (!value) return ''
+  try {
+    return new URL(value, base).toString()
+  } catch {
+    return ''
+  }
+}
+
+/** 走 persist:wygamer 分区的请求（自动带登录 Cookie） */
+async function fetchText(url: string): Promise<string> {
+  const res = await wygamerSession().fetch(url, {
+    headers: {
+      'User-Agent': UA,
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9',
+      Referer: `${BASE}/`
+    },
+    signal: AbortSignal.timeout(25_000)
+  })
+  if (!res.ok) throw new Error(`站点返回 HTTP ${res.status}`)
+  const html = await res.text()
+  if (!html.trim()) throw new Error('站点返回空内容')
+  return html
+}
+
+/** 取 img 真实地址：data-src 优先（懒加载），src 是占位图时忽略 */
+function realImgSrc(img: { getAttribute: (name: string) => string | null | undefined } | null): string | null {
+  if (!img) return null
+  const dataSrc = (img.getAttribute('data-src') ?? '').trim()
+  if (dataSrc && !dataSrc.includes(PLACEHOLDER)) return absUrl(dataSrc)
+  const src = (img.getAttribute('src') ?? '').trim()
+  if (src && !src.includes(PLACEHOLDER)) return absUrl(src)
+  return null
+}
+
+function parseList(html: string): { items: GameItem[]; lastPage: number } {
+  const doc = parse(html)
+  const items: GameItem[] = []
+  for (const card of doc.querySelectorAll('posts.posts-item')) {
+    const heading = card.querySelector('h2.item-heading a')
+    const thumbLink = card.querySelector('.item-thumbnail a')
+    const link = heading ?? thumbLink
+    if (!link) continue
+    const url = absUrl(link.getAttribute('href') ?? '')
+    if (!url) continue
+    const id = url.replace(/\/+$/, '').split('/').pop() ?? ''
+    if (!id) continue
+    const title =
+      (heading?.text ?? '').trim() ||
+      (card.querySelector('.item-thumbnail img')?.getAttribute('alt') ?? '').trim()
+    const cover = realImgSrc(card.querySelector('.item-thumbnail img'))
+    const categories = [
+      ...card.querySelectorAll('.item-tags a.but.c-blue'),
+      ...card.querySelectorAll('.item-tags a.but.c-green'),
+      ...card.querySelectorAll('.item-tags a.but.c-yellow')
+    ]
+      .map((a) => a.text.trim())
+      .filter((t) => t && t !== '免费资源')
+    const badge =
+      (card.querySelector('.item-tags a.meta-pay')?.text ?? '').trim() ||
+      (card.querySelector('badge.img-badge')?.text ?? '').trim()
+    items.push({
+      id,
+      title,
+      url,
+      cover,
+      categories: [...new Set(categories)].slice(0, 3),
+      badge: badge || null
+    })
+  }
+
+  let lastPage = 0
+  for (const a of doc.querySelectorAll('a[href*="/page/"]')) {
+    const m = (a.getAttribute('href') ?? '').match(/\/page\/(\d+)/)
+    if (m) lastPage = Math.max(lastPage, Number(m[1]) || 0)
+  }
+  return { items, lastPage }
+}
+
+async function listPage(url: string, page: number): Promise<GameListResponse> {
+  try {
+    const html = await fetchText(url)
+    const parsed = parseList(html)
+    const lastPage = parsed.lastPage || page
+    return { ok: true, items: parsed.items, page, lastPage }
+  } catch (err) {
+    return { ok: false, items: [], page, lastPage: 0, error: (err as Error).message }
+  }
+}
+
+/** 首页最新（page 从 1 开始） */
+export async function wygamerHome(page: number): Promise<GameListResponse> {
+  const p = Math.max(1, page)
+  return listPage(p <= 1 ? `${BASE}/` : `${BASE}/page/${p}`, p)
+}
+
+/** 关键词搜索 */
+export async function wygamerSearch(keyword: string, page: number): Promise<GameListResponse> {
+  const p = Math.max(1, page)
+  const q = encodeURIComponent(keyword.trim())
+  return listPage(p <= 1 ? `${BASE}/?s=${q}` : `${BASE}/page/${p}?s=${q}`, p)
+}
+
+/** 分类列表（categoryUrl 为分类首页地址） */
+export async function wygamerByCategory(categoryUrl: string, page: number): Promise<GameListResponse> {
+  const p = Math.max(1, page)
+  const base = categoryUrl.replace(/\/+$/, '')
+  if (!/^https?:\/\/(www\.)?wygamer\.com\//i.test(base)) {
+    return { ok: false, items: [], page: p, lastPage: 0, error: '分类地址无效' }
+  }
+  return listPage(p <= 1 ? `${base}/` : `${base}/page/${p}`, p)
+}
+
+/** 分类表：WP REST（带条数，按条数降序） */
+export async function wygamerCategories(): Promise<GameCategoriesResponse> {
+  try {
+    const res = await wygamerSession().fetch(
+      `${BASE}/wp-json/wp/v2/categories?per_page=40&orderby=count&order=desc`,
+      {
+        headers: { 'User-Agent': UA, Accept: 'application/json' },
+        signal: AbortSignal.timeout(15_000)
+      }
+    )
+    if (!res.ok) return { ok: false, items: [], error: `HTTP ${res.status}` }
+    const arr = (await res.json()) as unknown
+    if (!Array.isArray(arr)) return { ok: false, items: [], error: '分类接口返回异常' }
+    const items: GameCategory[] = []
+    for (const row of arr as Record<string, unknown>[]) {
+      const name = typeof row.name === 'string' ? row.name.trim() : ''
+      const slug = typeof row.slug === 'string' ? row.slug.trim() : ''
+      if (!name || !slug) continue
+      items.push({
+        name,
+        url: `${BASE}/category/${slug}/`,
+        count: typeof row.count === 'number' ? row.count : 0
+      })
+    }
+    return { ok: true, items }
+  } catch (err) {
+    return { ok: false, items: [], error: (err as Error).message }
+  }
+}
+
+/** 详情页 */
+export async function wygamerDetail(id: string): Promise<GameDetailResponse> {
+  const clean = id.trim().replace(/^\/+/, '')
+  if (!/^[A-Za-z0-9-_]+$/.test(clean)) return { ok: false, game: null, error: '条目编号无效' }
+  try {
+    const html = await fetchText(`${BASE}/${clean}`)
+    const doc = parse(html)
+    const title =
+      (doc.querySelector('h1.article-title')?.text ?? '').trim() ||
+      (doc.querySelector('meta[property="og:title"]')?.getAttribute('content') ?? '').trim()
+    if (!title) throw new Error('页面解析失败（可能已被删除）')
+
+    const cover =
+      realImgSrc(doc.querySelector('.single-cover img')) ||
+      (doc.querySelector('meta[property="og:image"]')?.getAttribute('content') ?? '').trim() ||
+      null
+
+    const categories = [...new Set(
+      doc
+        .querySelectorAll('ul.breadcrumb li a')
+        .map((a) => a.text.trim())
+        .filter((t) => t && t !== '首页' && t !== '正文')
+    )]
+
+    const attrs: GameAttr[] = []
+    for (const row of doc.querySelectorAll('.pay-attr div')) {
+      const key = (row.querySelector('.attr-key')?.text ?? '').trim().replace(/[：:]$/, '')
+      const value = (row.querySelector('.attr-value')?.text ?? '').trim()
+      if (key && value) attrs.push({ key, value })
+    }
+
+    const downloads: GameDownload[] = []
+    for (const a of doc.querySelectorAll('.pay-box a[href*="/pay-download/"]')) {
+      const url = absUrl(a.getAttribute('href') ?? '')
+      const label = a.text.trim() || '下载'
+      if (url && !downloads.some((d) => d.url === url)) downloads.push({ label, url })
+    }
+
+    const screenshots: string[] = []
+    for (const img of doc.querySelectorAll('.article-content .wp-block-image img')) {
+      const src = realImgSrc(img)
+      if (src && !screenshots.includes(src)) screenshots.push(src)
+    }
+
+    const blocks: GameBlock[] = []
+    for (const el of doc.querySelectorAll('.article-content p, .article-content h1, .article-content h2, .article-content h3')) {
+      const text = el.text.trim()
+      if (!text) continue
+      blocks.push({ isHeading: /^h[1-3]$/i.test(el.tagName), text })
+    }
+
+    let unzipPassword: string | null = null
+    for (const el of doc.querySelectorAll('[data-clipboard-text]')) {
+      if (!(el.getAttribute('data-clipboard-tag') ?? '').includes('密码')) continue
+      const text = (el.getAttribute('data-clipboard-text') ?? '').trim()
+      if (text) {
+        unzipPassword = text
+        break
+      }
+    }
+
+    const game: GameDetail = {
+      id: clean,
+      title,
+      cover,
+      categories,
+      attrs,
+      downloads,
+      screenshots,
+      blocks,
+      unzipPassword
+    }
+    return { ok: true, game }
+  } catch (err) {
+    return { ok: false, game: null, error: (err as Error).message }
+  }
+}
+
+/**
+ * 解析站内 pay-download 中转链接 → 网盘分享页地址（302 跳转）。
+ * 若站点改成 HTML 中转，则兜底解析 meta refresh / 脚本跳转。
+ */
+export async function wygamerResolveDownload(payUrl: string): Promise<GameResolveResponse> {
+  const ses = wygamerSession()
+  // Electron 的 net.fetch 不暴露重定向后的最终地址，这里用 webRequest 捕获 302 目标
+  let redirectTarget = ''
+  const onRedirect = (details: Electron.OnBeforeRedirectListenerDetails): void => {
+    if (!redirectTarget && details.url.includes('/pay-download/')) {
+      redirectTarget = details.redirectURL
+    }
+  }
+  ses.webRequest.onBeforeRedirect(onRedirect)
+  try {
+    const res = await ses.fetch(payUrl, {
+      headers: {
+        'User-Agent': UA,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+        Referer: `${BASE}/`
+      },
+      signal: AbortSignal.timeout(25_000)
+    })
+    if (redirectTarget && !/wygamer\.com/i.test(redirectTarget)) {
+      return { ok: true, url: redirectTarget }
+    }
+    const finalUrl = res.url
+    if (finalUrl && !/wygamer\.com/i.test(finalUrl)) return { ok: true, url: finalUrl }
+    const html = await res.text()
+    const meta = html.match(/<meta[^>]+http-equiv=["']?refresh["']?[^>]*content=["']([^"']+)["']/i)?.[1] ?? ''
+    const fromMeta = meta.match(/url=(.+)$/i)?.[1]?.trim()
+    const fromScript = html.match(/(?:location\.href|location\.replace\()\s*=?\s*["']([^"']+)["']/)?.[1]
+    const target = fromMeta || fromScript
+    if (target) return { ok: true, url: target }
+    return { ok: false, error: '未能解析出网盘链接，请用浏览器打开' }
+  } catch (err) {
+    return { ok: false, error: (err as Error).message }
+  } finally {
+    ses.webRequest.onBeforeRedirect(null)
+  }
 }

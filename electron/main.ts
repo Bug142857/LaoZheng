@@ -1,6 +1,10 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell } from 'electron'
-import { basename, join } from 'node:path'
-import { readFile } from 'node:fs/promises'
+import { basename, join, resolve, sep } from 'node:path'
+import { createWriteStream } from 'node:fs'
+import { mkdir, readFile, rename, stat, unlink } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { dataFilePath, exportToFile, importFromFile, loadData, saveData } from './store'
 import { fetchSubjectDetail, searchSubjects } from './douban'
 import { fetchVodDetail, searchVodSource, testVodSource } from './vod'
@@ -11,16 +15,18 @@ import {
   normalizeLiveSources,
   saveLiveSources
 } from './live'
-import { resolveMusic, searchMusic } from './music'
+import { resolveMusic, resolveLegacyMusic, searchMusic } from './music'
 import {
   addDownload,
+  addImageDownload,
   cancelTask,
   listDownloads,
+  openDownloadItem,
   openDownloadsDir,
   removeDownload,
   startMediaServer
 } from './downloads'
-import type { DownloadAddInput } from '../src/shared/downloads'
+import type { DownloadAddInput, ImageDownloadInput } from '../src/shared/downloads'
 import { xCategories, xDetail, xList } from './xsite'
 import { pList, pResolve } from './psite'
 import { melonDetail, melonList } from './melon'
@@ -46,7 +52,17 @@ import {
   komiicRecent,
   komiicSearch
 } from './komiic'
-import { openWygamerLogin, wygamerEnsureLogin } from './wygamer'
+import {
+  openWygamerLogin,
+  wygamerByCategory,
+  wygamerCategories,
+  wygamerDetail,
+  wygamerEnsureLogin,
+  wygamerHome,
+  wygamerResolveDownload,
+  wygamerSearch
+} from './wygamer'
+import { openZlibLogin, zlibDetail, zlibDownloadBook, zlibSearch, zlibStatus } from './zlib'
 import type { AccountActionResult, AccountSite } from '../src/shared/accounts'
 import {
   downloadSync,
@@ -57,7 +73,7 @@ import {
 } from './sync'
 import type { SyncConfigInput } from '../src/shared/sync'
 import { compareVersions } from '../src/shared/update'
-import type { UpdateCheckResult } from '../src/shared/update'
+import type { UpdateCheckResult, UpdateDownloadResult, UpdateProgress } from '../src/shared/update'
 import type { LiveSource } from '../src/shared/live'
 import type { AppData } from '../src/shared/types'
 import type { SearchCategory, SubjectKind } from '../src/shared/douban'
@@ -70,7 +86,7 @@ function displayVersion(): string {
   return app.getVersion().replace(/\.0$/, '')
 }
 
-function createWindow(): void {
+function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -101,6 +117,7 @@ function createWindow(): void {
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
+  return win
 }
 
 const IMAGE_REFERER = 'https://m.douban.com/'
@@ -225,6 +242,208 @@ function isVodSourceInput(value: unknown): value is VodSourceInput {
 
 const SEARCH_CATEGORIES = new Set<SearchCategory>(['video', 'book', 'game', 'person'])
 const SUBJECT_KINDS = new Set<SubjectKind>(['movie', 'tv', 'book', 'game'])
+
+/** 检查更新：公开仓库优先走 GitHub API（能拿到 exe 资产直链），失败再读公开清单 */
+async function checkUpdateInternal(): Promise<UpdateCheckResult> {
+  const current = displayVersion()
+  const api = await checkViaGithubApi(current)
+  if (api) return api
+  const manifest = await checkViaManifest(current)
+  if (manifest) return manifest
+  return { ok: false, current, error: '检查更新失败（网络不可用）' }
+}
+
+interface GithubAsset {
+  name?: string
+  size?: number
+  browser_download_url?: string
+}
+
+/** GitHub Releases API（仓库公开后匿名可用，能直接拿到安装包地址） */
+async function checkViaGithubApi(current: string): Promise<UpdateCheckResult | null> {
+  try {
+    const res = await fetch('https://api.github.com/repos/Bug142857/LaoZheng/releases/latest', {
+      headers: { 'User-Agent': 'laozheng-pc', Accept: 'application/vnd.github+json' },
+      signal: AbortSignal.timeout(15_000)
+    })
+    if (!res.ok) return null
+    const json = (await res.json()) as {
+      tag_name?: string
+      html_url?: string
+      body?: string
+      assets?: GithubAsset[]
+    }
+    const tag = (json.tag_name ?? '').trim()
+    if (!tag) return null
+    const latest = tag.replace(/^v/i, '')
+    const assets = Array.isArray(json.assets) ? json.assets : []
+    const exe = assets.find(
+      (a) =>
+        typeof a.browser_download_url === 'string' &&
+        /\.exe$/i.test(a.name ?? '') &&
+        !/\.blockmap$/i.test(a.name ?? '')
+    )
+    return {
+      ok: true,
+      current,
+      latest,
+      hasUpdate: compareVersions(latest, current) > 0,
+      url: json.html_url,
+      downloadUrl: exe?.browser_download_url,
+      notes: (json.body ?? '').slice(0, 2000)
+    }
+  } catch {
+    return null
+  }
+}
+
+/** 公开清单兜底（GitHub API 被墙 / 限流时） */
+async function checkViaManifest(current: string): Promise<UpdateCheckResult | null> {
+  try {
+    const res = await fetch(UPDATE_MANIFEST_URL, {
+      headers: { 'User-Agent': 'laozheng-pc', Accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000)
+    })
+    if (!res.ok) return null
+    const json = (await res.json()) as {
+      version?: string
+      url?: string
+      exe?: string
+      downloadUrl?: string
+      notes?: string
+    }
+    const latest = (json.version ?? '').trim().replace(/^v/i, '')
+    if (!latest) return null
+    const exe = (json.exe ?? json.downloadUrl ?? '').trim()
+    return {
+      ok: true,
+      current,
+      latest,
+      hasUpdate: compareVersions(latest, current) > 0,
+      url: typeof json.url === 'string' ? json.url : undefined,
+      downloadUrl: /^https:\/\//i.test(exe) ? exe : undefined,
+      notes: (json.notes ?? '').slice(0, 2000)
+    }
+  } catch {
+    return null
+  }
+}
+
+function updatesDir(): string {
+  return join(app.getPath('userData'), 'updates')
+}
+
+function broadcastUpdateProgress(progress: UpdateProgress): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('update:progress', progress)
+  }
+}
+
+/** GitHub 直连 + 两个实测可用的镜像前缀（与手机端一致） */
+function updateChannels(url: string): string[] {
+  const list = [url]
+  if (/^https:\/\/github\.com\//i.test(url)) {
+    list.push(`https://gh-proxy.com/${url}`, `https://ghproxy.net/${url}`)
+  }
+  return [...new Set(list)]
+}
+
+/** 下载安装包到 userData/updates，逐条线路回退；仅接受 https 直链 */
+async function downloadUpdateInstaller(url: string): Promise<UpdateDownloadResult> {
+  let target: string
+  let base: string
+  try {
+    const dir = updatesDir()
+    await mkdir(dir, { recursive: true })
+    const raw = decodeURIComponent(new URL(url).pathname.split('/').pop() ?? '')
+    base = (raw || `laozheng-update-${Date.now()}.exe`).replace(/[\\/:*?"<>|]/g, '_')
+    target = join(dir, base.toLowerCase().endsWith('.exe') ? base : `${base}.exe`)
+  } catch {
+    return { ok: false, error: '更新地址无效' }
+  }
+
+  let lastError = '下载更新失败'
+  for (const channel of updateChannels(url)) {
+    const tmp = `${target}.part`
+    try {
+      const res = await fetch(channel, {
+        headers: { 'User-Agent': 'laozheng-pc', Accept: '*/*' },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(30 * 60 * 1000)
+      })
+      if (!res.ok || !res.body) {
+        lastError = `下载失败 HTTP ${res.status}`
+        continue
+      }
+      const type = res.headers.get('content-type') ?? ''
+      if (type.includes('text/html')) {
+        lastError = '下载线路返回了网页而不是安装包'
+        continue
+      }
+      const total = Number(res.headers.get('content-length') ?? 0) || 0
+      let received = 0
+      let lastAt = 0
+      const meter = new Transform({
+        transform(chunk, _enc, cb) {
+          received += chunk.length
+          const now = Date.now()
+          if (now - lastAt > 200) {
+            lastAt = now
+            broadcastUpdateProgress({
+              received,
+              total,
+              percent: total > 0 ? received / total : 0
+            })
+          }
+          cb(null, chunk)
+        }
+      })
+      await pipeline(Readable.fromWeb(res.body as never), meter, createWriteStream(tmp))
+      await rename(tmp, target)
+      broadcastUpdateProgress({ received, total: total || received, percent: 1 })
+      return { ok: true, path: target }
+    } catch (err) {
+      await unlink(tmp).catch(() => undefined)
+      lastError = err instanceof Error ? err.message : '下载更新失败'
+    }
+  }
+  return { ok: false, error: lastError }
+}
+
+/**
+ * 安装更新：直接拉起 NSIS 安装向导（与手机端点「安装」一致），
+ * 应用先退出，安装器接管文件替换。
+ */
+async function installUpdateInstaller(path: string): Promise<void> {
+  const abs = resolve(path)
+  const dir = resolve(updatesDir())
+  if (!abs.startsWith(dir + sep)) throw new Error('安装包路径无效')
+  if (!abs.toLowerCase().endsWith('.exe')) throw new Error('安装包格式无效')
+  await stat(abs)
+  const child = spawn(abs, [], { detached: true, stdio: 'ignore' })
+  child.unref()
+  setTimeout(() => app.quit(), 900)
+}
+
+/** 启动后静默检查：有直链更新则后台下载，完成后询问是否安装 */
+async function autoUpdateCheck(win: BrowserWindow): Promise<void> {
+  const info = await checkUpdateInternal()
+  if (!info.ok || !info.hasUpdate || !info.downloadUrl) return
+  const downloaded = await downloadUpdateInstaller(info.downloadUrl)
+  if (!downloaded.ok || !downloaded.path) return
+  if (win.isDestroyed()) return
+  const answer = await dialog.showMessageBox(win, {
+    type: 'info',
+    title: '发现新版本',
+    message: `新版本 ${info.latest} 已下载完成`,
+    detail: '点击「立即安装」会关闭应用并打开安装向导，按提示完成即可。',
+    buttons: ['立即安装', '稍后'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true
+  })
+  if (answer.response === 0) await installUpdateInstaller(downloaded.path)
+}
 
 function registerIpc(): void {
   ipcMain.handle('data:load', () => loadData())
@@ -536,6 +755,128 @@ function registerIpc(): void {
     return komiicImages(comicId, chapterId)
   })
 
+  ipcMain.handle('downloads:openItem', (_e, id: string) => {
+    if (typeof id !== 'string') throw new Error('参数无效')
+    return openDownloadItem(id)
+  })
+
+  ipcMain.handle('downloads:addImages', (_e, input: ImageDownloadInput) => {
+    if (!input || typeof input !== 'object' || !Array.isArray(input.urls)) {
+      return { ok: false, error: '下载参数无效' }
+    }
+    if (typeof input.title !== 'string' || input.title.length > 120) {
+      return { ok: false, error: '下载参数无效' }
+    }
+    return addImageDownload({
+      title: input.title,
+      urls: input.urls.slice(0, 300),
+      referer: typeof input.referer === 'string' ? input.referer.slice(0, 300) : '',
+      coverUrl: typeof input.coverUrl === 'string' ? input.coverUrl.slice(0, 500) : '',
+      sourceName: typeof input.sourceName === 'string' ? input.sourceName.slice(0, 40) : ''
+    })
+  })
+
+  ipcMain.handle('music:resolveLegacy', (_e, name: string, artists: string) => {
+    if (typeof name !== 'string' || name.length > 120) {
+      return { ok: false, error: '歌曲参数无效' }
+    }
+    return resolveLegacyMusic(name, typeof artists === 'string' ? artists.slice(0, 120) : '')
+  })
+
+  // ---------- 无忧游戏库 ----------
+  ipcMain.handle('wygamer:home', (_e, page: number) => {
+    if (!Number.isInteger(page) || page < 1 || page > 1000) {
+      return { ok: false, items: [], page: 1, lastPage: 0, error: '参数无效' }
+    }
+    return wygamerHome(page)
+  })
+
+  ipcMain.handle('wygamer:search', (_e, keyword: string, page: number) => {
+    if (
+      typeof keyword !== 'string' ||
+      !keyword.trim() ||
+      keyword.length > 80 ||
+      !Number.isInteger(page) ||
+      page < 1 ||
+      page > 1000
+    ) {
+      return { ok: false, items: [], page: 1, lastPage: 0, error: '参数无效' }
+    }
+    return wygamerSearch(keyword.trim(), page)
+  })
+
+  ipcMain.handle('wygamer:byCategory', (_e, url: string, page: number) => {
+    if (
+      typeof url !== 'string' ||
+      !/^https?:\/\/(www\.)?wygamer\.com\//i.test(url) ||
+      !Number.isInteger(page) ||
+      page < 1 ||
+      page > 1000
+    ) {
+      return { ok: false, items: [], page: 1, lastPage: 0, error: '参数无效' }
+    }
+    return wygamerByCategory(url, page)
+  })
+
+  ipcMain.handle('wygamer:categories', () => wygamerCategories())
+
+  ipcMain.handle('wygamer:detail', (_e, id: string) => {
+    if (typeof id !== 'string' || !id || id.length > 120) {
+      return { ok: false, game: null, error: '参数无效' }
+    }
+    return wygamerDetail(id)
+  })
+
+  ipcMain.handle('wygamer:resolveDownload', (_e, payUrl: string) => {
+    if (typeof payUrl !== 'string' || !/^https:\/\/(www\.)?wygamer\.com\//i.test(payUrl)) {
+      return { ok: false, error: '参数无效' }
+    }
+    return wygamerResolveDownload(payUrl)
+  })
+
+  // ---------- Z-Library ----------
+  ipcMain.handle('zlib:status', () => zlibStatus())
+
+  ipcMain.handle('zlib:login', async () => {
+    const res = await openZlibLogin()
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send('accounts:changed')
+    return res
+  })
+
+  ipcMain.handle('zlib:search', (_e, keyword: string, page: number) => {
+    if (
+      typeof keyword !== 'string' ||
+      !keyword.trim() ||
+      keyword.length > 80 ||
+      !Number.isInteger(page) ||
+      page < 1 ||
+      page > 1000
+    ) {
+      return { ok: false, books: [], page: 1, totalPages: 0, error: '参数无效' }
+    }
+    return zlibSearch(keyword.trim(), page)
+  })
+
+  ipcMain.handle('zlib:detail', (_e, id: string, hash: string) => {
+    if (typeof id !== 'string' || typeof hash !== 'string' || id.length > 40 || hash.length > 80) {
+      return { ok: false, book: null, error: '参数无效' }
+    }
+    return zlibDetail(id, hash)
+  })
+
+  ipcMain.handle('zlib:download', (_e, id: string, hash: string, title: string) => {
+    if (
+      typeof id !== 'string' ||
+      typeof hash !== 'string' ||
+      typeof title !== 'string' ||
+      !/^\d+$/.test(id) ||
+      title.length > 200
+    ) {
+      return { ok: false, error: '参数无效' }
+    }
+    return zlibDownloadBook(id, hash, title)
+  })
+
   ipcMain.handle('sync:getConfig', () => getSyncConfig())
 
   ipcMain.handle('sync:saveConfig', (_e, input: SyncConfigInput) => {
@@ -547,66 +888,18 @@ function registerIpc(): void {
     })
   })
 
-  ipcMain.handle('app:checkUpdate', async (): Promise<UpdateCheckResult> => {
-    const current = displayVersion()
+  ipcMain.handle('app:checkUpdate', () => checkUpdateInternal())
 
-    // 优先读公开清单（私有仓库也能查）；清单不可用时回退 GitHub Releases
-    try {
-      const res = await fetch(UPDATE_MANIFEST_URL, {
-        headers: { 'User-Agent': 'laozheng-pc', Accept: 'application/json' },
-        signal: AbortSignal.timeout(15_000)
-      })
-      if (res.ok) {
-        const json = (await res.json()) as { version?: string; url?: string; notes?: string }
-        const latest = (json.version ?? '').trim().replace(/^v/i, '')
-        if (latest) {
-          return {
-            ok: true,
-            current,
-            latest,
-            hasUpdate: compareVersions(latest, current) > 0,
-            url: typeof json.url === 'string' ? json.url : undefined,
-            notes: (json.notes ?? '').slice(0, 2000)
-          }
-        }
-      }
-    } catch {
-      // 清单读取失败时继续尝试 GitHub API
+  ipcMain.handle('app:downloadUpdate', async (_e, url: string): Promise<UpdateDownloadResult> => {
+    if (typeof url !== 'string' || !/^https:\/\//i.test(url)) {
+      return { ok: false, error: '更新地址无效' }
     }
+    return downloadUpdateInstaller(url)
+  })
 
-    try {
-      const res = await fetch('https://api.github.com/repos/Bug142857/LaoZheng/releases/latest', {
-        headers: { 'User-Agent': 'laozheng-pc', Accept: 'application/vnd.github+json' },
-        signal: AbortSignal.timeout(15_000)
-      })
-      if (res.status === 404) return { ok: true, current, hasUpdate: false }
-      if (!res.ok) return { ok: false, current, error: `GitHub 返回 HTTP ${res.status}` }
-      const json = (await res.json()) as {
-        tag_name?: string
-        html_url?: string
-        body?: string
-      }
-      const tag = (json.tag_name ?? '').trim()
-      if (!tag) return { ok: false, current, error: 'Release 缺少版本号' }
-      const latest = tag.replace(/^v/i, '')
-      return {
-        ok: true,
-        current,
-        latest,
-        hasUpdate: compareVersions(latest, current) > 0,
-        url: json.html_url,
-        notes: (json.body ?? '').slice(0, 2000)
-      }
-    } catch (err) {
-      return {
-        ok: false,
-        current,
-        error:
-          err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
-            ? '检查更新超时'
-            : '检查更新失败（网络不可用）'
-      }
-    }
+  ipcMain.handle('app:installUpdate', async (_e, path: string) => {
+    if (typeof path !== 'string') throw new Error('参数无效')
+    await installUpdateInstaller(path)
   })
 
   ipcMain.handle('app:openExternal', async (_e, url: string) => {
@@ -704,8 +997,13 @@ if (!gotLock) {
     setupRequestRules()
     registerIpc()
     await startMediaServer()
-    createWindow()
+    const win = createWindow()
     console.log('[app] data file:', dataFilePath())
+
+    // 静默自动更新：清单里给了安装包直链时后台下载，完成后询问是否安装
+    win.webContents.once('did-finish-load', () => {
+      void autoUpdateCheck(win)
+    })
 
     // 内置账号静默登录：哔咔 / Komiic 直接换 token，无忧恢复持久化会话（失效时自动过滑块）
     void bikaEnsureLogin()

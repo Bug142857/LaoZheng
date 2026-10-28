@@ -44,6 +44,13 @@ const api: LaozhengApi = {
   uploadSync: (data) => ipcRenderer.invoke('sync:upload', data),
   downloadSync: () => ipcRenderer.invoke('sync:download'),
   checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
+  downloadUpdate: (url) => ipcRenderer.invoke('app:downloadUpdate', url),
+  installUpdate: (path) => ipcRenderer.invoke('app:installUpdate', path) as Promise<void>,
+  onUpdateProgress: (callback) => {
+    const handler = (_e: unknown, progress: Parameters<typeof callback>[0]): void => callback(progress)
+    ipcRenderer.on('update:progress', handler)
+    return () => ipcRenderer.removeListener('update:progress', handler)
+  },
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   listAccounts: () => ipcRenderer.invoke('accounts:list'),
   loginAccount: (site) => ipcRenderer.invoke('accounts:login', site),
@@ -68,7 +75,22 @@ const api: LaozhengApi = {
   komiicDetail: (id) => ipcRenderer.invoke('komiic:detail', id),
   komiicChapters: (comicId) => ipcRenderer.invoke('komiic:chapters', comicId),
   komiicImages: (comicId, chapterId) =>
-    ipcRenderer.invoke('komiic:images', comicId, chapterId)
+    ipcRenderer.invoke('komiic:images', comicId, chapterId),
+  wygamerHome: (page) => ipcRenderer.invoke('wygamer:home', page),
+  wygamerSearch: (keyword, page) => ipcRenderer.invoke('wygamer:search', keyword, page),
+  wygamerByCategory: (url, page) => ipcRenderer.invoke('wygamer:byCategory', url, page),
+  wygamerCategories: () => ipcRenderer.invoke('wygamer:categories'),
+  wygamerDetail: (id) => ipcRenderer.invoke('wygamer:detail', id),
+  wygamerResolveDownload: (payUrl) => ipcRenderer.invoke('wygamer:resolveDownload', payUrl),
+  zlibStatus: () => ipcRenderer.invoke('zlib:status'),
+  zlibLogin: () => ipcRenderer.invoke('zlib:login'),
+  zlibSearch: (keyword, page) => ipcRenderer.invoke('zlib:search', keyword, page),
+  zlibDetail: (id, hash) => ipcRenderer.invoke('zlib:detail', id, hash),
+  zlibDownload: (id, hash, title) => ipcRenderer.invoke('zlib:download', id, hash, title),
+  addImageDownload: (input) => ipcRenderer.invoke('downloads:addImages', input),
+  openDownloadItem: (id) => ipcRenderer.invoke('downloads:openItem', id) as Promise<void>,
+  resolveLegacyMusic: (name, artists) =>
+    ipcRenderer.invoke('music:resolveLegacy', name, artists)
 }
 
 contextBridge.exposeInMainWorld('laozheng', api)

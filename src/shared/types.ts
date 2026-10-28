@@ -20,13 +20,14 @@ import type { MusicResolveResponse, MusicSearchResponse } from './music'
 import type {
   DownloadAddInput,
   DownloadAddResult,
-  DownloadListResponse
+  DownloadListResponse,
+  ImageDownloadInput
 } from './downloads'
 import type { XCategoriesResponse, XDetailResponse, XListResponse } from './xsite'
 import type { PListResponse, PMediaResponse } from './psite'
 import type { MelonDetailResponse, MelonListResponse } from './melon'
 import type { SyncActionResult, SyncConfigInput, SyncConfigView } from './sync'
-import type { UpdateCheckResult } from './update'
+import type { UpdateCheckResult, UpdateDownloadResult, UpdateProgress } from './update'
 import type { AccountActionResult, AccountsView, AccountSite } from './accounts'
 import type {
   BikaCategoriesResponse,
@@ -42,6 +43,19 @@ import type {
   KomiicImagesResponse,
   KomiicListResponse
 } from './komiic'
+import type {
+  GameCategoriesResponse,
+  GameDetailResponse,
+  GameListResponse,
+  GameResolveResponse
+} from './wygamer'
+import type {
+  ZlibDetailResponse,
+  ZlibDownloadResponse,
+  ZlibLoginResult,
+  ZlibSearchResponse,
+  ZlibStatusResponse
+} from './zlib'
 
 export interface CollectionItem {
   id: number
@@ -173,6 +187,9 @@ export interface LaozhengApi {
   uploadSync: (data: AppData) => Promise<SyncActionResult>
   downloadSync: () => Promise<SyncActionResult>
   checkUpdate: () => Promise<UpdateCheckResult>
+  downloadUpdate: (url: string) => Promise<UpdateDownloadResult>
+  installUpdate: (path: string) => Promise<void>
+  onUpdateProgress: (callback: (progress: UpdateProgress) => void) => () => void
   openExternal: (url: string) => Promise<void>
   listAccounts: () => Promise<AccountsView>
   loginAccount: (site: AccountSite) => Promise<AccountActionResult>
@@ -192,6 +209,20 @@ export interface LaozhengApi {
   komiicDetail: (id: string) => Promise<KomiicDetailResponse>
   komiicChapters: (comicId: string) => Promise<KomiicChaptersResponse>
   komiicImages: (comicId: string, chapterId: string) => Promise<KomiicImagesResponse>
+  wygamerHome: (page: number) => Promise<GameListResponse>
+  wygamerSearch: (keyword: string, page: number) => Promise<GameListResponse>
+  wygamerByCategory: (categoryUrl: string, page: number) => Promise<GameListResponse>
+  wygamerCategories: () => Promise<GameCategoriesResponse>
+  wygamerDetail: (id: string) => Promise<GameDetailResponse>
+  wygamerResolveDownload: (payUrl: string) => Promise<GameResolveResponse>
+  zlibStatus: () => Promise<ZlibStatusResponse>
+  zlibLogin: () => Promise<ZlibLoginResult>
+  zlibSearch: (keyword: string, page: number) => Promise<ZlibSearchResponse>
+  zlibDetail: (id: string, hash: string) => Promise<ZlibDetailResponse>
+  zlibDownload: (id: string, hash: string, title: string) => Promise<ZlibDownloadResponse>
+  addImageDownload: (input: ImageDownloadInput) => Promise<DownloadAddResult>
+  openDownloadItem: (id: string) => Promise<void>
+  resolveLegacyMusic: (name: string, artists: string) => Promise<MusicResolveResponse>
 }
 
 export const EMPTY_DATA: AppData = {

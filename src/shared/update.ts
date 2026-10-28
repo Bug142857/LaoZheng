@@ -5,7 +5,21 @@ export interface UpdateCheckResult {
   latest?: string
   hasUpdate?: boolean
   url?: string
+  /** 安装包直链（清单里给出时支持应用内静默下载安装） */
+  downloadUrl?: string
   notes?: string
+  error?: string
+}
+
+export interface UpdateProgress {
+  received: number
+  total: number
+  percent: number
+}
+
+export interface UpdateDownloadResult {
+  ok: boolean
+  path?: string
   error?: string
 }
 

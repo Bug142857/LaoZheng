@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Cloud, Download, FolderOpen, Upload } from 'lucide-react'
+import { Cloud, Download, FolderOpen, LogIn, Upload } from 'lucide-react'
 import type { AppData } from '../shared/types'
 import type { AccountSite, AccountsView } from '../shared/accounts'
 import type { SyncConfigView } from '../shared/sync'
+import type { ZlibStatusResponse } from '../shared/zlib'
+import type { UpdateCheckResult, UpdateProgress } from '../shared/update'
 import { useData } from '../state/DataContext'
 import { ConfirmDialog } from '../components/ui'
 
@@ -27,6 +29,12 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
   const [syncBusy, setSyncBusy] = useState<string | null>(null)
   const [pendingSync, setPendingSync] = useState<AppData | null>(null)
   const [checking, setChecking] = useState(false)
+  const [zlib, setZlib] = useState<ZlibStatusResponse | null>(null)
+  const [zlibBusy, setZlibBusy] = useState(false)
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null)
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
+  const [updateBusy, setUpdateBusy] = useState<'download' | 'install' | null>(null)
+  const [updatePath, setUpdatePath] = useState<string | null>(null)
 
   useEffect(() => {
     window.laozheng.appVersion().then(setVersion)
@@ -36,6 +44,11 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
       setSyncUrl(cfg.url)
       setSyncUser(cfg.username)
     })
+    void window.laozheng.zlibStatus().then(setZlib)
+  }, [])
+
+  useEffect(() => {
+    return window.laozheng.onUpdateProgress((progress) => setUpdateProgress(progress))
   }, [])
 
   useEffect(() => {
@@ -132,6 +145,14 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
     if (res.data) setPendingSync(res.data as AppData)
   }
 
+  const loginZlib = async () => {
+    setZlibBusy(true)
+    const res = await window.laozheng.zlibLogin()
+    setZlibBusy(false)
+    onNotice(res.message)
+    setZlib(await window.laozheng.zlibStatus())
+  }
+
   const checkUpdate = async () => {
     setChecking(true)
     const res = await window.laozheng.checkUpdate()
@@ -140,8 +161,15 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
       onNotice(res.error ?? '检查更新失败')
       return
     }
+    setUpdateInfo(res)
+    setUpdatePath(null)
+    setUpdateProgress(null)
     if (!res.hasUpdate) {
       onNotice(`已是最新版本 ${res.current}`)
+      return
+    }
+    if (res.downloadUrl) {
+      onNotice(`发现新版本 ${res.latest}，可点「下载更新」后台下载，完成后打开安装向导`)
       return
     }
     onNotice(`发现新版本 ${res.latest}，正在打开下载页…`)
@@ -152,6 +180,26 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
         onNotice(`新版本 ${res.latest} 已发布，但打开下载页失败`)
       }
     }
+  }
+
+  const downloadUpdate = async () => {
+    if (!updateInfo?.downloadUrl) return
+    setUpdateBusy('download')
+    setUpdateProgress(null)
+    const res = await window.laozheng.downloadUpdate(updateInfo.downloadUrl)
+    setUpdateBusy(null)
+    if (!res.ok || !res.path) {
+      onNotice(`下载失败：${res.error ?? '未知错误'}`)
+      return
+    }
+    setUpdatePath(res.path)
+    onNotice('安装包已下载完成，点「立即安装」会打开安装向导（应用会先退出）')
+  }
+
+  const installUpdate = async () => {
+    if (!updatePath) return
+    setUpdateBusy('install')
+    await window.laozheng.installUpdate(updatePath)
   }
 
   const confirmSyncImport = () => {
@@ -260,6 +308,23 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
         </section>
 
         <section className="settings-card">
+          <h3>Z-Library（图书）</h3>
+          <p className="settings-hint">
+            站点有 DiamWall 反爬，登录窗口完成一次验证后，搜索与下载会复用同一浏览器会话。
+            账号密码不保存在应用数据里。
+          </p>
+          <div className="settings-row">
+            <span className="settings-label">登录状态</span>
+            <span className="settings-value">
+              {zlib ? (zlib.loggedIn ? `已登录（${zlib.host}）` : `未登录${zlib.host ? ` · 线路 ${zlib.host}` : ''}`) : '读取中…'}
+            </span>
+            <button className="btn" disabled={zlibBusy} onClick={() => void loginZlib()}>
+              <LogIn size={15} /> {zlibBusy ? '请在窗口中登录…' : '登录 / 重新验证'}
+            </button>
+          </div>
+        </section>
+
+        <section className="settings-card">
           <h3>云同步（WebDAV）</h3>
           <p className="settings-hint">
             与手机端共用同一份 data.json，可手动上传 / 恢复。坚果云地址形如
@@ -306,13 +371,31 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
 
         <section className="settings-card">
           <h3>关于</h3>
-          <div className="settings-row">
+          <div className="settings-row" style={{ flexWrap: 'wrap', gap: 8 }}>
             <span className="settings-label">PC 端版本</span>
             <span className="settings-value">{version}</span>
             <button className="btn" disabled={checking} onClick={() => void checkUpdate()}>
               {checking ? '检查中…' : '检查更新'}
             </button>
+            {updateInfo?.hasUpdate && updateInfo.downloadUrl && !updatePath ? (
+              <button className="btn" disabled={updateBusy === 'download'} onClick={() => void downloadUpdate()}>
+                <Download size={14} /> {updateBusy === 'download' ? '下载中…' : `下载 ${updateInfo.latest}`}
+              </button>
+            ) : null}
+            {updatePath ? (
+              <button className="btn primary" disabled={updateBusy === 'install'} onClick={() => void installUpdate()}>
+                {updateBusy === 'install' ? '正在启动安装…' : '立即安装'}
+              </button>
+            ) : null}
           </div>
+          {updateBusy === 'download' && updateProgress ? (
+            <div className="page-desc" style={{ marginTop: 8 }}>
+              下载进度 {updateProgress.total > 0 ? `${Math.round(updateProgress.percent * 100)}%` : `${Math.round(updateProgress.received / 1024 / 1024)} MB`}
+            </div>
+          ) : null}
+          {updateInfo?.hasUpdate && updateInfo.notes ? (
+            <p className="settings-hint" style={{ whiteSpace: 'pre-wrap' }}>{updateInfo.notes}</p>
+          ) : null}
           <div className="settings-row">
             <span className="settings-label">技术栈</span>
             <span className="settings-value">Electron + React + TypeScript</span>

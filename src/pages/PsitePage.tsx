@@ -25,7 +25,13 @@ const cache: PCache = {
 
 const mediaCache = new Map<string, string>()
 
-export function PsitePage({ onNotice }: { onNotice: (text: string) => void }) {
+export function PsitePage({
+  onNotice,
+  focus
+}: {
+  onNotice: (text: string) => void
+  focus?: { id: string; title: string; subtitle: string; cover: string | null; durationSec: number }
+}) {
   const { data, update } = useData()
   const [sort, setSort] = useState(cache.sort)
   const [catId, setCatId] = useState(cache.catId)
@@ -69,6 +75,18 @@ export function PsitePage({ onNotice }: { onNotice: (text: string) => void }) {
     if (!cache.items.length) void load(cache.sort, cache.catId, cache.query, 1)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!focus?.id) return
+    setDetail({
+      vkey: focus.id,
+      title: focus.title,
+      thumbnail: focus.cover,
+      durationSec: focus.durationSec,
+      views: '',
+      uploader: focus.subtitle
+    })
+  }, [focus?.id])
 
   const favOf = (video: PVideo) =>
     data.innerFavs.find((f) => f.module === 'psite' && f.id === video.vkey)

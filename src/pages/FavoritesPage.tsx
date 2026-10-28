@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
-import { Search } from 'lucide-react'
+import { ChevronRight, Search } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import { favModuleLabel, filterFavs, formatTime } from '../utils/data'
 import { EmptyState } from '../components/ui'
+import type { InnerFav } from '../shared/types'
 
-export function FavoritesPage() {
+export function FavoritesPage({ onOpen }: { onOpen: (fav: InnerFav) => void }) {
   const { data } = useData()
   const [query, setQuery] = useState('')
   const [moduleKey, setModuleKey] = useState('all')
@@ -66,7 +67,17 @@ export function FavoritesPage() {
           ) : (
             <div className="rows">
               {favs.map((f) => (
-                <div key={`${f.module}-${f.id}`} className="row">
+                <div
+                  key={`${f.module}-${f.id}`}
+                  className="row clickable"
+                  role="button"
+                  tabIndex={0}
+                  title="打开对应模块"
+                  onClick={() => onOpen(f)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') onOpen(f)
+                  }}
+                >
                   <div className="row-cover">
                     {f.cover ? (
                       <img src={f.cover} alt="" loading="lazy" />
@@ -81,6 +92,7 @@ export function FavoritesPage() {
                     </div>
                   </div>
                   <span className="badge brand">{favModuleLabel(f.module)}</span>
+                  <ChevronRight size={15} className="row-arrow" />
                 </div>
               ))}
             </div>

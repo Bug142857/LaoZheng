@@ -21,7 +21,13 @@ function newSourceId(url: string): string {
   return `live_${Math.abs(h)}`
 }
 
-export function LivePage({ onNotice }: { onNotice: (text: string) => void }) {
+export function LivePage({
+  onNotice,
+  focusUrl
+}: {
+  onNotice: (text: string) => void
+  focusUrl?: string
+}) {
   const { data, update } = useData()
   const [sources, setSources] = useState<LiveSource[] | null>(null)
   const [selectedId, setSelectedId] = useState('')
@@ -58,6 +64,11 @@ export function LivePage({ onNotice }: { onNotice: (text: string) => void }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!focusUrl) return
+    setPlaying({ channel: { group: '收藏', name: '收藏频道', url: focusUrl }, sourceName: '收藏' })
+  }, [focusUrl])
 
   const persist = (next: LiveSource[]) => {
     setSources(next)

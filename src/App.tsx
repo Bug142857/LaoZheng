@@ -27,7 +27,8 @@ import { XSitePage } from './pages/XSitePage'
 import { PsitePage } from './pages/PsitePage'
 import { BikaPage } from './pages/BikaPage'
 import { ComicPage } from './pages/ComicPage'
-import { CollectionPage } from './pages/CollectionPage'
+import { GamePage } from './pages/GamePage'
+import { BookPage } from './pages/BookPage'
 import { MelonPage } from './pages/MelonPage'
 import { ListsPage } from './pages/ListsPage'
 import { ListDetailPage } from './pages/ListDetailPage'
@@ -36,26 +37,36 @@ import { SettingsPage } from './pages/SettingsPage'
 import { EmptyState } from './components/ui'
 
 import type { HomeModule } from './modules'
+import type { InnerFav } from './shared/types'
 
 type Route =
   | { name: 'home' }
   | { name: 'search' }
-  | { name: 'watch' }
-  | { name: 'live' }
-  | { name: 'music' }
-  | { name: 'xsite' }
-  | { name: 'psite' }
-  | { name: 'bika' }
-  | { name: 'comic' }
-  | { name: 'melon' }
-  | { name: 'h1'; index: number }
-  | { name: 'book' }
-  | { name: 'game' }
+  | { name: 'watch'; focusPlay?: { url: string; title: string } }
+  | { name: 'live'; focusUrl?: string }
+  | { name: 'music'; focus?: FavFocus }
+  | { name: 'xsite'; focusId?: string }
+  | { name: 'psite'; focus?: FavFocus }
+  | { name: 'bika'; focusId?: string }
+  | { name: 'comic'; focusId?: string }
+  | { name: 'melon'; focusId?: string }
+  | { name: 'h1'; index: number; focusPlay?: { url: string; title: string } }
+  | { name: 'book'; focusId?: string }
+  | { name: 'game'; focusId?: string }
   | { name: 'lists' }
   | { name: 'list'; id: number }
   | { name: 'favorites' }
   | { name: 'downloads' }
   | { name: 'settings' }
+
+interface FavFocus {
+  id: string
+  title: string
+  subtitle: string
+  cover: string | null
+  durationSec: number
+  payload: string | null
+}
 
 interface NavItem {
   key:
@@ -209,6 +220,60 @@ function Shell() {
     setNotice(`「${m.title}」模块将在后续版本接入，当前先完成框架与数据迁移。`)
   }
 
+  const openFav = (fav: InnerFav) => {
+    const focus: FavFocus = {
+      id: fav.id,
+      title: fav.title,
+      subtitle: fav.subtitle,
+      cover: fav.cover,
+      durationSec: fav.durationSec,
+      payload: fav.payload
+    }
+    switch (fav.module) {
+      case 'h2':
+        setRoute({ name: 'bika', focusId: fav.id })
+        return
+      case 'comic':
+        setRoute({ name: 'comic', focusId: fav.id })
+        return
+      case 'game':
+        setRoute({ name: 'game', focusId: fav.id })
+        return
+      case 'book':
+        setRoute({ name: 'book', focusId: fav.id })
+        return
+      case 'xsite':
+        setRoute({ name: 'xsite', focusId: fav.id })
+        return
+      case 'psite':
+        setRoute({ name: 'psite', focus })
+        return
+      case 'melon':
+        setRoute({ name: 'melon', focusId: fav.id })
+        return
+      case 'music':
+        setRoute({ name: 'music', focus })
+        return
+      case 'tv':
+        setRoute({ name: 'live', focusUrl: fav.videoUrl ?? fav.id })
+        return
+      case 'watch':
+      case 'h1':
+        if (fav.videoUrl) {
+          setRoute(
+            fav.module === 'h1'
+              ? { name: 'h1', index: 0, focusPlay: { url: fav.videoUrl, title: fav.title } }
+              : { name: 'watch', focusPlay: { url: fav.videoUrl, title: fav.title } }
+          )
+        } else {
+          setNotice('这条收藏没有保存分集直链，请到对应模块按片名重新搜索。')
+        }
+        return
+      default:
+        setNotice(`「${fav.title}」所属模块暂不支持从收藏直接打开。`)
+    }
+  }
+
   return (
     <div className="app">
       <aside className="sidebar">
@@ -261,34 +326,31 @@ function Shell() {
       <main className="content" ref={contentRef}>
         {route.name === 'home' && <HomePage onOpen={openModule} />}
         {route.name === 'search' && <SearchPage onNotice={setNotice} />}
-        {route.name === 'watch' && <WatchPage onNotice={setNotice} />}
-        {route.name === 'live' && <LivePage onNotice={setNotice} />}
-        {route.name === 'music' && <MusicPage onNotice={setNotice} />}
-        {route.name === 'xsite' && <XSitePage onNotice={setNotice} />}
-        {route.name === 'psite' && <PsitePage onNotice={setNotice} />}
-        {route.name === 'bika' && <BikaPage onNotice={setNotice} />}
-        {route.name === 'comic' && <ComicPage onNotice={setNotice} />}
-        {route.name === 'melon' && <MelonPage onNotice={setNotice} />}
+        {route.name === 'watch' && <WatchPage onNotice={setNotice} focusPlay={route.focusPlay} />}
+        {route.name === 'live' && <LivePage onNotice={setNotice} focusUrl={route.focusUrl} />}
+        {route.name === 'music' && <MusicPage onNotice={setNotice} focus={route.focus} />}
+        {route.name === 'xsite' && <XSitePage onNotice={setNotice} focusId={route.focusId} />}
+        {route.name === 'psite' && <PsitePage onNotice={setNotice} focus={route.focus} />}
+        {route.name === 'bika' && <BikaPage onNotice={setNotice} focusId={route.focusId} />}
+        {route.name === 'comic' && <ComicPage onNotice={setNotice} focusId={route.focusId} />}
+        {route.name === 'melon' && <MelonPage onNotice={setNotice} focusId={route.focusId} />}
         {route.name === 'h1' && (
           <WatchPage
             variant={{ label: `番${route.index + 1}`, proxyIndex: route.index }}
+            focusPlay={route.focusPlay}
             onNotice={setNotice}
           />
         )}
         {route.name === 'book' && (
-          <CollectionPage
-            category="图书"
-            title="图书"
-            desc="已收藏的图书"
+          <BookPage
+            focusId={route.focusId}
             onNotice={setNotice}
             onGoSearch={() => setRoute({ name: 'search' })}
           />
         )}
         {route.name === 'game' && (
-          <CollectionPage
-            category="游戏"
-            title="游戏"
-            desc="已收藏的游戏"
+          <GamePage
+            focusId={route.focusId}
             onNotice={setNotice}
             onGoSearch={() => setRoute({ name: 'search' })}
           />
@@ -307,7 +369,7 @@ function Shell() {
             onNotice={setNotice}
           />
         )}
-        {route.name === 'favorites' && <FavoritesPage />}
+        {route.name === 'favorites' && <FavoritesPage onOpen={openFav} />}
         {route.name === 'downloads' && <DownloadsPage onNotice={setNotice} />}
         {route.name === 'settings' && <SettingsPage onNotice={setNotice} />}
       </main>

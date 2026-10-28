@@ -10,7 +10,7 @@
 ### 1. 仓库边界
 
 - 手机端仓库：`Bug142857/ShangYin`（Android / Kotlin / Compose），**已冻结，不再改动**。需要查功能口径时只读参考，不提交任何改动。
-- PC 端仓库：`Bug142857/LaoZheng`（本仓库），所有 PC 代码、文档、发布都在这里。
+- PC 端仓库：`Bug142857/LaoZheng`（本仓库），所有 PC 代码、文档、发布都在这里。**2026-10-28 用户已把仓库改为公开**，用于应用内读取 Release 更新；即便如此，`.secrets/`（账号种子）与任何证书/密码仍严禁入库。
 - 两端只通过备份 JSON（format version 1）互通，字段以手机端 `ExportJson.kt` 为准。
 
 ### 2. 技术栈决策（2026-10-28 用户确认）
@@ -47,14 +47,16 @@ electron/sync.ts      WebDAV 云同步（safeStorage 加密密码）
 electron/accounts.ts  内置账号仓库：safeStorage 加密账密/token，种子导入，状态广播
 electron/bika.ts      哔咔：HmacSHA256 签名、分类/列表/搜索/详情/章节/图片、401 自动重登
 electron/komiic.ts    Komiic：GraphQL、token 自动续期、章节图 Cookie/Referer 注入
-electron/wygamer.ts   无忧：隐藏窗口自动完成滑块验证 + persist 分区会话
+electron/wygamer.ts   无忧：自动登录 + 游戏库（列表/分类/搜索/详情/网盘链接/解压密码）
+electron/zlib.ts      Z-Library：隐藏窗口过 DiamWall + 页面内 fetch（搜索/详情/下载）
 src/shared/types.ts   两端共用备份类型 + normalizeData + EMPTY_DATA
-src/shared/{douban,vod,vodDefaults,live,music,downloads,xsite,psite,melon,sync,update,accounts,bika,komiic}.ts
+src/shared/{douban,vod,vodDefaults,live,music,downloads,xsite,psite,melon,sync,update,accounts,bika,komiic,wygamer,zlib}.ts
 src/state/            DataProvider：启动加载、防抖 350ms 保存、replaceData 立即落盘
 src/modules.tsx       首页模块注册表（全部 ready，含本子 / 漫画）
 src/components/       VideoPlayer（hls.js）/ 通用弹层
 src/pages/            首页 / 搜索 / 观影 / 电视 / 音乐 / X站 / P站 / 本子 / 漫画 / 吃瓜 /
-                      图书 / 游戏 / 清单 / 清单详情 / 收藏 / 下载 / 设置
+                      GamePage（无忧游戏库 + 豆瓣收藏）/ BookPage（Z-Library + 豆瓣收藏）/
+                      清单 / 清单详情 / 收藏 / 下载 / 设置
 src/utils/data.ts     根清单、递归子清单、递归计数、条目查询、清单配色、收藏筛选、条目所在清单名
 docs/AI_PROJECT_MEMORY.md  本文件
 ```
@@ -76,7 +78,7 @@ docs/AI_PROJECT_MEMORY.md  本文件
 - `config`：手机端配置快照（字符串 Map，导入时原样保留）。
 - 导入判据与手机端一致：必须同时存在 `items / lists / listItems`，否则拒绝（防止误选普通 JSON）。
 
-### 6. 当前进度（PC 端 v0.4.0，2026-10-28）
+### 6. 当前进度（PC 端 v0.5 开发中，2026-10-28）
 
 - 可运行桌面框架：左侧导航（首页 / 搜索 / 观影 / 电视 / 音乐 / X站 / P站 / 本子 / 漫画 / 吃瓜 / 清单 / 收藏 / 下载 / 设置）+ 首页模块宫格，深浅色跟随系统，数据保存状态指示。
 - **搜索**：影视 / 图书 / 游戏 / 人物四类；结果可拉详情写入 `items` 并加入指定清单；已收藏显示所在清单。
@@ -86,12 +88,13 @@ docs/AI_PROJECT_MEMORY.md  本文件
 - **X站**：pektino 排行榜（每周/每月/总榜）、分类、详情、直链播放、收藏、下载。
 - **P站**：推荐/最新/最热/人气/高分、分类、搜索、mediaDefinitions 解流（HLS 优先）、播放、收藏、下载。
 - **吃瓜**：镜像自动发现、分类 / 搜索 / 翻页、正文图文混排、视频播放与下载、收藏。
-- **本子（哔咔）**：内置账号自动登录、分类 / 排序 / 搜索 / 翻页、详情、章节、纵向图片阅读（上一话/下一话）、收藏（module = `h2`）。
-- **漫画（Komiic）**：最近更新 / 热门 / 分类 / 搜索、加载更多、详情、章节、纵向图片阅读、收藏（module = `comic`）。
-- **账号管理**：哔咔 / Komiic / 无忧三站账密已内置（safeStorage 加密），启动自动登录；设置页显示状态并可重新登录。
-- **图书 / 游戏**：已收藏条目按分类聚合、搜索、加入更多清单。
-- **清单 / 收藏 / 下载**：清单增删改与递归计数；爱心收藏聚合筛选；下载管理支持 mp4 直链与 m3u8 切片合并（AES-128 解密）、本地媒体服务播放、删除记录/文件。
-- **设置**：数据概览、导入导出、数据目录、账号管理、WebDAV 云同步（上传 / 恢复 / 测试连接）、检查更新（GitHub Releases）。
+- **本子（哔咔）**：内置账号自动登录、分类 / 排序 / 搜索 / 翻页、详情、章节、纵向图片阅读（上一话/下一话）、阅读进度与「继续阅读」、整章图片下载、收藏（module = `h2`）。
+- **漫画（Komiic）**：最近更新 / 热门 / 分类 / 搜索、加载更多、详情、章节、纵向图片阅读、阅读进度与「继续阅读」、整章图片下载、收藏（module = `comic`）。
+- **游戏（无忧）**：首页 / 分类 / 搜索 / 详情、属性表、解压密码复制、pay-download → 网盘链接解析（浏览器打开 / 复制）、收藏（module = `game`，id = 站点文章 id）；豆瓣游戏收藏保留为页内页签。
+- **图书（Z-Library）**：登录窗口过 DiamWall，页面内 fetch 搜索 / 详情，`/dl/{token}` 下载到「图书」目录并登记下载库；收藏 id = `{bookId}|{hash}`；豆瓣图书收藏保留为页内页签。
+- **收藏跳转**：收藏行可点击回到对应模块（漫画 / 本子 / 游戏 / 图书 / X站 / P站 / 吃瓜 / 音乐按歌名回退播放 / 电视直链 / 观影或番号收藏直链播放）。
+- **下载**：视频直链、HLS 切片合并、音乐、漫画/本子整章图片（目录型，可打开目录）、Z-Library 图书；本地播放 / 打开 / 删除。
+- **设置**：数据概览、导入导出、数据目录、账号管理、Z-Library 登录、WebDAV 云同步、检查更新（GitHub API 找 exe → 后台下载，直连/gh-proxy/ghproxy 回退 → 打开安装向导）。
 
 ### 7. 各模块实现口径
 
@@ -143,7 +146,7 @@ docs/AI_PROJECT_MEMORY.md  本文件
 #### 7.8 云同步 / 更新
 
 - WebDAV：配置存 `userData/sync.json`，密码用 `safeStorage` 加密；上传 PUT `{目录}/data.json`，恢复 GET 并校验 items/lists/listItems；测试连接用 PROPFIND（207/200）。
-- 更新：`app:checkUpdate` 优先读公开 Gist 清单（`gist_id=802551160083623580189fc536724d65`，raw 地址见 `main.ts` 的 `UPDATE_MANIFEST_URL`），清单含 `version / url / notes`；私有仓库的 Releases 匿名 API 不可见，清单失败时才回退 GitHub API。发版后需同步更新该 Gist（PATCH `/gists/{id}` 的 `update.json`），应用才能提示新版本。目前仍只打开 Release 页，未接 electron-updater 静默安装。
+- 更新：`app:checkUpdate` 先查 GitHub Releases API（公开仓库可匿名读 exe 资产），失败回退公开 Gist 清单（`gist_id=802551160083623580189fc536724d65`，字段 `version / url / exe / notes`）；下载逐条线路回退（直连 → gh-proxy.com → ghproxy.net），完成后 `spawn` 安装包打开 NSIS 安装向导并退出应用。**仓库必须公开**，否则匿名读取 Release 资产会 404。
 
 #### 7.9 播放与请求层规则（`electron/main.ts setupRequestRules`）
 
@@ -188,15 +191,30 @@ docs/AI_PROJECT_MEMORY.md  本文件
 **页面**
 
 - `BikaPage` / `ComicPage`：列表缓存、搜索、分类、详情、章节、纵向阅读（上一话/下一话），收藏分别写 `h2` / `comic`；切模块时 `.content` 自动回到顶部。
+- 阅读进度：打开章节成功取到图片后写 `readProgress["comic/{id}"]` / `readProgress["bika/{id}"]`；详情页给「继续阅读」并高亮上次章节。
+- 「下载本章」走 `downloads:addImages`，图片并发 5 张写入 `下载目录/老郑分享/漫画/<书名> 第x话/0001.jpg…`，下载库记为目录型（`folder: true`）。
 - 图片全部由渲染进程 `<img>` 直连，主进程请求层补头，不经过 base64 中转。
+
+**无忧游戏库（`electron/wygamer.ts` 追加部分）**
+
+- 请求走 `persist:wygamer` 分区的 `session.fetch`，自动带登录 Cookie；列表 `posts.posts-item`（封面取 `data-src`），分类用 WP REST，翻页扫 `/page/N` 最大值。
+- 详情：`h1.article-title`、`.pay-attr`、`.pay-box a[href*=/pay-download/]`、`.article-content` 截图与正文、`[data-clipboard-tag=解压密码]`。
+- 网盘链接：`/pay-download/{id}?key=&down_id=` 会 302 到 pan.xunlei / pan.quark 等分享页，取 `res.url`；解析失败再用 meta refresh / location 兜底。实测（2026-10-28）：首页 24 条、详情属性 / 4 个下载按钮 / 6 张截图 / 解压密码 `sygua.cc`、夸克链接解析成功。
+
+**Z-Library（`electron/zlib.ts`）**
+
+- 隐藏 `BrowserWindow`（`persist:zlib`）打开当日线路首页，接口在页面内 `fetch`，绕过 DiamWall；线路从 `getzlib.com/zh` 解析，兜底 `z-lib.sk / zh.z-lib.sk`。
+- 搜索必须 POST 表单（GET 恒 400「未找到请求的书」）；详情用 GET；未登录文案统一换成可操作提示。
+- 下载：打开站点 `/dl/{token}`，监听 `will-download` 同步 `setSavePath` 到 `下载目录/老郑分享/图书`，完成后 `registerLocalFile` 登记下载库。
 
 ### 8. 已知缺口 / 下一步
 
-1. **自动更新**：目前只做「检查 + 打开下载页」，未接 electron-updater 静默下载安装。
-2. **音乐多平台**：只实现 mvmp3；旧收藏里的 `joox|` / `netease|` 条目没有「按歌名回退搜索」逻辑。
-3. **下载范围**：只覆盖视频/音乐；漫画、本子、书籍目录下载尚未接入。
-4. **安装包签名与发布流程**：需代码签名证书。
-5. **账号种子**：安装包把 `.secrets/accounts.json` 作为 `accounts.seed.json` 打进 resources，属于用户明确要求的「内置」；换机构建时需先放好 `.secrets/accounts.json`。
+1. **安装包签名**：electron-builder 支持 `CSC_LINK` / `CSC_KEY_PASSWORD`，但仓库里没有证书，当前产物未签名（无法伪造）。
+2. **应用内更新**：仓库已公开，GitHub Releases API 可匿名读 exe 资产（实测 v0.4.1 的 `LaoZheng-0.4.1-Setup.exe` 可读）；发版时上传 exe 即可，应用会自动检查、下载并打开安装向导。私有/API 不可达时仍回退清单直链。
+3. **漫画 / 本子整本批量下载**：目前是「下载本章」，整本排队下载未做。
+4. **Z-Library 会话**：依赖可见登录窗口过一次 DiamWall 验证；长期未用导致 Cookie 失效时需重新登录。
+5. **音乐音源**：仍只有 mvmp3；旧 `joox|` / `netease|` 收藏用「歌名 + 歌手」回退到 mvmp3 同名歌，找不到就提示无资源。
+6. **账号种子**：安装包把 `.secrets/accounts.json` 作为 `accounts.seed.json` 打进 resources，换机构建时需先放好种子。
 
 ### 9. 每轮收尾约定
 

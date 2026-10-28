@@ -11,13 +11,16 @@ export function CollectionPage({
   title,
   desc,
   onNotice,
-  onGoSearch
+  onGoSearch,
+  embedded = false
 }: {
   category: string
   title: string
   desc: string
   onNotice: (text: string) => void
   onGoSearch: () => void
+  /** 嵌入其他模块时隐藏页头（由外层提供标题与切换） */
+  embedded?: boolean
 }) {
   const { data, update } = useData()
   const [query, setQuery] = useState('')
@@ -70,15 +73,17 @@ export function CollectionPage({
 
   return (
     <>
-      <header className="page-header">
-        <h1 className="page-title">{title}</h1>
-        <span className="page-desc">{desc} · 共 {items.length} 条</span>
-        <div className="page-actions">
-          <button className="btn" onClick={onGoSearch}>
-            <Plus size={15} /> 去搜索添加
-          </button>
-        </div>
-      </header>
+      {embedded ? null : (
+        <header className="page-header">
+          <h1 className="page-title">{title}</h1>
+          <span className="page-desc">{desc} · 共 {items.length} 条</span>
+          <div className="page-actions">
+            <button className="btn" onClick={onGoSearch}>
+              <Plus size={15} /> 去搜索添加
+            </button>
+          </div>
+        </header>
+      )}
 
       <div className="toolbar">
         <label className="search">

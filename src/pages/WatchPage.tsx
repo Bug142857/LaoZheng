@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronLeft,
   Download,
@@ -54,11 +54,14 @@ const CONCURRENCY = 6
 
 export function WatchPage({
   onNotice,
-  variant
+  variant,
+  focusPlay
 }: {
   onNotice: (text: string) => void
   /** 番1~番4：只搜第 N 个已启用的外网片源，并隐藏片源管理 */
   variant?: { label: string; proxyIndex: number }
+  /** 从收藏进入：直接播放已保存的分集直链 */
+  focusPlay?: { url: string; title: string }
 }) {
   const { data, update } = useData()
   const favModule = variant ? 'h1' : 'watch'
@@ -76,6 +79,11 @@ export function WatchPage({
   const [deleting, setDeleting] = useState<VodSource | null>(null)
   const [testingId, setTestingId] = useState<string | null>(null)
   const seqRef = useRef(0)
+  const [favPlay, setFavPlay] = useState<{ url: string; title: string } | null>(null)
+
+  useEffect(() => {
+    if (focusPlay?.url) setFavPlay(focusPlay)
+  }, [focusPlay?.url, focusPlay?.title])
 
   const sources = data.vodSources
   const proxySources = useMemo(
@@ -319,6 +327,21 @@ export function WatchPage({
       sourceName: playback.source.name
     })
     onNotice(res.ok ? '已加入下载队列，可在「下载」页查看进度' : `下载失败：${res.error}`)
+  }
+
+  if (favPlay) {
+    return (
+      <>
+        <header className="page-header">
+          <button className="btn ghost" onClick={() => setFavPlay(null)}>
+            <ChevronLeft size={15} /> 返回
+          </button>
+          <h1 className="page-title">{favPlay.title}</h1>
+          <span className="page-desc">收藏 · 播放已保存的分集直链</span>
+        </header>
+        <VideoPlayer src={favPlay.url} />
+      </>
+    )
   }
 
   if (playback) {

@@ -17,7 +17,13 @@ interface Playing {
   post: MelonDetail | MelonPost
 }
 
-export function MelonPage({ onNotice }: { onNotice: (text: string) => void }) {
+export function MelonPage({
+  onNotice,
+  focusId
+}: {
+  onNotice: (text: string) => void
+  focusId?: string
+}) {
   const { data, update } = useData()
   const [path, setPath] = useState('/')
   const [input, setInput] = useState('')
@@ -48,6 +54,11 @@ export function MelonPage({ onNotice }: { onNotice: (text: string) => void }) {
     void load('/')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (focusId) void openDetail({ id: focusId })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId])
 
   const switchCategory = (next: string) => {
     historyRef.current = []
