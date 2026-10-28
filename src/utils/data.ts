@@ -49,6 +49,16 @@ export function nextId(rows: { id: number }[]): number {
   return rows.reduce((max, r) => Math.max(max, r.id), 0) + 1
 }
 
+/** 条目所在清单名（去重）；不在任何清单时返回空数组 */
+export function listNamesOfItem(data: AppData, itemId: number): string[] {
+  const nameById = new Map(data.lists.map((l) => [l.id, l.name]))
+  const names = data.listItems
+    .filter((r) => r.itemId === itemId)
+    .map((r) => nameById.get(r.listId))
+    .filter((n): n is string => !!n)
+  return [...new Set(names)]
+}
+
 export function formatTime(ms: number): string {
   if (!ms) return '—'
   const d = new Date(ms)

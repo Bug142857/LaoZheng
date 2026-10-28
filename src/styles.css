@@ -722,6 +722,45 @@ button:disabled {
   margin-top: 10px;
 }
 
+/* ---------- 搜索 ---------- */
+.result-hint {
+  font-size: 12px;
+  color: var(--warn);
+  margin: -4px 0 10px;
+}
+
+.list-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+
+.list-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  text-align: left;
+}
+
+.list-option:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.list-option .sub {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
 /* ---------- Toast ---------- */
 .toast {
   position: fixed;

@@ -1,7 +1,9 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell } from 'electron'
 import { join } from 'node:path'
 import { dataFilePath, exportToFile, importFromFile, loadData, saveData } from './store'
+import { fetchSubjectDetail, searchSubjects } from './douban'
 import type { AppData } from '../src/shared/types'
+import type { SearchCategory, SubjectKind } from '../src/shared/douban'
 
 const isDev = !app.isPackaged
 
@@ -38,8 +40,53 @@ function createWindow(): void {
   }
 }
 
+const IMAGE_REFERER = 'https://m.douban.com/'
+const IMAGE_UA =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
+const IMAGE_URLS = ['*://*.doubanio.com/*', '*://*.douban.com/*']
+
+/** 封面图防盗链：补 Referer + 移动 UA；旧图床 qnmob*.doubanio.com 已下线，重写到 img2 */
+function setupImageRules(): void {
+  const ses = session.defaultSession
+  ses.webRequest.onBeforeSendHeaders({ urls: IMAGE_URLS }, (details, callback) => {
+    details.requestHeaders['Referer'] = IMAGE_REFERER
+    details.requestHeaders['User-Agent'] = IMAGE_UA
+    callback({ requestHeaders: details.requestHeaders })
+  })
+  ses.webRequest.onBeforeRequest({ urls: IMAGE_URLS }, (details, callback) => {
+    try {
+      const url = new URL(details.url)
+      if (/^qnmob\d*\.doubanio\.com$/.test(url.hostname)) {
+        url.hostname = 'img2.doubanio.com'
+        callback({ redirectURL: url.toString() })
+        return
+      }
+    } catch {
+      // URL 解析失败时按原请求继续
+    }
+    callback({})
+  })
+}
+
+const SEARCH_CATEGORIES = new Set<SearchCategory>(['video', 'book', 'game', 'person'])
+const SUBJECT_KINDS = new Set<SubjectKind>(['movie', 'tv', 'book', 'game'])
+
 function registerIpc(): void {
   ipcMain.handle('data:load', () => loadData())
+
+  ipcMain.handle('subject:search', (_e, category: SearchCategory, query: string) => {
+    if (!SEARCH_CATEGORIES.has(category) || typeof query !== 'string' || query.length > 100) {
+      return { ok: false, items: [], error: '搜索参数无效' }
+    }
+    return searchSubjects(category, query)
+  })
+
+  ipcMain.handle('subject:detail', (_e, kind: SubjectKind, id: string) => {
+    if (!SUBJECT_KINDS.has(kind) || typeof id !== 'string') {
+      return { ok: false, error: '条目参数无效' }
+    }
+    return fetchSubjectDetail(kind, id)
+  })
 
   ipcMain.handle('data:save', async (_e, data: AppData) => {
     await saveData(data)
@@ -106,6 +153,7 @@ if (!gotLock) {
   app.whenReady().then(() => {
     app.setAppUserModelId('com.laozheng.pc')
     Menu.setApplicationMenu(null)
+    setupImageRules()
     registerIpc()
     createWindow()
     console.log('[app] data file:', dataFilePath())

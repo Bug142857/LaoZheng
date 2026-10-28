@@ -1,7 +1,7 @@
 # 老郑分享 · PC 端项目记忆
 
 > 本文件是 **PC 端仓库（https://github.com/Bug142857/LaoZheng）** 的唯一记忆入口，换电脑 / 换 AI 账号后从这里恢复上下文。
-> 最后更新：2026-10-28（PC 端 v0.1.0 脚手架）。
+> 最后更新：2026-10-28（PC 端 v0.2.0 搜索模块）。
 >
 > 结构：**第一部分 = PC 端工程约定与进度**；**第二部分 = 手机端（ShangYin）历史记忆**，原样迁移，仅供功能口径与踩坑参考，不代表 PC 端已经实现。
 
@@ -30,14 +30,16 @@
 ### 4. 工程结构（当前）
 
 ```
-electron/main.ts     主进程：窗口、单实例锁、IPC、外链交给系统浏览器
-electron/preload.ts  contextBridge 暴露最小 API（loadData/saveData/import/export/openDir/version）
+electron/main.ts     主进程：窗口、单实例锁、IPC、外链交给系统浏览器、封面图请求头
+electron/preload.ts  contextBridge 暴露最小 API（loadData/saveData/import/export/openDir/version/search/detail）
 electron/store.ts    userData/data.json 读写；导入校验 items/lists/listItems；导出补 version/exportAt
+electron/douban.ts   条目搜索与详情抓取（影视 / 图书 / 游戏 / 人物），主进程发起网络请求
 src/shared/types.ts  两端共用备份类型 + normalizeData + EMPTY_DATA
+src/shared/douban.ts 搜索枚举、结果/详情类型、分类与条目标签（电影/剧集/图书/游戏/人物）
 src/state/           DataProvider：启动加载、防抖 350ms 保存、replaceData 立即落盘
 src/modules.tsx      首页模块注册表（与手机端 INNER_MODULE_ENTRIES 对应）
-src/pages/           首页 / 清单 / 清单详情 / 收藏 / 设置
-src/utils/data.ts    根清单、递归子清单、递归计数、条目查询、清单配色、收藏筛选
+src/pages/           首页 / 搜索 / 清单 / 清单详情 / 收藏 / 设置
+src/utils/data.ts    根清单、递归子清单、递归计数、条目查询、清单配色、收藏筛选、条目所在清单名
 docs/AI_PROJECT_MEMORY.md  本文件
 ```
 
@@ -58,24 +60,39 @@ docs/AI_PROJECT_MEMORY.md  本文件
 - `config`：手机端配置快照（字符串 Map，导入时原样保留）。
 - 导入判据与手机端一致：必须同时存在 `items / lists / listItems`，否则拒绝（防止误选普通 JSON）。
 
-### 6. 当前进度（PC 端 v0.1.0，2026-10-28）
+### 6. 当前进度（PC 端 v0.2.0，2026-10-28）
 
-- 可运行桌面框架：左侧导航（首页 / 清单 / 收藏 / 下载 / 设置）+ 首页模块宫格，深浅色跟随系统，数据保存状态指示。
+- 可运行桌面框架：左侧导航（首页 / 搜索 / 清单 / 收藏 / 下载 / 设置）+ 首页模块宫格，深浅色跟随系统，数据保存状态指示。
+- **搜索**（v0.2.0）：影视 / 图书 / 游戏 / 人物四个分类，必须先选分类再搜；影视 = 电影 + 剧集 + 网页搜索合并去重；结果行展示封面、年份、评分、简介；除人物外可拉取详情后加入指定清单（根 / 子清单选择器），已收藏条目显示「已收藏在『清单名』」；人物结果只展示资料、不提供收藏。
 - **清单**：根/子清单查看、新建、重命名、删除（级联删除子清单与关联，条目本身保留）；清单条目浏览、从清单移除；按清单名 hash 稳定渐变配色。
 - **收藏**：聚合 `innerFavs`，关键词搜索（标题 / 作者）+ 模块筛选 + 按收藏时间倒序。
 - **设置**：数据概览、导入手机端备份（覆盖前确认）、导出手机端可识别 JSON、打开数据目录、版本与格式信息。
 - 未实现模块：观影、番1~番4、本子、漫画、游戏、图书、电视、音乐、吃瓜、X站、P站、下载管理（点击提示「后续版本接入」）。
 
-### 7. 下一步优先级（按此顺序推进）
+### 7. 搜索模块实现口径（v0.2.0）
 
-1. 搜索模块：影视 / 图书 / 游戏 / 人物分类（豆瓣接口复用手机端 `DoubanClient` 的接口与字段），结果写入 `items`，支持加入清单 / 爱心收藏；
-2. 观影 + 片源管理：导入 / 编辑 `vodSources`、跨源搜索（实时追加）、播放器（HLS / m3u8，自定义请求头）；
-3. 电视（M3U）、音乐（搜索 / 播放 / 收藏队列 / 本地下载目录）；
-4. 吃瓜、X站、P站、漫画、本子、番号；
-5. 下载管理：目录规范与手机端对齐（视频 / 漫画 / 本子 / 音乐 / 书籍）；
-6. 云同步（坚果云 WebDAV，与手机端共用备份）、自动更新、安装包签名。
+- 网络请求全部在主进程 `electron/douban.ts`，渲染进程只走 preload 的 `subject:search` / `subject:detail` 两个 IPC；参数在主进程白名单校验。
+- 接口与手机端 `DoubanClient` 对齐：
+  - 影视：`movie.douban.com/subject_search?...&cat=1002`（电影 / 剧集同一入口，按 `labels` 的「剧集/电视」或 URL `/tv/` 区分）+ 网页搜索 `www.douban.com/search?cat=1002` 兜底合并；
+  - 图书：`book.douban.com/subject_search?...&cat=1001`（从 `window.__DATA__` 解析，过滤 `/series/` 丛书条目）；
+  - 游戏：`www.douban.com/search?cat=3114` HTML 解析；
+  - 人物：`www.douban.com/search?cat=1065`，只展示不落库（手机端同样没有「添加人物」）。
+- `window.__DATA__` 必须用**括号配对**截取（非贪婪正则会被嵌套 JSON 截断）；解析失败 / 反爬页面要显式抛错并重试，不能静默返回空结果。
+- 详情走 `m.douban.com/rexxar/api/v2/{movie|tv|book|game}/{id}`，移动 UA + `m.douban.com` Referer；封面取 `cover_url` → `pic.large/normal` → `images.large`；`pubdate/release_date` 合并进 `card_subtitle`，去掉纯年份重复段。
+- 落库口径与手机端 `Repo.saveFromDouban` 一致：`category` 用中文 label（`电影 / 剧集 / 图书 / 游戏`），按 `category + doubanId` 去重；图书的 `subTitle` 优先用详情 `info`；详情抓取失败时用搜索结果兜底并提示「详情暂未补全」。
+- UI 硬约束（沿用手机端）：界面文案**不出现「豆瓣」**；不提供任何「在豆瓣打开」外链；搜索必须显式分类。
+- 封面防盗链：主进程 `webRequest` 对 `*.doubanio.com / *.douban.com` 图片补 `Referer: https://m.douban.com/` 与 iPhone UA；旧图床 `qnmob*.doubanio.com` 自动重写到 `img2.doubanio.com`。
+- `node-html-parser` 通过 `externalizeDepsPlugin({ exclude: [...] })` 打进主进程 bundle（安装包 `files` 只含 `out/**`，避免依赖漏打包）；它是纯 JS 小依赖，不引入 undici 等重包。
 
-### 8. 每轮收尾约定
+### 8. 下一步优先级（按此顺序推进）
+
+1. 观影 + 片源管理：导入 / 编辑 `vodSources`、跨源搜索（实时追加）、播放器（HLS / m3u8，自定义请求头）；
+2. 电视（M3U）、音乐（搜索 / 播放 / 收藏队列 / 本地下载目录）；
+3. 吃瓜、X站、P站、漫画、本子、番号；
+4. 下载管理：目录规范与手机端对齐（视频 / 漫画 / 本子 / 音乐 / 书籍）；
+5. 云同步（坚果云 WebDAV，与手机端共用备份）、自动更新、安装包签名。
+
+### 9. 每轮收尾约定
 
 - 改完代码先 `npm run typecheck` / `npm run build`，通过后再提交；
 - 同步更新本文件的「当前进度 / 下一步」，必要时更新 README；

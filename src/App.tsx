@@ -4,11 +4,13 @@ import {
   Heart,
   Home,
   ListChecks,
+  Search,
   Settings,
   type LucideIcon
 } from 'lucide-react'
 import { DataProvider, useData } from './state/DataContext'
 import { HomePage } from './pages/HomePage'
+import { SearchPage } from './pages/SearchPage'
 import { ListsPage } from './pages/ListsPage'
 import { ListDetailPage } from './pages/ListDetailPage'
 import { FavoritesPage } from './pages/FavoritesPage'
@@ -18,6 +20,7 @@ import type { HomeModule } from './modules'
 
 type Route =
   | { name: 'home' }
+  | { name: 'search' }
   | { name: 'lists' }
   | { name: 'list'; id: number }
   | { name: 'favorites' }
@@ -25,7 +28,7 @@ type Route =
   | { name: 'settings' }
 
 interface NavItem {
-  key: 'home' | 'lists' | 'favorites' | 'downloads' | 'settings'
+  key: 'home' | 'search' | 'lists' | 'favorites' | 'downloads' | 'settings'
   label: string
   icon: LucideIcon
   ready: boolean
@@ -33,6 +36,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { key: 'home', label: '首页', icon: Home, ready: true },
+  { key: 'search', label: '搜索', icon: Search, ready: true },
   { key: 'lists', label: '清单', icon: ListChecks, ready: true },
   { key: 'favorites', label: '收藏', icon: Heart, ready: true },
   { key: 'downloads', label: '下载', icon: Download, ready: false },
@@ -43,6 +47,8 @@ function leafRoute(key: NavItem['key']): Route {
   switch (key) {
     case 'home':
       return { name: 'home' }
+    case 'search':
+      return { name: 'search' }
     case 'lists':
       return { name: 'lists' }
     case 'favorites':
@@ -136,6 +142,7 @@ function Shell() {
 
       <main className="content">
         {route.name === 'home' && <HomePage onOpen={openModule} />}
+        {route.name === 'search' && <SearchPage onNotice={setNotice} />}
         {route.name === 'lists' && (
           <ListsPage
             onOpenList={(id) => setRoute({ name: 'list', id })}

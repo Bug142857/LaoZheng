@@ -154,7 +154,7 @@ export function ListDetailPage({
               <div className="row-main">
                 <div className="row-title">{item.title || '未命名条目'}</div>
                 <div className="row-meta">
-                  {[item.subTitle, item.year, item.doubanRating ? `豆瓣 ${item.doubanRating}` : '']
+                  {[item.subTitle, item.year, item.doubanRating ? `评分 ${item.doubanRating}` : '']
                     .filter(Boolean)
                     .join(' · ') || item.category || '—'}
                 </div>

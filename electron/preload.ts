@@ -8,7 +8,9 @@ const api: LaozhengApi = {
   exportData: (data) => ipcRenderer.invoke('data:export', data) as Promise<ExportResult>,
   openDataDir: () => ipcRenderer.invoke('data:openDir') as Promise<void>,
   dataDir: () => ipcRenderer.invoke('data:dir') as Promise<string>,
-  appVersion: () => ipcRenderer.invoke('app:version') as Promise<string>
+  appVersion: () => ipcRenderer.invoke('app:version') as Promise<string>,
+  searchSubjects: (category, query) => ipcRenderer.invoke('subject:search', category, query),
+  fetchSubjectDetail: (kind, id) => ipcRenderer.invoke('subject:detail', kind, id)
 }
 
 contextBridge.exposeInMainWorld('laozheng', api)

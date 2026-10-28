@@ -3,6 +3,13 @@
  * 字段名与手机端 `ExportJson.kt` 完全一致，保证两端可以互相导入导出。
  */
 
+import type {
+  SearchCategory,
+  SubjectDetailResponse,
+  SubjectKind,
+  SubjectSearchResponse
+} from './douban'
+
 export interface CollectionItem {
   id: number
   category: string
@@ -103,6 +110,8 @@ export interface LaozhengApi {
   openDataDir: () => Promise<void>
   dataDir: () => Promise<string>
   appVersion: () => Promise<string>
+  searchSubjects: (category: SearchCategory, query: string) => Promise<SubjectSearchResponse>
+  fetchSubjectDetail: (kind: SubjectKind, id: string) => Promise<SubjectDetailResponse>
 }
 
 export const EMPTY_DATA: AppData = {

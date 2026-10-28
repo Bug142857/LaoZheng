@@ -4,7 +4,8 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // node-html-parser 打进主进程 bundle：安装包 files 只含 out/**，避免依赖漏打包
+    plugins: [externalizeDepsPlugin({ exclude: ['node-html-parser'] })],
     build: {
       rollupOptions: {
         input: { index: resolve(__dirname, 'electron/main.ts') }
