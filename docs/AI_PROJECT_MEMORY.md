@@ -1,0 +1,339 @@
+# 老郑分享 · PC 端项目记忆
+
+> 本文件是 **PC 端仓库（https://github.com/Bug142857/LaoZheng）** 的唯一记忆入口，换电脑 / 换 AI 账号后从这里恢复上下文。
+> 最后更新：2026-10-28（PC 端 v0.1.0 脚手架）。
+>
+> 结构：**第一部分 = PC 端工程约定与进度**；**第二部分 = 手机端（ShangYin）历史记忆**，原样迁移，仅供功能口径与踩坑参考，不代表 PC 端已经实现。
+
+## 一、PC 端工程约定
+
+### 1. 仓库边界
+
+- 手机端仓库：`Bug142857/ShangYin`（Android / Kotlin / Compose），**已冻结，不再改动**。需要查功能口径时只读参考，不提交任何改动。
+- PC 端仓库：`Bug142857/LaoZheng`（本仓库），所有 PC 代码、文档、发布都在这里。
+- 两端只通过备份 JSON（format version 1）互通，字段以手机端 `ExportJson.kt` 为准。
+
+### 2. 技术栈决策（2026-10-28 用户确认）
+
+- **Electron + React + TypeScript + electron-vite**，不用 Tauri。
+- 理由：现有功能以网络请求 + JSON/HTML 解析为主，Node 生态迁移成本最低；自带 Chromium，HLS / H.264 播放行为跨机器一致，不依赖系统 WebView2；后续集成开源软件（ffmpeg / yt-dlp / mpv 等）可直接在主进程拉子进程；npm 现成轮子最多。
+- 接受代价：安装包约 80–120MB、内存高于 Tauri。
+- 用户明确要求：PC 端要**完整复刻手机端功能**，先把框架与数据迁移跑通，再按模块逐个补齐。
+
+### 3. 版本与发布约定
+
+- `package.json` 的 `version` 从 `0.1.0` 起；每轮发版 **minor +1**（`0.1.0` → `0.2.0` → `0.3.0`…），tag 用 `v0.x.0`。
+- 构建产物 `out/`、安装包 `release/`、`node_modules/` 一律不入库（`.gitignore` 已按通配符写好）。
+- 发版前必须 `npm run build` 通过；安装包用 `npm run dist`（electron-builder，NSIS，可选安装目录、桌面快捷方式「老郑分享」）。
+- 当前阶段尚未建立自动更新与云同步，后续接入时在本文档补流程。
+
+### 4. 工程结构（当前）
+
+```
+electron/main.ts     主进程：窗口、单实例锁、IPC、外链交给系统浏览器
+electron/preload.ts  contextBridge 暴露最小 API（loadData/saveData/import/export/openDir/version）
+electron/store.ts    userData/data.json 读写；导入校验 items/lists/listItems；导出补 version/exportAt
+src/shared/types.ts  两端共用备份类型 + normalizeData + EMPTY_DATA
+src/state/           DataProvider：启动加载、防抖 350ms 保存、replaceData 立即落盘
+src/modules.tsx      首页模块注册表（与手机端 INNER_MODULE_ENTRIES 对应）
+src/pages/           首页 / 清单 / 清单详情 / 收藏 / 设置
+src/utils/data.ts    根清单、递归子清单、递归计数、条目查询、清单配色、收藏筛选
+docs/AI_PROJECT_MEMORY.md  本文件
+```
+
+- 安全基线：`contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`，渲染进程只通过 preload API 访问数据；页面 CSP 只允许 self + https 图片。
+- 数据写入：先写 `data.json.tmp` 再 rename，避免中断损坏。
+- 界面文案与手机端保持一致（收藏 / 清单 / 下载 / 模块名），品牌色仍是紫色系（`--brand: #8b7cff`，深色为默认，浅色跟随系统）。
+
+### 5. 数据格式（与手机端一致，version 1）
+
+根字段：`version / exportAt / items / lists / listItems / vodSources / innerFavs / readProgress / config`。
+
+- `items`：收藏条目（豆瓣影视 / 图书 / 游戏 / 人物），`id` 为数字；
+- `lists`：清单，`parentId = null` 为根清单，`world` 保留兼容，`sortIndex` 为同级排序；
+- `listItems`：清单与条目关联（`listId / itemId / orderIndex`）；
+- `vodSources`：片源（`region` = cn / proxy，`regionManual` 必须保留，避免自动归组覆盖手选）；
+- `innerFavs`：爱心收藏（`module` + `id` 唯一，`payload` 为音乐歌曲全量 JSON）；
+- `readProgress`：漫画 / 本子上次看到（`source/id` → chapterKey）；
+- `config`：手机端配置快照（字符串 Map，导入时原样保留）。
+- 导入判据与手机端一致：必须同时存在 `items / lists / listItems`，否则拒绝（防止误选普通 JSON）。
+
+### 6. 当前进度（PC 端 v0.1.0，2026-10-28）
+
+- 可运行桌面框架：左侧导航（首页 / 清单 / 收藏 / 下载 / 设置）+ 首页模块宫格，深浅色跟随系统，数据保存状态指示。
+- **清单**：根/子清单查看、新建、重命名、删除（级联删除子清单与关联，条目本身保留）；清单条目浏览、从清单移除；按清单名 hash 稳定渐变配色。
+- **收藏**：聚合 `innerFavs`，关键词搜索（标题 / 作者）+ 模块筛选 + 按收藏时间倒序。
+- **设置**：数据概览、导入手机端备份（覆盖前确认）、导出手机端可识别 JSON、打开数据目录、版本与格式信息。
+- 未实现模块：观影、番1~番4、本子、漫画、游戏、图书、电视、音乐、吃瓜、X站、P站、下载管理（点击提示「后续版本接入」）。
+
+### 7. 下一步优先级（按此顺序推进）
+
+1. 搜索模块：影视 / 图书 / 游戏 / 人物分类（豆瓣接口复用手机端 `DoubanClient` 的接口与字段），结果写入 `items`，支持加入清单 / 爱心收藏；
+2. 观影 + 片源管理：导入 / 编辑 `vodSources`、跨源搜索（实时追加）、播放器（HLS / m3u8，自定义请求头）；
+3. 电视（M3U）、音乐（搜索 / 播放 / 收藏队列 / 本地下载目录）；
+4. 吃瓜、X站、P站、漫画、本子、番号；
+5. 下载管理：目录规范与手机端对齐（视频 / 漫画 / 本子 / 音乐 / 书籍）；
+6. 云同步（坚果云 WebDAV，与手机端共用备份）、自动更新、安装包签名。
+
+### 8. 每轮收尾约定
+
+- 改完代码先 `npm run typecheck` / `npm run build`，通过后再提交；
+- 同步更新本文件的「当前进度 / 下一步」，必要时更新 README；
+- `git add` 只加源码与文档，确认没有 `out/`、`release/`、`node_modules/` 进入版本库；
+- 不在手机端仓库提交任何内容。
+
+---
+
+# 二、手机端（ShangYin）历史项目记忆（原样迁移）
+
+> 以下内容来自手机端仓库 `docs/AI_PROJECT_MEMORY.md`，保留原始表述与版本记录，供 PC 端对齐功能口径、接口细节与历史踩坑。文中「本仓库 / 发版」等均指手机端。
+
+
+# AI 项目记忆（AI Project Memory）
+
+> 此文件由 AI 助手（TraeCode）维护，与本地项目记忆同步，随仓库提交。
+> 目的：换电脑 / 更换 AI 账号后，AI 助手仍能从本文件恢复项目的全部历史要求、踩坑教训与工程约定，用户无需重复交代。
+> **给 AI 的硬规则**：每次更新本地项目记忆后，必须把全文同步拷贝到本文件并随 commit push。
+
+## Working Discipline（常驻工作纪律 —— 适用于之后**每一个**问题，不只是当轮）
+用户 2026-09-21 明确要求：「我也并不是针对这次问题 而是以后所面临的所有问题 你都要有这个意识」。以下流程是**每次动手的默认动作，不需要用户再提醒**：
+1. **先列举、再动手**：定位/修任何问题后，主动全仓（数据层 + UI 层 + 各站点客户端）grep 同类模式，把「同一类问题的**所有**出现点」一次改完；绝不只修被用户指出的那一个点，也不许等用户逐条报。
+2. **结论要有证据，且不能只测一个样本**：涉及站点结构 / 接口 / 登录态的判断必须实测取证（真站点 DOM、真实登录态），不许凭猜测下结论（历史上已因此白改过一轮）；自己测不了就请用户配合，**不许拿匿名会话的结果当结论**。
+   ⚠️ **2026-09-24 补充（JOOX 事件）**：判定「某接口/某音源**能不能用**」时，**至少跨多个对象（多首歌/多个关键词）+ 对同一对象重复测几次**，两个维度都要覆盖；
+   只测一个样本会把"时有时无"误判成"永远没有"——JOOX 直链就是这么被误判的，错误结论还写进了给用户的答复。测不到时要说明"这是 N 次里的第几次、什么条件"。
+3. **修完自检 + 横向对比**：编译通过；主动检查相邻实现是否也要同步 —— 固定扫这几类：本地登录态是否只是启发式、Compose 列表 key 是否唯一、跨线程可变状态是否安全、异常是否被静默吞掉、站点解析是否有整页文本兜底、硬编码地址是否有兜底。
+4. **失败要说出来**：不许静默吞异常让界面显示「空/无数据」（用户会当成站点没内容）；必须区分「真的没有」与「请求失败/登录失效」。
+5. **不许过度设计**：核查后确认无风险的（如稳定常量、已有双主机切换）就不动，不为「统一」加无意义兜底。
+6. **「测不出来」不许当结论**：任何探测/校验（登录态、连通性、分类数、可用线路…）都必须区分「确认失败」与「没测出来」。没测出来时按「不影响用户」的那一侧处理（例：登录态不确定 → 不报失效、但也不挡住重新登录入口），并给探测本身加超时，避免界面卡在"检测中"。
+7. **假设必须能被证伪，单一假设要解释全部观测（2026-10-19 图片十轮盲修教训）**：图床图片问题连修十轮的根因是第一个假设（「CDN 按 TLS 指纹给 okhttp 下发随机垃圾」）只解释了部分观测，后续矛盾观测（同批同头/跨批换头、全响应 16B 对齐、PC curl 与设备逐字节一致）出现时被打了补丁绕过而不是推翻假设。固化：① 动手前先写下「本假设如何被证伪」，证伪点出现了就换假设；② 能用对方自己的代码验证的必须先验证（站点 zzz.js 载 Node 沙箱跑它自己的 decryptImage，一测便知密钥指派对错）；③ 结构性特征（密文 16B 对齐、跨端逐字节一致）比表象特征（响应头变化）更可信；④ 密钥/协议类修复默认 TDD + **真实字节 fixture** 锁定指派方向（melon_cover1.cipher 就是这么来的）；⑤ 修复手段要分级可逃逸（如播放器自愈：轻量重载失败就升级整条重建），单一姿势无限重试 = 把自愈变成死循环。
+
+## Hard Constraints
+- **第二十九轮（电视「有画面没声音」的**正解**：内置 FFmpeg 软解；含 0.198 的失败尝试与 0.199 回退）= v0.199 + v0.200**：①**用户反馈链**：0.198 装机后「一直显示线路播放出错」→ 追问确认**只有 CCTV3/CCTV5 这类以前没声音的频道**（其它频道正常）→ 坐实是 0.198 那处改动；用户拍板「接 FFmpeg 软解」。②**0.198 的失败尝试（重要教训）**：把 MP2 音轨的 MIME `audio/mpeg-L2` **映射成 `audio/mpeg`** 交给系统解码器（自定义 `DefaultRenderersFactory` + `MediaCodecAudioRenderer`，在 `supportsFormat`/`getDecoderInfos`/`getMediaCodecConfiguration` 三处传改写后的 Format）→ **平台那个"MP3 解码器"根本不接受 Layer II 帧**，解码器初始化/解码直接失败 → ExoPlayer 报错 + 我们的直播自动重连反复重试 = 用户看到的「一直出错」。**结论：MIME 映射救不了 MP2，Android 平台（至少这台机器）没有能解 MP2 帧的解码器 → 只能软件解码**。**核对手段（可复用）**：从本地 Gradle 缓存的 media3 AAR 里 `javap` 出关键签名（`DefaultRenderersFactory.buildAudioRenderers`、`MediaCodecAudioRenderer.supportsFormat/getDecoderInfos/getMediaCodecConfiguration`），并读 media3 源码确认 `getMediaFormat(format, codecInfo.codecMimeType, ...)` 用的是**解码器**的 MIME、`onOutputFormatChanged` 用 mediaFormat 的通道/采样率 —— 所以 relabel 只影响"选哪个解码器"，而选中的解码器解不了 —— 这才是根因。③**0.199（回退 + 把失败说出来）= v0.199**：整体删除该渲染器（回到 media3 默认渲染器，MP2 频道恢复"有画面没声音"而不是报错）；`onPlayerError` 文案细分（新增「本机解不了这个编码」= `ERROR_CODE_DECODER_INIT_FAILED/QUERY_FAILED`、「音频输出失败」= `ERROR_CODE_AUDIO_TRACK_INIT_FAILED/WRITE_FAILED`，兜底文案带上 `error.errorCodeName`）；新增 `Player.Listener.onTracksChanged` 检测「存在 type=audio 且**未被选中**、MIME 是 `audio/mpeg-L1/L2` 的音轨组」→ Toast「该频道音频是 MP2，本机解码器不支持：会有画面没声音，建议换线路或换源」（只弹一次）—— 把"被静默丢掉的音轨"变成明说。④**0.200（正解）= v0.200**：media3 `1.5.1 → 1.7.1`；新增依赖 **`io.github.anilbeesetti:nextlib-media3ext:1.7.1-0.9.0`**（预编译 FFmpeg 解码 AAR；⚠️ **GPL-3.0**，随 App 分发要求整个 App GPL 兼容 —— 已告知用户）；`PlayerScreen` 改用 `NextRenderersFactory(context).setEnableDecoderFallback(true).setExtensionRendererMode(EXTENSION_RENDERER_MODE_ON)` —— **ON = 只在平台渲染器不支持时才交给 FFmpeg**，AAC/MP3 照旧走平台/硬件解码（不影响性能）；`defaultConfig` 加 `ndk { abiFilters += listOf("arm64-v8a","armeabi-v7a") }`（AAR 自带 4 个 ABI，去掉 x86/x86_64）。**APK 9.0MB → 19.7MB**。⑤**⚠️ 本轮最值得记的坑**：**(a) 依赖坐标写错会被 Gradle 报 `Could not find`** —— NextLib 的 groupId 是 `io.github.anilbeesetti`（`io.github.anilbeesetti.nextlib` 是包名/仓库名，不是 groupId）；**报错里 Gradle 打印的查找 URL 能直接反推 groupId**（本轮它去查 `.../io/github/anilbeesetti/nextlib/nextlib-media3ext/...` 就说明多写了一层）。**(b) NextLib 版本号格式 = `<media3 版本>-<nextlib 版本>`**（`1.7.1-0.9.0` 对应 media3 1.7.1）→ media3 必须配套升到该版本；**官方 media3 的 FFmpeg 扩展不发 Maven 制品**（要用 media3 源码 + NDK 自己编），所以只能走 NextLib 这类预编译包。**(c) NextLib 的 MIME→FFmpeg 解码器映射**：`audio/mpeg`/`audio/mpeg-L1`/`audio/mpeg-L2` 都映射到 FFmpeg 的 **`mp3`** 解码器（同源实现，能解 Layer I/II 帧）。**(d) `audio/mpeg-L1|L2` 这两个 MIME 是 AOSP 自己定义、且很多设备不注册解码器**（实测这台设备就没有）。⑥**发版**：0.199 = commit `1f5f3d8` / tag `v0.199` / **Release `394241624`** / 资产 `LaoZhengFenXiang-0.199.apk`（8,983,518 字节，SHA256 `BEB9125915AE5B42FF883967A55DE6792F49EEE70EF9BF8E34B54328B8588D87`）；0.200 = commit `e579ac6` / tag `v0.200` / **Release `394258937`** / 资产 `LaoZhengFenXiang-0.200.apk`（19,709,368 字节，SHA256 `FD76408C9A7C8B8750C46CA58C9E2DDFD1BF1C00F7299989E59B3B9A009BD8C0`）；桌面只留中文名一份 `老郑分享-0.200.apk`。⑦**✅ 已装机验证（2026-09-23）**：用户确认「**有声音了**」—— CCTV3/CCTV5 出声，FFmpeg 软解这条路走通了（NextLib 把 `audio/mpeg-L1|L2` 交给 FFmpeg 的 `mp3` 解码器，它确实能吃 Layer II 帧）。**以后遇到「平台没有解码器的音频编码」（MP2 / AC3 / EAC3 / DTS…）就照这套路做：挂 FFmpeg 扩展渲染器（`EXTENSION_RENDERER_MODE_ON` 兜底），不要再尝试改 MIME 映射去骗平台解码器**（0.198 已验证那条路走不通）。
+- App name must be '老郑分享' (not 'ShangYin')
+- Search feature must not display '豆瓣' in UI text
+- Database schema changes require destructive migration (fallbackToDestructiveMigration)
+- Image requests to doubanio.com/douban.com must include Referer: https://m.douban.com/ and iPhone UA to bypass anti-hotlinking
+- All share buttons must be removed from UI
+- List items should use long-press for delete confirmation instead of persistent delete buttons
+- Search must require explicit category selection (影视/图书/游戏/人物) to prevent result interference
+- All external '在豆瓣打开' links must be removed
+- No '添加' function for celebrity/person entries
+- No link import feature
+- Movie detail navigation must use saveFromDoubanFast (store basic data immediately, background fetch full details)
+- Game search must use HTML parsing from www.douban.com/search?cat=3114 (no Cookie required)
+- App icon = 深蓝渐变圆角方块 + 发光的「郑」字（用户 2026-10-26 提供的新 artwork，原图见桌面 logo.jpg）；仍是 5 个 mipmap 目录里的裸 PNG（`ic_launcher` + `ic_launcher_round`，48/72/96/144/192），不用 adaptive icon；换图只覆盖这 10 个文件
+- App must use bottom tab navigation with two primary sections: '表世界' and '里世界'
+- Settings must be accessible via a single top-right button in all screens
+- Login functions (豆瓣, 哔咔) must be consolidated in the settings menu under '账号管理'
+- UI elements must use specific terminology: H1 renamed to '番号', H2 renamed to '本子'
+- '里世界' section must have buttons for '番号', '本子', and '漫画' (漫画 to be implemented later)
+- '本子' (H2) interface must be optimized to match `https://github.com/raoxwup/haka_comic`
+- Bika comic detail screen must include a favorites button in the top bar
+- 表世界搜索结果中已收藏的条目应显示"已收藏在某某"，而非显示收藏加号
+- 表世界条目详情右上角需显示收藏状态或加号
+- 清单管理应跳转到单独页面
+- 番号搜索框输入内容后，需支持输入法确认直接触发搜索，无需额外点击搜索按钮
+- 番号收藏到清单功能中，不应显示对号标记
+- 里世界清单中的播放器需支持退出功能
+- 里世界资源访问需要外网环境，表世界资源可在国内网络环境使用
+- 本子页面的"最近更新"按钮和分类加载功能需修复，网络规则应与番号一致（需外网环境）
+- **P站模块硬约束**：采用单站原生解析+搜索形态（类似X站但加搜索），全部接口先用真站实测再写代码；播放直链仅需UA即可直连，ExoPlayer HLS硬解直接播放；分类现在是 `/video?c=数字` 格式，旧的 `category=slug` 会被301重定向；搜索接口不接受排序参数会404，搜索态忽略排序档位；列表/搜索/分类/排序/分页/下拉刷新/会话缓存全部复用X站现有成熟实现
+- 豆瓣登录必须保持 WebView 与 App 请求的 UA、bid cookie 完全一致，否则会被豆瓣风控判定指纹不匹配导致会话被踢
+- 豆瓣登录页进入前必须精确清除豆瓣域的所有 WebView cookie 及本地持久化的死 cookie，避免残留旧会话导致误弹登录成功
+- 豆瓣登录态校验必须使用 `/mine/` 重定向判据，不能依赖静态页面中的登录入口标记，避免移动版页面渲染导致旧判据失效
+- 豆瓣 qnmob*.doubanio.com 旧图床域已下线，所有该域的图片请求需自动重写到 img2.doubanio.com
+- **每次发版必须同步更新仓库根 `version.json`**（2026-10-27 用户强调「每次都要更新请记住」）：`versionName / sizeBytes / sha256 / changelog / apkUrl` 必须与本次 Release 完全一致（sha256 取 APK 实测值，与 Release asset digest 核对）；App 在 GitHub API 不可达时完全依赖它检查新版，漏更 = API 被墙的用户永远收不到新版本。
+
+## Engineering Conventions
+- **版本号规则（2026-09-22 用户指定，取代「读提交次数」，也取代最早的 `2.23.NN`）**：**每个发版轮次 `versionName` = 上一版 +1**（不补零），**从 `0.190` 起**（`0.190` → `0.191` → `0.192`…）。⚠️ **不再读 `git rev-list --count HEAD`**：老规则会因为"每轮固定产生 2 个提交（功能提交 + 记忆同步提交）"而每次 +2（用户 2026-09-22 指出 `0.185 → 0.187` 正是 +2，要求以后 +1）。APK 文件名 = `老郑分享-0.<N>.apk`，GitHub 资产名 = `LaoZhengFenXiang-0.<N>.apk`（必须 ASCII），tag = `v0.<N>`。⚠️ **versionCode 固定取 `1000 + N`**（`0.190` → `1190`；必须保持单调递增，否则系统拒绝覆盖安装）。**版本沿革**：最后一个"提交次数"版本是 `v0.183`（versionCode 1183，Release 392804722，仍在仓库里）；`v0.185`/`v0.187` 的改动与 tag/Release 已按用户要求**全部撤销**（2026-09-22，`git revert` 5 个提交），**版本号从 `0.190` 重新起算**；仓库 `app/build.gradle.kts` 当前为 `0.324 / 1324`（v0.324 发版后；上一版是 `0.323 / 1323`）。
+- **项目记忆同步（v2.21.2 起，用户要求"换电脑/换账号也不丢上下文"；2026-10-16 用户再次强调并升级为**每轮必做**）**：
+  ⚠️⚠️ **记忆文件有「两份」，每轮改动收尾时两份都必须更新，并且都要 push——不许只更一份、更不许只留在本地**：
+  ① 仓库 `docs/AI_PROJECT_MEMORY.md`（随 commit 进 git，供换电脑/换 AI 账号后恢复上下文）；
+  ② 本机 `c:\Users\62496\.trae-cn\memory\projects\-d-D-P-ShangYin--p2-bf81374ee92d029c9e64\project_memory.md`（TraeCode 的项目记忆，AI 每轮读取的那份）。
+  两份**必须全文一致**，做法：改完仓库那份后用 `[System.IO.File]::Copy` 覆盖本机那份（或反之），再 `git add docs/AI_PROJECT_MEMORY.md` + commit + `git push origin main`。
+  **2026-09-24 的教训（用户原话"以后记忆文件也要更新和推送"）**：v0.212 发版时只更新了仓库那份，本机记忆停留在 `0.191` 且完全没有音乐模块/33ve 等近期记录。**这是漏项，不是可选项**。
+  历史背景：本机那份曾长期是"源头"、仓库那份是镜像；现在只要两份最终一致即可，方向不限。
+- **⏩ 完成即发版（2026-10-27 用户授权）**：以后每轮需求改完、编译/测试通过后**直接按完整发版流程发版**，不再等用户说「发版」；发版结束只报告版本号、Release 链接、构建产物路径，不创建桌面副本。
+- **发版流程（以本会话为准；2026-09-22 起版本号改为「上一版 +1、从 0.190 起」）**：① 算版本号：**上一版 +1** → `versionName = "0.<N>"`、`versionCode = 1000 + N`（规则见上条；**不再读提交次数**；下一版就是当前 `0.190` 之后要发的那个号）→ ② 需要时同步 README 功能描述 → ②b **更新仓库根 `version.json`**（versionName / sizeBytes / sha256 / changelog / apkUrl 与本次 Release 严格一致；本步不可省，见 Hard Constraints）→ ③ **记忆同步（两份都做，见上条"项目记忆同步"）**：更新仓库 `docs/AI_PROJECT_MEMORY.md` → 用 `[System.IO.File]::Copy` 覆盖本机 `project_memory.md` 使两份一致 → 随本次 commit 一起 push（**绝不只留在本地**）→ ④ `git add <只加自己改过的文件>` + commit → ⑤ `git push origin main` → ⑥ `git tag v0.<N>` + `git push origin v0.<N>` → ⑦ **查一次** Release：`GET /repos/Bug142857/ShangYin/releases/tags/<tag>` —— **404 → 直接由本会话 POST 创建 + 上传 APK**；万一已是 200 → 只核对资产，**不重复上传、不删改** → ⑧ **不再创建桌面副本**（2026-10-27 用户要求：App 已支持应用内更新）——直接告诉用户构建产物路径 `app/build/outputs/apk/release/老郑分享-0.<N>.apk`，便于需要时直接点开 → ⑨ **仓库卫生核查**（见下方「仓库卫生硬规则」⑤）：`git ls-tree --name-only origin/main` 确认根目录没有 APK 与调试产物，有则当场清掉。⚠️ **历史遗留（已结束，流程里不再为它让步）**：早前另有一个并行 AI 会话会在 tag 推送后自动代建 Release，**该会话已于 2026-09-21 结束**（已核实：仓库无 GitHub Actions、无 bot，时间戳显示是 agent 行为）。**因此发版不再有任何「等待/重查/核对他人产物」的步骤，一律由本会话一次做完；历史条目里出现的「并行会话代建 Release」只是当时的记录，不代表现在还有第二条流水线。**
+- **发版工具细节（本会话实测可用，照做即可）**：gh CLI 未安装 → 直接调 REST：用环境变量 **`$env:GH_TOKEN`**（40 字符）作 `Authorization: token ...` 头；创建 `POST /repos/Bug142857/ShangYin/releases`（JSON: tag_name/name/body/draft/prerelease）→ 上传 `POST https://uploads.github.com/repos/Bug142857/ShangYin/releases/<id>/assets?name=<ASCII文件名>`（`Content-Type: application/vnd.android.package-archive` + `-InFile`）；查询用 `GET /repos/Bug142857/ShangYin/releases/tags/<tag>`。⚠️ 硬教训：**资产名必须纯 ASCII**（GitHub 会自动剥离中文，实测中文名被剥成 `-0.179.apk`，统一用 `LaoZhengFenXiang-0.<N>.apk`）；PS1 脚本/命令含中文会被按 GBK 解析报语法错（命令尽量短、复杂格式化别写内联 if）；`Copy-Item` 会被沙箱拒 → 用 `[System.IO.File]::Copy`；`curl ... | ConvertFrom-Json` 偶发返空对象，别据一次空输出判失败。**2026-10-27 补充**：`$env:GH_TOKEN` 可能不存在（本机用户/系统环境均无），可用 `"protocol=https`nhost=github.com`n`n" | git credential fill` 从 Windows 凭据管理器取出 40 位 token（`credential.helper=manager`），只在当前进程内使用、不落盘；**PS1 脚本文件里的中文会按 GBK 解析成乱码**（Release body / 中文 APK 路径都被坑过）→ 脚本保持纯 ASCII，APK 用 `Get-ChildItem *.apk` 取路径，中文 payload 写成 UTF-8 JSON 文件再用 `Get-Content -Raw -Encoding UTF8` 读，`Invoke-RestMethod` 传 `UTF8.GetBytes` 字节数组。
+- APK 输出: release 包在 `app/build/outputs/apk/release/老郑分享-{versionName}.apk`（**2026-10-27 起不再复制到桌面**，把该路径直接告诉用户即可，用户需要时自己点开）；每次改完都要 git push；**commit 后直接自动 push，禁止再用 AskUserQuestion 征询推送确认（2026-09-11 用户授权，2026-10-16 用户第三次强调"之后帮我自动推送"——旧规则"拦截时 AskUserQuestion 征询"已废止；安全策略若拦截 push，直接重试让用户在 IDE 权限弹窗放行即可）**；注意被拦截的组合命令（add+commit+push）会整体不执行，放行后需重新逐段执行；每次正式修改后必须 bump versionCode/versionName
+- **应用内升级（0.315 起，2026-10-27）**：入口 = 配置管理 → 版本更新（**仅手动检查**，不做启动自动检查）。① 检查顺序：`GET /repos/Bug142857/ShangYin/releases/latest`（`User-Agent` 必须带，否则 403）→ 失败（网络/限流/404）再读仓库根 `version.json`，清单地址依次为 raw 直连 → `gh-proxy.com` → `ghproxy.net`；② 下载顺序：GitHub 直连 → `gh-proxy.com` → `ghproxy.net`，每通道下完都校验 Release `digest` 的 SHA-256，校验不过视为该通道失败并换下一个；全失败才报错并提示「打开发布页」；③ 安装走 `FileProvider` + 系统安装器（`REQUEST_INSTALL_PACKAGES`；Android 8+ 需用户允许「安装未知应用」，普通应用无法静默安装）；④ **发版时必做**：把仓库根 `version.json` 的 `versionName / sizeBytes / sha256 / changelog / apkUrl` 更新为本次 Release（sha256 用 APK 实测值），否则 API 被墙的用户读到的还是旧清单；⑤ 镜像实测（2026-10-27 本机，对 0.314 真实 APK）：`gh-proxy.com` ≈1.7MB/s、`ghproxy.net` ≈230KB/s、`ghfast.top` ≈22KB/s（太慢不纳入）、`ghproxy.cc` 证书过期、`hub.gitmirror.com`/`raw.gitmirror.com` DNS 失败、`gh.llkk.cc`/`github.moeyy.xyz` 超时、`ghproxy.1888866.xyz` HTTP 525；镜像会失效，换镜像只改 `UpdateChecker.MIRROR_PREFIXES` / `MANIFEST_URLS` 两个常量。⑥ **发版记录**：commit `5c8421e`（功能）+ `537d71c`（version.json 同步）/ tag `v0.315` / **Release `424965651`** / 资产 `LaoZhengFenXiang-0.315.apk`（20,766,205 字节，SHA256 `F2D1B4417D0ACC27E5EA16159FAB5013239C0B91949AC99BF9C413D160D14DA3`，与 Release digest 一致）；桌面已更新为 `老郑分享-0.315.apk`（0.314 已删）。
+- **v0.316 模块重构 + 音乐播放模式（2026-10-27）**：① 首页取消「表世界/里世界」底部双 Tab（`HomeScreen` 只保留模块宫格）；原表世界（搜索 + 分类 + 根清单）整体搬进新模块 **清单**（key `lists`，路由 `listsHome`，`ListsHomeScreen`），默认排在 `game` 前；老用户已保存的模块顺序在 `SettingsStore.normalizeOrder` 里自动把缺失的 `lists`/`watch` 插到 `game` 之前。② 新增模块 **观影**（key `watch`，路由 `watchHome`，`WatchHomeScreen`）：即原清单详情「在线观看」的跨源搜索独立版（只搜 `region != "proxy"` 的源），结果行爱心用 `InnerFavorites` module=`watch`（id=`srcId|vodId`，收藏重放按片源重建条目走 `openVodAndPlay`），与清单 Room 收藏完全独立；清单详情的「在线观看」保持不变。③ 设置新增 **收藏管理**（`favoritesManage`，`FAV_MODULE_ENTRIES` 驱动，卡片显示各模块收藏数 → `innerFavs/{module}`）；配置管理标题不再显示版本号。④ 音乐播放器改为进度条下 5 按钮；`MusicPlayback.PlayMode` 四态 SINGLE/ONE/SEQUENTIAL/RANDOM（默认 SINGLE=REPEAT_MODE_OFF，靠 `onMediaItemTransition(AUTO)` 回退并暂停实现「单首播放」；SEQUENTIAL=REPEAT_MODE_ALL；RANDOM=ALL+shuffle；ONE=ONE），切换后小字提示 1 秒；搜索/收藏/下载三种列表均以整份列表为队列（收藏页此前只播单曲，已修复）。⑤ **发版记录**：commit `6322086` / tag `v0.316` / Release `425002754` / 资产 `LaoZhengFenXiang-0.316.apk`（20,782,593 字节，SHA256 `e9a56376ec4cd3d5cca659ef769f379753a94af9bbd7e0542d56c6d30bc6a220`，与 Release digest 一致）；`version.json` 已同步；桌面只留 `老郑分享-0.316.apk`。
+- **v0.317 增量调整（2026-10-27）**：① 模块顺序改为 `lists → watch → music → game → tv → melon`（音乐与游戏换位）；老用户已保存顺序由 `SettingsStore` 一次性 `swapMusicAndGame` 迁移（标记 `inner_order_317_swapped`，已加入 `NON_BACKUP_KEYS` 不参与备份）；`FAV_MODULE_ENTRIES` 同步按模块宫格顺序排列（watch/music/game/tv/melon/book/comic/h2/h1/psite/xsite）。② 观影与清单「在线观看」搜索都改为**实时追加**（每源返回即显示，不再等全部完成）；「共 XX 条结果」行常驻，搜索中最右侧「停止搜索」（`searchJob` + `searchSeq` 丢弃未完成源的结果，保留已搜到的）。③ **版本更新进度条修复**：`UpdateChecker.download` 的 `onProgress` 在 OkHttp 线程回调，原来直接写 Compose 状态不会触发重组（进度条停在 0）→ 改为 `scope.launch` 回主线程更新并 200ms 节流，且下载完成后忽略滞后回调。④ 迷你播放条补「上一曲」按钮（上一曲/播放暂停/下一曲）。⑤ 主页分割线上下留白 6→14dp。⑥ 设置里「模块管理」小字改为「模块入口编辑」。⑦ **发版流程变更**：不再创建桌面副本，只报告构建产物路径 `app/build/outputs/apk/release/老郑分享-0.<N>.apk`。⑧ **发版记录**：commit `09a0310` / tag `v0.317` / Release `425069337` / 资产 `LaoZhengFenXiang-0.317.apk`（20,782,593 字节，SHA256 `69fc9dfe75f6d4e089c50af3a013111ba5830de8ae34e958f59d48cd1dcd3601`，与 Release digest 一致）；`version.json` 已同步；构建产物 `app/build/outputs/apk/release/老郑分享-0.317.apk`（未拷桌面）。
+- **v0.318 更新超时与配置页紧凑（2026-10-27）**：① 更新下载用的 OkHttp `client` 连接/读取超时统一收紧到 **10 秒**（`UpdateChecker`），有效线路 10 秒内必有响应，超时立即换镜像；`checkClient` 仍是 6/10/10。② 配置管理 `SettingsCard` 改为紧凑单行：图标 20dp + `titleSmall` 标题 + `labelSmall` 说明（`weight(1f)` + 省略号）+ 18dp 箭头，卡片上边距 6dp、内边距 9dp，顶部/底部留白 4/6dp，十个入口一屏可放下（仍保留 verticalScroll 兜底小屏）。③ **发版记录**：commit `2902782` / tag `v0.318` / Release `425085846` / 资产 `LaoZhengFenXiang-0.318.apk`（20,782,593 字节，SHA256 `70420551918d37a4068de680da756ff1009309a75fd6383c066eba342b38048e`，与 Release digest 一致）；`version.json` 已同步；构建产物 `app/build/outputs/apk/release/老郑分享-0.318.apk`（未拷桌面）。
+- **v0.319 息屏下载保活 + 配置页折中排版（2026-10-27）**：① 新增 `DownloadKeepAlive`（引用计数 begin/end，最后一个任务结束延迟 3s stopService）+ `DownloadKeepAliveService`（前台服务 `foregroundServiceType="dataSync"`，Manifest 新增 `FOREGROUND_SERVICE_DATA_SYNC` 权限与 service 声明）：下载期间 `startForeground` + `PARTIAL_WAKE_LOCK`（6 小时兜底超时）+ `WIFI_MODE_FULL_HIGH_PERF`，息屏/切后台继续下载；通知 channel `download_keep_alive`（IMPORTANCE_LOW，任务结束自动消失）；Android 12+ 后台启动 FGS 可能被拒，`begin` 里 runCatching 静默兜底（下载从前台发起，正常不受影响）。② 接入全部下载路径并严格 try/finally 成对：`UpdateChecker.download`、`VideoDownloadManager.start` 的 job、`ComicDownloadManager.enqueue` 的章节 job、`MusicDownloader.download`、`BookDownload.saveTo`。③ 配置管理 `SettingsCard` 取 0.317（过高）与 0.318（过细）的折中：两行文字（`titleSmall` + `bodySmall`）、图标 22dp、卡片上边距 6dp、内边距 8dp，10 项约 590dp，不滚动且基本填满屏幕。④ **发版记录**：commit `34de449` / tag `v0.319` / Release `425104204` / 资产 `LaoZhengFenXiang-0.319.apk`（20,782,681 字节，SHA256 `29785cba93c833ac064ba4116fd43596f0739fd15deb58bd97af99b90cc7cacf`，与 Release digest 一致）；`version.json` 已同步；构建产物 `app/build/outputs/apk/release/老郑分享-0.319.apk`（未拷桌面）。
+- **v0.320 更新下载线路优选（2026-10-27）**：① `UpdateChecker` 新增 `channelsFor(info)`（直连 + `MIRROR_PREFIXES` 镜像，去重）、`rankChannels(info)`（并发 `async` 测速，按速度降序返回全部线路；失败/超时排最后，全失败保持原顺序）、`probeSpeed(url)`（Range 0-262143 拉 256KB 样例，`probeClient` connect/read/call 均 4 秒，Content-Type 含 text/html 或读取 <32KB 视为失败，速度 = bytes/秒，计时含 DNS/TLS/重定向）。② `download(...)` 新增 `preferredChannels` 与 `onChannel` 参数：按优选顺序整包下载，每条线路开始前回调 `onChannel(channelLabel(url))`，失败自动换下一条。③ `UpdateDialog` 新增 `Probing` 状态（标题「正在选择下载线路」，可取消；取消时先回 Available 再 cancel，`ensureActive()` 防止取消后仍进入下载）和 `Downloading.route` 字段，进度下方显示「线路：xxx」。④ **发版记录**：commit `ac13aee` / tag `v0.320` / Release `425124873` / 资产 `LaoZhengFenXiang-0.320.apk`（20,782,681 字节，SHA256 `93a5aa30444e119fa1189951f10cc258ae2231b151de94b2056adb3911e6da81`，与 Release digest 一致）；`version.json` 已同步；构建产物 `app/build/outputs/apk/release/老郑分享-0.320.apk`（未拷桌面）。
+- **v0.321 缓存与数据备份完整性审计（2026-10-27）**：① **备份完整性**：`ExportData/ExportJson` 新增 `readProgress`（来自独立 SP `ReadProgressStore` 的漫画/本子上次看到）与 `hasVodSources / hasInnerFavs / hasConfig / hasReadProgress` 字段存在标记；`Repo.exportAll` 导出阅读进度，`Repo.importAll` 仅在字段存在时替换（字段存在但为空 = 清空；老备份缺字段 = 保留本机），并在导入后清 `DetailCache`、`ComicCacheStore`、`ComicStatusStore.clearMemory()`。② **修复的坑**：导入空片源/空收藏原来不生效；老备份只有 `config.vod_sources_json` 时片源被误丢；`parseExportJson` 增加 `items/lists/listItems` 校验（误选普通 JSON 不再清空数据）；config 全量恢复保留空值语义（`applyConfig` 只在补缺模式跳过空值）。③ **缓存**：`ComicCacheStore` 增加 `clear/size`；`App.clearAllCaches` 增加漫画/本子详情缓存、`cacheDir/updates`、`cacheDir/share`，`cacheSizeBytes` 同步统计；设置页缓存统计/清理移到 IO 线程。④ **云同步**：恢复前自动备份最多保留 10 份（`pruneAutoBackups`）；上传/恢复文案补全备份范围。⑤ **边界（有意保留）**：自动配置备份 `ConfigBackup` 仍只覆盖 `app_settings`（不含阅读进度与本地下载文件），完整数据备份靠「数据管理 → 导出」或云同步；Android 10 以下 ConfigBackup 仍跳过（系统分区存储限制）；JSON 备份包含登录态/WebDAV 密码等敏感配置（原设计，注意保管）。⑥ **发版记录**：commit `b27c2bd` / tag `v0.321` / Release `425165790` / 资产 `LaoZhengFenXiang-0.321.apk`（20,782,681 字节，SHA256 `cfe158c5e9549b4648c9e4a0a65a295925a611676e68918677ee90329471e97b`，与 Release digest 一致）；`version.json` 已同步；构建产物 `app/build/outputs/apk/release/老郑分享-0.321.apk`（未拷桌面）。
+- **v0.322 横屏 / 车机适配（2026-10-27）**：① 新增 `ui/common/Responsive.kt`：`adaptiveGridColumns(portrait)` 按 `LocalConfiguration.screenWidthDp` 递增列数（>=1600/1200/900/700/600；portrait 3→8/7/6/5/4，portrait 2→6/5/4/3/3）；`adaptiveModuleColumns()` → 8/7/6/5/4/3；`isWideScreen()` = 宽度 ≥600dp。② 应用范围：Home 与 ModuleManage 宫格动态列数（拖动 reorder 的 gridColumns 同步）；Settings 宽屏双栏（5+5，`SettingsEntry` 列表重构）；FavoritesManage / Download 文件夹 / 已下载视频网格多列；豆瓣搜索、番号、本子、漫画、图书、游戏、X站、P站、演职员、剧照、图片总览等 LazyVerticalGrid 全部改用自适应列数（`GridItemSpan(3)` 同步改为 `GridItemSpan(gridColumns)`）；音乐播放器 5 按钮由 SpaceEvenly 改为居中 `spacedBy(14.dp)`，宽屏不被拉散。③ **注意**：PlayerScreen 右侧 300dp 选集面板仍固定 3 列（面板宽度固定，不能按全屏宽度算）；App 未锁定屏幕方向，车机横屏/旋转由系统决定，MainActivity 已声明 orientation/screenSize 等 configChanges，Compose 会按新宽度重排。④ **发版记录**：commit `b507df0` / tag `v0.322` / Release `425192098` / 资产 `LaoZhengFenXiang-0.322.apk`（20,782,681 字节，SHA256 `b56babaa831c707bf5f29bc97d78f9f6c0bff6a7752f63ee19af18e014f91443`，与 Release digest 一致）；`version.json` 已同步；构建产物 `app/build/outputs/apk/release/老郑分享-0.322.apk`（未拷桌面）。
+- **v0.323 横屏方案复核 + 预览页（2026-10-27）**：① 新增 `docs/ui-redesign/landscape-preview.html`：16:9 画布、可切换首页/配置管理/收藏管理/下载管理/番号/音乐播放六个界面，可模拟 600/700/960/1280/1600/1920dp 逻辑宽度（只影响列数与是否双栏）、深浅色、全屏；列数函数与 `Responsive.kt` 完全一致，供车机安装前对照布局。② 修掉预览页的样式类名冲突：顶部工具栏与播放器按钮组原来共用 `.controls`（工具栏带 `margin-left:auto`），导致播放器 5 按钮被推到右侧 → 播放器改用独立 `.player-controls` 居中。③ **APK 无功能改动**（v0.322 已把 `SpaceEvenly` 改成 `spacedBy(14.dp, Alignment.CenterHorizontally)`，5 按钮宽度 48/48/64/48/48 左右对称，播放键正中）；本版仅递增版本号并随包发布预览页，功能等同 0.322。④ **发版记录**：commit `3c9b649` / tag `v0.323` / Release `425219705` / 资产 `LaoZhengFenXiang-0.323.apk`（20,782,681 字节，SHA256 `275579034f1ac39cddc25b8ef68cad55ebb82acae6f50dd0c536c7630b8bbdd9`）；`version.json` 已同步；构建产物 `app/build/outputs/apk/release/老郑分享-0.323.apk`（未拷桌面）。⑤ **README 重写（commit `72b6010`）**：彻底删除「表世界 / 里世界」表述，改为「首页模块宫格（分国内可用 / 以下模块需要外网环境两区）+ 各模块」结构；新增「收藏体系」（清单收藏 vs 爱心收藏）、「离线下载」、「数据与设置」、「应用内更新」、「横屏 / 车机」章节；说明只随文档改动，APK 无变化、不单独发版。
+- **v0.324 模块收藏 / 分区下载搜索（2026-10-28）**：① `InnerFavoritesScreen` 新增搜索栏（`AppSearchField`，本模块有收藏时才显示），按 `title` / `subtitle` 边输边过滤，排序 chips 保留；`items` 即过滤后列表（音乐收藏播放队列 = 搜索结果），无匹配显示「没有找到与「关键词」匹配的收藏」。② `DownloadListScreen` 分区页（视频/漫画/本子/音乐/书籍）在有已下载内容时显示搜索栏：视频匹配 `title` + `sourceName`、漫画/本子匹配 `title`、音乐匹配文件名与内嵌歌手标签、书籍匹配文件名；`musicSectionContent` / `bookSectionContent` 入参由 `Summary` 改为 `List<MediaFileStore.Entry>`；无匹配显示「没有找到与「关键词」匹配的下载内容」，清空即恢复；「编辑」按钮仍按分区全量条目判断。③ **发版记录**：commit `49f2cf6` / tag `v0.324` / Release `426177078` / 资产 `LaoZhengFenXiang-0.324.apk`（20,782,681 字节，SHA256 `bd705bbbec736793e53be624bdb0b032e9b7e9638d0a605a6033d4fe08d80b62`，与 Release digest 一致）；`version.json` 已同步；构建产物 `app/build/outputs/apk/release/老郑分享-0.324.apk`（未拷桌面）。
+- **⛔ 仓库卫生硬规则（2026-10-23 用户：「写进记忆以后不要出这样的错误」）**：根目录曾被我在 0.302~0.307 六个版本里陆续提交了 6 个 APK + `.bin` + `parse_test.py` + 分享打包目录，用户打开 GitHub 直接看到「乱套了」。今后**任何二进制/构建产物/调试残留一律禁止进入 git**，只允许提交源码、Gradle 配置、`gradle/wrapper/*`（含 `gradle-wrapper.jar`）、`docs/`、`README` 等文本：
+  ① **APK / AAB 永不入库** —— 只上传 GitHub Release 资产（ASCII 名 `LaoZhengFenXiang-0.<N>.apk`）；构建产物留在 `app/build/outputs/apk/release/`（v0.317 起不再拷桌面，把路径告诉用户即可）；
+  ② 调试产物（`*.bin`、`*_test.py`、临时 html/json/txt、`.trae-html-share-packages/`、截图、录屏）只留本地，**用完即删**；
+  ③ **每次 commit 前必做**：`git -c core.quotepath=false status -s` 逐条看清要提交什么，出现任何 `.apk/.bin/.zip/.mp4/.png` 就先停下来确认是否该入库；
+  ④ **新增任何文件类型前，先把匹配规则写进 `.gitignore` 再 add**（旧 `.gitignore` 只挡了 `app-debug.apk` 与 `老郑分享-debug.apk` 两个具体名，所以中文正式包一路裸奔了 6 个版本 —— 教训：**ignore 规则要按通配符写，不要按具体文件名写**）；拿不准用 `git check-ignore -v <路径>` 验证；
+  ⑤ **发版收尾必查**：`git -c core.quotepath=false ls-tree --name-only origin/main`，根目录只应出现 `.gitignore / README.md / app / build.gradle.kts / docs / gradle / gradle.properties / gradlew.bat / settings.gradle.kts / version.json`，多了东西立刻清理；
+  ⑥ 已入库的文件**写了 ignore 也不会自动消失**，必须 `git rm --cached <路径>`；本地副本要不要一起删另定（`Remove-Item`）。
+- 构建 shell 是 PowerShell（不支持 && 与 bash heredoc），用 `;` 分隔命令、提交信息用 git commit -F 文件；**JAVA_HOME 需指向 `C:\Users\62496\.local\share\rea-tools\jdk-21.0.12.1+1`**（`D:\Java\jdk-21.0.12.1+1` 已不存在，环境未预置 JAVA_HOME，直接跑 gradlew 会报 "JAVA_HOME is not set"）
+- 同一文件多处修改严禁并行 Edit（互相覆盖导致改动丢失，已踩坑多次）；material-icons-extended 已引入（Cloud/CloudUpload 等可用），core 集只有基础图标
+- 图片缓存：Coil diskCache 150MB LRU 自动清理（cache/image_cache）+ OkHttp HTTP 缓存 20MB（cache/http），手动清理由设置页"清理缓存"按钮触发（直接删目录兜底）
+- 长按下载图片：CoverImage 默认 `downloadable=false`（不挂手势）；仅独立卡片场景显式 `downloadable=true`，使用 detectTapGestures 避免手势冲突
+- 设置页面必须添加 verticalScroll 修饰符以支持内容超屏时的上下滚动
+- 清单条目计数：使用 WITH RECURSIVE CTE 递归统计所有层级后代清单的条目总数（影响主页根清单卡片、详情页子清单卡片、设置页分类管理）
+- 云同步功能：使用坚果云 WebDAV 实现数据漫游，服务器地址预填 https://dav.jianguoyun.com/dav/，需用户输入坚果云邮箱和应用密码；恢复前自动在本机创建备份文件（auto_backup_时间.json）；云同步页面需包含坚果云注册链接和应用密码图文教程链接，点击直接跳转系统浏览器
+- 编辑模式（ListDetailScreen）对条目和子清单都生效：× 删除（子清单删前弹确认，条目直接移出）+ 长按拖拽排序；子清单排序存 lists.sortIndex（DB v5，v4→5 加列迁移保留数据），排序按 sortIndex ASC, createdAt ASC
+- 详情页信息显示规则：影视/图书/游戏统一合并重复日期信息，直接显示完整日期（无"上映日期"/"发行日期"标签）；图书移除"基本信息"块，出版日期合并进头部
+- 横屏右侧选集面板（v2.10.4 / versionCode 74，commit a0b8578，2026-09-14 已 push）：横屏时线路+选集从"底部 LazyRow 浮层"改为右侧滑入面板（AnimatedVisibility + slideInHorizontally，CenterEnd，宽 300dp，黑底 alpha 0.72，fillMaxHeight），面板底部 padding 72dp 留出控制条 → 不再遮挡进度条；面板内容=标题+共N集+"线路"LazyRow+3列 LazyVerticalGrid 选集网格（Surface 圆角按钮，选中=主题色/onPrimary，未选中=白 alpha 0.12），跟随 controlsVisible 滑入滑出；竖屏信息面板不变。用户反馈模式：底部浮层遮进度条 → 面板化是解法
+- 控制条遮罩移除（v2.11.6 / versionCode 86，commit 5203c27，2026-09-15 已 push）：v2.11.6 隐藏不生效（用户实测"没变化"）——根因=**PlayerView 的 controller 布局延迟 inflate，AndroidView update 首次回调时 findViewById 全是 null，?. 安全调用静默吞掉**（exo_settings 隐藏同理从未生效过，只是齿轮可能本来就没显示所以没暴露）。正解：所有 controller 内 View 操作（exo_controls_background/exo_settings 强制 GONE、exo_progress 挂 OnScrubListener）移到 **setControllerVisibilityListener 回调里**——回调触发时 controller 必已创建；遮罩/齿轮每次显隐都强制 GONE（幂等兜底 media3 内部重置），scrub listener 用 barBound flag 首次成功后不再绑；update 回调只留 pv.player 赋值。⚠️ 通用教训：**对 View 系控件 findViewById 拿 nullable 返回值时，"绑一次"逻辑必须确认时机在 inflate 之后，否则静默失败；用 `?.let { bound=true; ... }` 成功才置 flag**
+- 片源链接测试（v2.10.5 / versionCode 75，commit 83f9f67，2026-09-14 已 push）：VodSource 加 testStatus（null/ok/dead/proxy）+testMsg+testAt（kotlinx 默认值兼容旧 JSON）；VodClient.testSource 返回带结果的 VodSource（请求 `?ac=videolist&wd=a&pg=1`，HTTP200+JSON code=1→ok"可用·共N部"，HTTP错误/非JSON/code!=1→dead，异常按 message 关键词 timeout/connect/refused/unreachable→proxy"需外网·直连超时/被拒"，其余→dead）；VodSourceScreen：点卡片测单个、顶栏 NetworkCheck"测试全部"（Semaphore(6) 并发 + joinAll，实时上屏 applyResult synchronized 防并发丢更新，结束 persist 落盘+Toast 汇总）；卡片状态行三色（ok 绿 0xFF2E7D32 / dead error红 / proxy 橙 0xFFEF6C00），汇总行"可用 n·已失效 m·需外网 k"。注意：测试结果随 vod_sources_json 持久化
+- 播放起播提速 + 分类表兜底（v2.11.2 / versionCode 82，commit dd06179，2026-09-15 已 push）：① 播放慢=ExoPlayer 默认 bufferForPlaybackMs 2500ms 攒缓冲才开播 → DefaultLoadControl.setBufferDurationsMs(30000,60000,**1200**,3000) 起播减半以上（min/max 保持流畅、rebuffer 3000 防频繁卡）；② 源资源库分类缺失根因：**很多源 `?ac=videolist` 不带 class 字段（苹果CMS 标准分类表在 `?ac=list` 接口）**→ VodClient.fetchCategories（ac=list，解析 VodResp.categories），SourceBrowseScreen 首次加载 scope.async 并行补拉合并 distinctBy type_id（type_pid=0 顶级排前），VodCategory 加 type_pid；③ Kotlin 教训：`kotlinx.coroutines.async` 不是顶层函数（scope 扩展），不能全限定调用，须 import async 后 scope.async{}
+- 手动分组防覆盖修复（v2.10.8 / versionCode 78，commit 5116e47，2026-09-14 已 push）：bug=编辑源改"所属目录"保存后，点卡片测试（点卡片=测试）时 testSource 的自动归组把 region 强制重置（ok/dead→cn、proxy→proxy），手动修改被顶回表现为"保存不生效"。修复：VodSource 加 `regionManual`（默认 false 兼容旧 JSON）；编辑对话框点目录 chip → regionTouched=true → 保存写 regionManual=true；testSource 中 `region = if (src.regionManual) src.region else 自动`；编辑保存时清空旧测试结果（testStatus/testMsg=null, testAt=0，地址变了旧结果不可信）；手动分组源状态行加" · 手动分组"后缀。教训：自动化逻辑（测试归组）与手动设置冲突时必须加 manual 标记
+- 片源目录分组 + H1/H2 搜索（v2.10.6 / versionCode 76，commit 289deb8，2026-10-14 已 push）：① VodSource 加 `region`（cn=国内可访问默认/proxy=需外网），testSource 测试后自动归目录（proxy→外网，ok/dead→国内），编辑对话框 FilterChip 手动改，VodSourceSub/toVodSource 同步兼容 region；② 片源管理按目录分组展示（国内在前"国内可访问 · n"、外网在后"需要外网环境 · m"，SectionHeader+SourceCard 私有 composable，LazyColumn key 加 cn_/px_ 前缀防冲突）；③ 数据导出/云同步均含片源（ExportData.vodSources 默认空列表兼容旧备份，importAll 非空才替换 SP）；④ 搜索类目 chips 加 H1/H2（Row horizontalScroll 防溢出），doSearch：H2→Toast"开发中"，H1→nav
+
+## Lessons Learned
+- koa-connect wrapper caused subtle ctx.state data loss; native Koa rewrite is required instead of wrapping Express middleware
+
+- **v0.279（P站模块完成，2026-10-21）**：
+  ① 实测结论：列表/搜索/分类页同构，统一解析 `li[data-video-vkey]` 节点，内含封面、时长、标题、上传者；列表页观看数在 `.views`、搜索页在 `.videoViews`（两处都兼容）；分类现在是 `/video?c=数字` 格式，旧的 `category=slug` 会被 301 重定向；排序 `o=ht/mv/tr/mr/lg` 可用；**搜索接口不接受 `o=` 会 404**（实测发现，搜索态忽略排序档位）；播放地址：视频页 flashvars 内嵌 `mediaDefinitions` JSON → 取最高清晰度 HLS master.m3u8，实测仅 UA 即可直连（无需 Referer），ExoPlayer HLS 硬解直接吃。
+  ② 实现落点：新建 `PsiteClient.kt`（网页解析客户端：列表/搜索/分类/排序/分页/缓存/重试）+ `PsiteScreens.kt`（搜索框 + 排序 chips + 分类 chips + 双列网格 + 相邻页码条/跳页 + 下拉刷新 + 会话缓存）；`AppNav.kt` 新增 `psiteHome` 路由；`HomeScreen.kt` 里世界第十入口「P站」。
+  ③ 交互与 X 站一致：点卡片 → 轻遮罩「正在解析播放地址…」→ 进内置播放器（横屏、断点续播 key 用 vkey 哈希）。需外网环境访问。
+  ④ 一个注意点：站点对部分 IP 段有地区封锁，若手机网络下列表空/403，换节点即可——解析失败的 Toast 会带出具体原因。
+  版本：0.279/1279。
+
+- **豆瓣登录系列踩坑（2026-10-27）**：
+  ① 豆瓣登录卡白屏根因：登录成功后豆瓣停在空白中转页，而自动提取条件排除了 `accounts.douban.com/passport` 路径，导致白屏页不提取 cookie；修复为 douban.com 域即尝试提取。
+  ② 登录后反复显示「已登录→已过期」根因：WebView 登录会话的 UA、bid cookie 与 App 请求不一致，被豆瓣风控判定指纹不匹配导致会话被踢；修复为两者完全统一。
+  ③ 未登录就误弹「登录成功」根因：登录页残留旧的死 cookie 被自动提取；修复为进入登录页前精确清除豆瓣域的所有 WebView cookie 及本地持久化的死 cookie。
+  ④ 游戏封面全黑根因：豆瓣搜索结果页轮换的旧图床域 qnmob*.doubanio.com 被整体下线，导致那几天点词条落库的条目 URL 全部成为死链；修复为图片拦截器自动将该域重写到仍存活的 img2.doubanio.com。
+- **v0.291（里世界模块管理 + 吃瓜/X站/P站爱心收藏，2026-10-22）**：
+  ① 模块管理：设置 → 模块管理（`ModuleManageScreen`，路由 `moduleManage`）对里世界 10 个模块（番号/本子/漫画/游戏/图书/电视/音乐/吃瓜/X站/P站）做入口显示开关；开关存 `SettingsStore` 的 StringSet SP key `disabled_inner_modules`，以 `SettingsStore.disabledInnerModules`（MutableStateFlow）驱动主页实时刷新；模块定义统一在 `ui/common/InnerModules.kt`（`INNER_MODULE_ENTRIES`：key/icon/route 一份），`HomeScreen` 里世界宫格改为按开关过滤后 `chunked(4)` 动态排布（不再写死三行）。
+  ② 爱心收藏：新增 `data/InnerFavorites.kt`（`InnerFav` 模型 + 独立 SP `inner_favorites`，kotlinx JsonArray 手动映射，StateFlow 驱动；`App.onCreate` 里 `InnerFavorites.init`）。melon 只存帖子 id（详情页重拉）；xsite 存直链 mp4+mediaId+时长（重放不再请求详情）；psite 存 vkey（重放时再解析直链）。收藏页 `ui/innerfav/InnerFavoritesScreen.kt`（路由 `innerFavs/{module}` 三模块共用）：点条目继续消费（吃瓜进详情 / X、P站直接播放）、长按确认删除（项目约定）；列表卡片右上角 `FavHeartButton`（黑底小圆+红心）、详情页顶栏 `FavTopBarIcon`（吃瓜/X站有详情页，P站无详情页只有卡片）。
+  ③ `playPost`（X站）/`playVideo`（P站）从 private 改公开供收藏页重放复用；三个模块首页 TopAppBar 加收藏入口（FavoriteBorder → `innerFavs/{module}`）。收藏数据为独立 SP，不进豆瓣收藏体系、不随导出备份。
+  版本：0.291/1291。
+- **v0.291 发版记录（2026-10-22）**：commit `683d916` / tag `v0.291` / **Release `420224731`** / 资产 `LaoZhengFenXiang-0.291.apk`（20,284,851 字节，SHA256 `68AC67415183018775E58FA3DC8A85EF799571CB06F316CD995FCA6A3C1B166D`）；桌面 `老郑分享-0.291.apk`。
+- **⚠️ 本机环境变更（2026-10-22，旧配置已失效）**：①**构建 JDK**：`JAVA_HOME=D:\Java\jdk-21.0.12.1+1` 已不存在，现用 **`C:\Users\62496\.local\share\rea-tools\jdk-21.0.12.1+1`**（REA 工具链里的 Temurin 21.0.12.1，同一版本）。⚠️ gradlew 失败时 PowerShell 后台任务**仍报 exit code 0**（且 `java -version` 的 stderr 会被 PS 当 NativeCommandError），**必须查产物 LastWriteTime/大小才算数**。②**git 身份**：这台电脑没有全局 git 配置，commit 会报 "Author identity unknown"；已给本仓库配 `--local` 级 `user.name=老郑 / user.email=laozheng@users.noreply.github.com`（沿用历史作者），换目录克隆后需重配。
+- **⚠️ 发版流水线空洞（2026-10-22 发现并补录）**：本地 git 曾停在 v0.278、远端 tag/Release 也只到 v0.278——0.279~0.290 各会话的改动（P站模块、豆瓣修复等）**只存在于工作区、从未 commit/push**，全部随 v0.291（commit `683d916`）一次性补录入库。教训：每轮发版必须核实 `git log` 已包含本轮改动且 push 成功，不能只看会话记录下结论。
+- **v0.292（收藏接入备份 + 爱心快藏扩展到番号/本子/漫画/电视，2026-10-22）**：
+  ① 收藏随备份走：`ExportData` 加 `innerFavs` 字段（默认空列表兼容旧备份），`ExportJson` 导出 `innerFavs` 数组、导入时 optJSONArray 缺失即跳过（保留现有收藏）；手动导出 / 坚果云云同步 / 恢复前 auto_backup 三条路径都走 `Repo.exportAll()`，自动全覆盖。
+  ② 爱心快藏扩展（用户明确要求「番号 本子 漫画 电视 都改成这种形式的」）：番号（H1 搜索 + 片源浏览页两处卡片，删除原「收藏到清单」CollectDialog 流程，id=`srcId|vodId`，重放走 `openVodAndPlay` 现拉详情）、本子（哔咔搜索卡片，id=漫画id，重放进 `bikaComic/{id}`）、漫画（Komiic 宫格卡片，id=漫画id，重放进 `comicDetail/{id}`）、电视（频道行，原收藏按钮改爱心，id=频道地址 videoUrl，重放走 `openLiveAndPlay` 直接开播）；各模块首页 TopAppBar 加 FavoriteBorder 收藏入口 → `innerFavs/{module}`。
+  ③ 收藏页 `open()` 支持 7 种 module 重放；h1 重放需 `SettingsStore.getVodSources()` 找回片源（片源被删时 Toast 明说）。
+  ④ 发版记录：commit `bcee767` / tag `v0.292` / **Release `420241167`** / 资产 `LaoZhengFenXiang-0.292.apk`（20,284,847 字节，SHA256 `1DEBBB464FDFC16D6A5600C85B645288B2F63FBECB54109AE5EE1EBEEE91DA94`）；桌面 `老郑分享-0.292.apk`。
+  ⑤ 编译踩坑：H2SearchScreen 里 `Icons.Rounded.Favorite` 同时被「点赞数」展示用——把 import 换成 FavoriteBorder 会漏掉它（编译错 Unresolved reference），同文件需要两个 import 并存。
+- **⚠️ GitHub Release 中文 body 乱码教训（2026-10-22，v0.291/v0.292 双双踩坑后修复）**：PowerShell `Invoke-RestMethod -Body <含中文的字符串>` 会按 ANSI/GBK 发送，GitHub 收到全变 `????`。正解：**JSON body 先用 UTF-8 写入临时文件（Write 工具），再用 `curl.exe --data-binary "@文件"` + `Content-Type: application/json; charset=utf-8` 发送**；PATCH/POST 后必须 GET 回读验证（曾有一次 curl 静默未生效，重试才 200）。创建和修补 Release 一律走这条路。
+- **v0.293（收藏页改音乐清单样式 + 音乐爱心收藏 + 本子收藏入口归位，2026-10-22）**：
+  ① 收藏页重做（8 模块共用）：样式照搬音乐清单（ListDetailScreen 的音乐布局）——标题+计数、「排序」行（更新=savedAt 倒序 / 歌手·作者=Collator 拼音序，算法同 sortItemsByArtist）、52dp 方形封面行（CoverImage+标题+副标题）；点条目消费、长按确认删除不变。第二个排序 chip 文案：music=「歌手」、其余=「作者」。
+  ② 音乐加入爱心快藏：MusicHomeScreen 搜索行尾原「收藏到音乐清单」的心改为 InnerFav 同款（下载按钮保留）；**原收藏到清单入口仍在完整播放页（MusicPlayerScreen 有 CollectDialog），功能没丢**。InnerFav 新增 `payload` 字段（music 存 MusicSong 全量 JSON 含 raw 解析字段，`songPayload()` 编码 / `restoreSong()` 解码），收藏页点开 `MusicPlayback.play` 直接播。
+  ③ 本子收藏入口从各分类/搜索列表页顶栏（ComicListScreen）移到一级主页顶栏（用户明确要求「应在主页下 不应该在每个分类里」）；卡片上的爱心保留。
+  ④ 发版记录：commit `701a3e4` / tag `v0.293` / **Release `420256023`** / 资产 `LaoZhengFenXiang-0.293.apk`（20,284,851 字节，SHA256 `A725BEDC3E506EC07ADBCC6885CBB3E49DD9FF9E6188ED35DBFE409BFA0E1550`）；桌面 `老郑分享-0.293.apk`。
+- **v0.294（收藏页两处体验修复，2026-10-22）**：① 收藏列表条目行尾的红心去掉（用户：已经在列表里就不用加红心）；② 音乐收藏页 Scaffold 挂 `bottomBar = { MusicMiniPlayer(nav) }`（迷你条自隐藏：没在播 song==null 直接 return，零高度）——点歌后播放条立即在本页底部出现，不用返回音乐主页才能看到。commit `2e925de` / tag `v0.294` / **Release `420266170`** / 资产 SHA256 `B51AC60A55F92338F1BAC3362FB5A7CAF0F8A9F2392AD9E9B3C3D697E27D5AE6`；桌面 `老郑分享-0.294.apk`。
+- **v0.295（图书/游戏收藏 + 收藏页下载管理入口 + 播放条适配 + 清除里世界清单，2026-10-22）**：① 图书（zlib，module="book"，id=`bookId|hash`）与游戏（同人游戏，module="game"，id=游戏id）加入爱心快藏：首页顶栏收藏入口 + 卡片右上角 FavHeartButton，收藏页点条目回详情（book 路由 `bookDetail/{bid}/{hash}`、game `gameDetail/{id}`）。② 收藏页顶栏加「下载管理」入口（module != "game" && != "tv" 才显示）→ `downloads` 统一下载管理页（视频/漫画/音乐/书籍分区，路由复用已有页面）。③ 收藏页迷你播放条挂 `MusicMiniPlayer(nav, Modifier.navigationBarsPadding())`——不再被手势导航栏挡住。④ **清除里世界清单残留（用户：清单只在表世界生效）**：漫画详情（ComicScreens）、本子详情（BikaComicDetailScreen）、音乐播放页（MusicPlayerScreen）三处「收藏到里世界清单」CollectDialog 全部替换为 FavTopBarIcon 爱心快藏（音乐播放页 payload=songPayload），删除 CollectDialog.kt（全仓已无使用者）；全仓 grep 确认无 showCollect/CollectDialog/MusicRepo.collect 残留。⑤ 教训：Edit 的 old_string 按前缀匹配到 BookDownload 行导致 InnerFav import 没插上（用两行上下文重插）；Bika 详情 gridIdx 声明曾被误改（new_string 写错插入重复声明），编译期才暴露——改完读一遍 diff 再编译。commit `4586fac` / tag `v0.295` / **Release `420283011`** / 资产 SHA256 `1272B0B338EFE5F374D40B64536D236A9A91CAD3965C23560E88D4121DD5AE42`；桌面 `老郑分享-0.295.apk`。
+- **v0.296（里世界清单彻底退场 + 下载管理改版，2026-10-22）**：① 里世界主页移除清单空态区（InnerWorld 不再收 innerLists 流、WorldListSection 删 world 参数，reorder 固定 0）；新建清单对话框只填名称（`Repo.createList(name, world=0, musicList=false)`），清单管理页移除里世界区块与 innerTree。② **下载管理改版**：DownloadScreen 变文件夹主页（5 张 FolderCard：视频/漫画/本子/音乐/书籍，数量+大小概览），点卡片 → 新增路由 `downloadsList/{section}`（DownloadListScreen，section=video/comic/bika/music/book），原各分区内容（任务/列表/展开阅读/删除确认）整体搬到列表页；漫画/本子任务按 source 过滤（bika→本子页）；原 DirCard（说明文字+路径+「点击打开文件夹」）删除。③ FolderCard 行尾「打开系统目录」TextButton = 原 openPublicDir/openPrivateDir 多级兜底逻辑。④ 跳转点：漫画详情 3 处 → downloadsList/comic、本子详情 2 处 → downloadsList/bika（ComicScreens/BikaComicDetail 全文件 replace_all）；收藏页/设置页仍进 downloads 主页。⑤ 教训：删函数参数时要 grep 函数体内所有引用（world 在 reorder 闭包里还有一处，编译才暴露）。commit `4c13153` / tag `v0.296` / **Release `420300510`** / 资产 SHA256 `5B24A019E26992C0C6AF62F18543AB05D9C2E0F004C933DC6C1CFE8A4AF8332D`；桌面 `老郑分享-0.296.apk`。
+- **v0.297（收藏页下载入口直达分区列表，2026-10-22）**：用户指出收藏页顶栏下载按钮应跳对应子列表而非主页——InnerFavoritesScreen 改为 `downloadsList/{section}`：h1/melon/xsite/psite→video、h2→bika、comic→comic、book→book、music→music（game/tv 无下载不显示）。commit `cd4e83e` / tag `v0.297` / **Release `420336550`** / 资产 SHA256 `6AA979B0008DC33005BB36DFB17F9A41660C4D1A4081F209ED3A7CB90E373D93`；桌面 `老郑分享-0.297.apk`。
+- **v0.298（模块顶栏只留收藏入口，2026-10-22）**：用户要求漫画/图书/电视右上角除收藏外的多余入口删掉——漫画首页+详情页删「我的下载」图标、图书首页删账号管理图标（设置→账号管理有入口+页内「去登录」兜底）、电视首页删电视源配置图标（页内空态「去配置」兜底）；同步清理无用 import（PlaylistPlay/Person）。模块顶栏口径从此统一：**只放收藏入口**。commit `38faff9` / tag `v0.298` / **Release `420341547`** / 资产 SHA256 `23E156CC03546DAF42E5FBD6B0885B10D0E7E86F4A451FA80941284A453EE6D7`；桌面 `老郑分享-0.298.apk`。
+- **v0.299（备份全量补齐 + 云同步入口挪进数据管理，2026-10-22）**：
+  ① **主备份新增 config 配置快照**（用户要求「除了播放进度/断点续播都补齐」）：`ExportData` 第 6 参 `config: Map<String,String>`（默认空 Map 兼容旧备份），手动导出 / 坚果云云同步 / 恢复前 auto_backup 三条路径全走 `Repo.exportAll()` 自动生效。内容 = `SettingsStore.exportConfig()` 快照，键集由 `ConfigBackup.KEYS` 定义，本轮新增 7 键：nickname / avatar_uri / download_internal / chapter_sort_desc / reader_vertical / video_downloads_json / disabled_inner_modules（KEYS 原有：豆瓣 cookie+ck、webdav 三件套、bika token+账密、wygamer cookie、zlib cookie+host、live_sources_json、melon_base、theme、vod_sources_json）。⚠️ **disabled_inner_modules 是 StringSet 键**：exportConfig 特判 `joinToString(",")`，导入 applyConfig 特判 split 还原 putStringSet 并同步 `disabledInnerModules` StateFlow（不同步则主页模块开关不刷新）。
+  ② **导入语义两档**：`Repo.importAll` 里 config 非空走新函数 `SettingsStore.importSnapshot`（overwrite=true，非空值直接覆盖；恢复前 auto_backup 兜底）并 `filterKeys { it != "vod_sources_json" }`（结构化 vodSources 字段负责片源，避免双写）；`ConfigBackup.restoreIfNeeded` 启动恢复仍走 `importConfigIfMissing`（只补缺失不覆盖），两函数共用私有 `applyConfig(data, overwrite)`。
+  ③ ExportJson：buildExportJson 根对象加 `config` JSONObject（旧客户端导入自动忽略）；parseExportJson `optJSONObject` 解析回 Map。
+  ④ **云同步入口挪位**（用户要求「把云端同步放到数据管理里」）：账号管理（AccountScreen）删云端同步卡片（并清理 Cloud/SimpleDateFormat/Date/Locale/safeNavigate 无用 import），数据管理（DataManageScreen）第一张卡片即云端同步（带 WebDAV 连接状态副标题，→ `cloudsync` 路由）；SettingsScreen 两入口副标题同步改。
+  ⑤ 发版记录：tag `v0.299` / 资产 `LaoZhengFenXiang-0.299.apk`（20,268,467 字节，SHA256 `EF55B54CA11DDB06AF0AF5F314CDEAD0BB525D05B90C7039448BDB6246F7F609`）；桌面 `老郑分享-0.299.apk`。
+- **v0.300（修 v0.299 导出全挂：配置快照 getString 撞 Boolean 键，2026-10-22）**：
+  ① 用户报「点导出数据失败」→ 根因是 v0.299 的 `exportConfig()` 用 `sp.getString()` 遍历 `ConfigBackup.KEYS`，而本轮新增的 `download_internal` / `chapter_sort_desc` / `reader_vertical` 三键在 SP 里是 **Boolean** 类型（putBoolean 写入）→ `getString` 强转抛 `ClassCastException: java.lang.Boolean cannot be cast to java.lang.String` → exportAll 整个失败，手动导出/云同步/恢复前自动备份三条链路全挂。教训固化：**SharedPreferences 是按 key 记类型的，读用错类型就 CCE；给"通用键遍历"加新键时必须核对每个键的写入类型，Boolean/Long 键不能走 getString**。
+  ② 修复：`exportConfig()` 非集合键改用 `sp.all[key]?.toString().orEmpty()`（取原始值统一转字符串，天然类型安全）；新增 `BOOLEAN_BACKUP_KEYS`（download_internal/chapter_sort_desc/reader_vertical），`applyConfig` 导入时对这三键 `putBoolean(key, value == "true")` 还原（putString 写进 Boolean 键会在下次 getBoolean 时同样 CCE）；StringSet 键特判不变。横向排查：SettingsStore 其余 getString/getBoolean/getLong 与各键类型全部匹配，无同类问题。
+  ③ 发版记录：commit / tag `v0.300` / 资产 `LaoZhengFenXiang-0.300.apk`（20,268,467 字节，SHA256 `3C8A629082382D7FD6879F12D281F51502BED4E4F572F476501B72BD3892C31A`）；桌面 `老郑分享-0.300.apk`。
+- **v0.301（UI 统一改版：搜索栏/图标/里世界布局 + 配置管理重排 + 下载管理可视化，2026-10-23）**：
+  ① 背景：AI 出了 3 套风格稿（docs/ui-redesign/ui-style-mockups.html，青瓷/夜航/白瓷格），用户明确**不采用任何新配色方案（品牌色仍是现有紫色主题，原话「颜色还是参考我的」），只汲取搜索栏/按钮/图标/布局形态**；后续需求按用户逐条口述执行。
+  ② 全局统一搜索栏 `AppSearchField`（Components.kt）：BasicTextField + 填充式圆角（surfaceVariant 55%、高≥48dp）+ 前置 Search 图标 + 输入后清空按钮，ImeAction.Search 回车触发并收键盘；全仓 11 处搜索框替换（Home/Comic/Live/Music/Melon/H1/H2/Psite/Game/Zlib/Search/VodSearchSheet），表单类输入（如 X 站页码跳转）保留 OutlinedTextField 不算搜索栏。
+  ③ 里世界布局重排（用户指定）：**每行 3 个、上下两区**——上区 游戏/音乐/电视/本子/吃瓜，中间「细线 + 小字『需要外网环境』」分隔，下区 图书/漫画/番号/P站/X站；HomeScreen.InnerWorld 与 ModuleManageScreen **同布局同图标**（ModuleIconBox：squircle=尺寸/3 圆角、surfaceVariant 底、primary 图标、enabled 灰化）。InnerModules.kt 图标全换：番号=Movie、本子=Book、漫画=Chat(AutoMirrored)、X站=Cancel、P站=PlayCircle、吃瓜=EmojiEmotions、电视=Tv、图书=MenuBook。底部 tab 图标：表世界=WbSunny、里世界=DarkMode。
+  ④ SettingsScreen 重写为「配置管理」：标题后直接接版本号（packageManager versionName）；8 条目固定顺序 主题管理/账号管理/数据管理/片源管理/清单管理/模块管理/下载管理/清理缓存；SettingsRow 统一「22dp 图标+标题+**单行省略小字**（maxLines=1+Ellipsis，用户要求小字一行控制统一高度、整页免滚动）」+右箭头；清单管理小字=清单总数（Repo.observeListsWithMeta），下载管理小字=「已下载 N 个文件 · 大小」（produceState 后台统计视频+漫画+本子+音乐+书籍）。账号管理小字=「豆瓣·哔咔·无忧·Zlib」，片源管理小字=「电视源&影视源（观影/番号）」。
+  ⑤ **下载管理 DownloadListScreen 改版**：所有资源**取消单条删除按钮**，统一「编辑→勾选→删除」AlertDialog（selected key：video/{id}、comic/{source}/{id}、music/{name}、book/{name}）；MediaFileStore 新增 deleteEntry（Q+ 按 RELATIVE_PATH+DISPLAY_NAME 删 MediaStore 记录）与 Entry.uri（Q+ content:// ID URI）；视频=双列网格 VideoGridCard（MediaMetadataRetriever 帧/loadThumbnail 封面 + 右下角黑底时长角标 + 「x1 · 大小」——补齐用户点名缺的 x部·xB）；音乐=MusicFileRow 对齐音乐主页（52dp 内嵌封面 loadMusicMeta + 时长 + 行内播放/暂停，MusicPlayback.state 驱动）；书籍=BookFileRow（loadBookCover：PDF 用 PdfRenderer 渲首页、EPUB 解 zip 找 cover 图；openBook 走 FileProvider，file_paths.xml 新增 external-files-path 书籍/视频）。
+  ⑥ 音乐新增 `MusicPlatform.LOCAL` 支持本地文件播放：MusicSong.raw["path"]=content://|file://，toMediaItem 对 LOCAL 直接用真实 URI；MusicPlaybackService 的 MusicAudioDataSourceFactory 改 **SwitchingDataSource 按 scheme 分流**（music://→http 直链解析，content://|file://→DefaultDataSource，要传 appContext）；MusicRepo.search/lyric/resolvePlay 三处 exhaustive when 补 LOCAL 分支。
+  ⑦ ListManagerScreen 去掉「表世界」分节头（WorldSectionHeader 删除，用户：清单只在表世界无需重复说明）。
+  ⑧ 编译教训：**Material 图标是扩展属性、不能全限定调用**（`androidx.compose.material.icons.Icons.Rounded.Search` → Unresolved，必须 import rounded.Search）；media3 自定义 DataSource 内部类持 Context 走构造参数；`produceState(null to 0L)` 推断成 Pair<Nothing?,Long> 后续赋值炸，用 `0 to 0L`；DownloadedVideo.id 是 String；ListAlt 不是 AutoMirrored。
+  ⑨ 发版记录：commit `8694af1` / tag `v0.301` / **Release `421389847`** / 资产 `LaoZhengFenXiang-0.301.apk`（20,284,963 字节，SHA256 `D4FCBEDFC4FD6D0451F11FA86DE04843F2AD97457DBB61BF03898602E358E5E8`）；桌面 `老郑分享-0.301.apk`。⚠️ 本机环境：FastGithub 在跑（127.0.0.1:443 MITM，github 系域名被它劫持到本机），**git 靠 sslverify=false 通过，curl 必须加 `-k`**；系统代理 7899 已关，GitHub REST 直连 127.0.0.1:443 可通。
+- **v0.302（用户 16 条 UI/交互反馈集中修，2026-10-23）**：
+  ① 表世界主页（HomeScreen）：搜索栏提到最上、分类按钮在搜索栏下（用户要求）；里世界宫格图标 52→64dp、行距收紧（用户嫌空旷、上下离太远要滑动）。
+  ② 模块管理（ModuleManageScreen）：**去掉 Switch 开关，点图标直接切换**（开=正常、关=变灰暗，ModuleIconBox enabled 加深置灰）；布局与里世界主页同构，中间「需要外网环境」分隔线两段各 weight(1f) 保证文字可见。
+  ③ 配置管理（SettingsScreen）**恢复 v0.300 卡片风格**（用户明确不要 0.301 紧凑列表）：SettingsCard=Card(surfaceVariant 35%)+图标+标题+单行小字+右箭头；版本号从标题移除；主题弹窗「完成」按钮删除（FilterChip 点选即生效）。
+  ④ 清单管理（ListManagerScreen）：**层级树默认全部收紧**，有子清单的行显示箭头，点箭头或行名逐级展开（expanded=Set<Long> rememberSaveable）；递归渲染用 `@Composable fun render`（局部 Composable 函数要标注解）。
+  ⑤ 片源页标题：「片源管理」→「影视源」（VodSourceScreen）、「电视源配置」→「电视源」（LiveSourcesScreen）；电视源页右下角 FAB 移到顶栏右上角 + 号（与影视源一致）。⚠️ 改 TopAppBar 结构时把收尾 `)` 写成 `}` 会导致整文件解析炸（KSP 报错位置乱跳，用括号深度逐行统计定位）。
+  ⑥ 音乐下载（MusicDownloader 重写）：先下临时文件→拉收藏封面→**写元数据落盘**：mp3 前置 ID3v2.3（TIT2/TPE1/TALB UTF-16 + APIC 封面）、flac 读原始 metadata 块追加 PICTURE 块（last-flag 处理）；Q+ 写 MediaStore 用 IS_PENDING=1→0；同名先删避免 (1) 副本；readNBytes 低版本不可用→手写 readFully。
+  ⑦ 下载管理（DownloadListScreen）：总页标题「我的下载」→「下载管理」；四个分区（视频/漫画/本子/音乐/书籍内部）**去掉「x个·x大小」标题**（总页文件夹卡已有）；音乐分区对齐音乐收藏页：排序行（更新/歌手）+52dp 封面行（封面+歌手来自 loadMusicMeta，新增 MusicMeta.artist 字段）+整行点播；**bottomBar 挂 MusicMiniPlayer**（未播放零高度自隐藏）。
+  ⑧ 删除修复：MediaFileStore.deleteEntry(context, entry) 新增按 Entry.uri 直接删（content:/file:），music/book 删除改走它——修「书籍在手机里没删掉」（按名称匹配 MediaStore 在部分机型失灵）。
+  ⑨ 视频封面：DownloadedVideo/VideoTask 加 coverUrl（JSON 持久化），start() 带封面参数；PlayerSession 加 coverUrl（clear() 重置），VodPlay（vod_pic）/MelonScreen（detail.cover）/XSiteScreens（post.thumbnail）三处设置；VideoGridCard 优先 AsyncImage 显示收藏封面、缺省退回本地抽帧。
+  ⑩ 后台关播放器同步（MusicPlayback）：MediaController.Builder **.setListener()** 挂 onDisconnected（addListener 只收 Player.Listener，MediaController.Listener 必须走 Builder）——清 controller/controllerFuture/progressJob 并 _state=State()；MusicPlaybackService.onTaskRemoved 无条件 stopSelf()。App 内底部播放条随划掉后台而消失。
+  ⑪ 吃瓜详情页右上角「在浏览器打开」按钮删除（openInBrowser 函数与 OpenInNew/Intent/Uri import 一并清理）。
+  ⑫ 发版记录：commit `eabf87e` / tag `v0.302` / 资产 `老郑分享-0.302.apk`（20,284,963 字节，SHA256 `DC2A0FB67FD8494DD1880029FFC287CCD1B1BC235953A5F83ABBEC4A7D39FDD8`）。编译错误三连：navigationBarsPadding 缺 import、`"$count件"` 被 Kotlin 把 `count件` 解析成一个中文标识符（要写 `"${count}件"`）、MediaController.Listener 不能 addListener 只能 Builder.setListener。
+- **v0.303（v0.302 装机反馈 6 项修正，2026-10-23）**：
+  ① **迷你播放条作用域收紧**（用户：只在音乐相关页面显示）：DownloadListScreen 仅 `section=="music"`、ListDetailScreen 仅 `isMusicList`、InnerFavoritesScreen 仅 `module=="music"`、MusicHomeScreen 常驻。
+  ② **本地音乐播放条封面**：LOCAL 歌曲没有 cover URL → MusicMiniPlayer 按 `song.raw["path"]` 用 `MediaFileStore.loadCoverFromPath()`（新增，内部走 loadMusicMeta 的 embeddedPicture）读内嵌封面；**delegated property（by produceState）不能 smart cast**，要先存局部 val。
+  ③ **已下载变对号**：PlayerScreen（按当前集直链 `dlLibrary.any { it.sourceUrl == curEpUrl }`）、XSiteDetailScreen（post.videoUrl）、MusicPlayerScreen（下载目录文件名 `startsWith(song.name)`）三处右上角下载按钮，已下载显示 CheckCircle + Toast「已下载」；删除后 StateFlow/重扫自动还原。音乐下载成功后 `downloadScan++` 触发重扫。
+  ④ **配置管理版本号恢复**：TopAppBar title 内 Row(Text("配置管理") + Text("v$versionName"))。
+  ⑤ **视频下载封面**（除吃瓜外）：根因是 playPost（X站）/ playVideo（P站）从未设置 `PlayerSession.coverUrl` → 下载记录封面空 → 回退本地抽帧。两处补 `post.thumbnail` / `video.thumbnail`；VodPlay 改 `full.vod_pic.ifBlank { item.vod_pic }`。
+  ⑥ **P站分类重做**：SORTS = 推荐(recommended) / 最新("") / 最热(ht) / 人气(mv) / 高分(tr)，DEFAULT_SORT="recommended"；`list()` 对 recommended 特判走 `$BASE/recommended?[c=&]page=N` 路径（其余仍 /video?o=）。
+  ⑦ 发版记录：commit `ce4fd1f` / tag `v0.303` / **Release `421482773`** / 资产 `LaoZhengFenXiang-0.303.apk`（20,301,347 字节，SHA256 `A9F972BE58E960952C29C2F96C66FEC8DB770ED1C6DB21FB04984E8F1CAFFAAC`）；桌面已更新为 `老郑分享-0.303.apk`（只留最新）。⚠️ 上传资产偶发 curl 55（send error），重试一次即成功。
+- **v0.304（里世界结构/主题/下载管理 6 项，2026-10-23）**：
+  ① 视频下载卡片副标题：`"x1 · 大小"` → `"来源 · 大小"`。DownloadedVideo/VideoTask 新增 `sourceName`（JSON 持久化），`VideoDownloadManager.start()` 增加第五参 sourceName；PlayerScreen 传 `PlayerSession.sourceName`、X站 downloadPost 传 `XSiteClient.SOURCE_NAME`；VodPlay 补 `PlayerSession.sourceName = src.name`；Melon 的 sourceName 由「51爆料」改为「吃瓜」。
+  ② **主题管理独立页**（新增 `ui/settings/ThemeManageScreen.kt`，路由 `themeManage`）：显示模式（跟随/浅/深）+ 主题色（dynamic/green/purple/blue/cyan/orange/pink，`ui/theme/Theme.kt` 的 ACCENT_OPTIONS + `ShangYinTheme(accentKey=)`，选具体色时用 `LightColors.copy(primary=…)` 覆盖，dynamic 走系统动态色）+ 实时预览卡；SettingsScreen 的主题卡改为跳页、删掉原弹窗；**MainActivity 改用 `SettingsStore.themeFlow/accentFlow` collect，切换不再 recreate**（原来 SP 监听里 recreate 一闪）。
+  ③ 下载管理数据自动刷新：DownloadScreen 与 DownloadListScreen 都加 `LifecycleEventEffect(ON_RESUME)` → 自增 tick + `scope.launch { ComicDownloadManager.refresh / VideoDownloadManager.refresh }`（refresh 是 suspend，必须包在协程里）；tick 作为 produceState 的 key 重新枚举视频/音乐/书籍。
+  ④ **模块管理长按拖动排序**：SettingsStore 新增 `innerModuleOrderTop/Bottom`（StateFlow + SP `inner_module_order_top/bottom`，normalizeOrder 容错补全）+ `setInnerModuleOrder()`；ModuleManageScreen 复用 `dragReorderModifier`（itemId=key.hashCode().toLong()、gridColumns=3、itemHeightDp=100，onTap=开关、onLongPress 空），拖动结果写回顺序；HomeScreen 改为按两个 order 流渲染。⚠️ dragReorderModifier 自己处理 tap，外面不要再叠 `.clickable`（否则点一下开关两次等于没变）。
+  ⑤ **番号拆四入口**：INNER_MODULE_ENTRIES 里 h1 → h1_1~h1_4（番1~番4，route `h1search?idx=N`）；AppNav 的 h1search 路由加 `idx` Int 参数；H1SearchScreen 增加 sourceIndex 参数，按 index 只取第 N 个启用中的 proxy 源，缓存改为 `H1Caches: Map<Int,H1CacheState>`（每模块独立），标题/空态按番N 显示。番N 依次对应外网目录第 N 个源。
+  ⑥ 本子（h2）从里世界上区移到下区，默认顺序 `bottom = book, comic, h2, h1_1..h1_4, psite, xsite`（用户：本子默认在漫画和番之间）；上区默认 `game, music, tv, melon`。
+  ⑦ ConfigBackup.KEYS 增加 theme_accent / inner_module_order_top / inner_module_order_bottom，applyConfig 对这些键恢复后同步 StateFlow（否则导入备份后界面不刷新）。
+  ⑧ 发版记录：commit `6799d8d` / tag `v0.304` / **Release `421515931`** / 资产 `LaoZhengFenXiang-0.304.apk`（20,301,347 字节，SHA256 `6404FED1090498BC9ED56509243155A70F769DED2E988B5ECEB3EFF00D99CD8E`）；桌面已更新为 `老郑分享-0.304.apk`。
+- **v0.305（番号/游戏/本子/P站X站 列表能力对齐，2026-10-23）**：
+  ① **番N 页重做**（H1SearchScreen 整文件重写）：打开即「搜索框 + 该源全量 3 列网格 + 底部页码条」，不再按源分组横滑。`VodResp.pagecount` 用作 lastPage；`VodItem` 新增 `vod_duration` 字段（AppleCMS videolist 标准字段，之前被 ignoreUnknownKeys 丢弃），封面右下角显示时长（vod_duration 为空时从 vod_remarks 里匹配 mm:ss / N分钟，都没有则不显示）。缓存按模块序号 `H1Caches: Map<Int, H1CacheState>`，返回不重载。
+  ② **通用页码条 `ui/common/AppPageBar.kt`**（v0.304 抽自 X 站实现）：支持 lastPage<=0（末页未知）+ 省略号跳页弹窗；番号/游戏已接入，吃瓜/P站/X站原实现保持不动。
+  ③ **游戏**（GameScreens）：去掉「加载更多」，改底部页码条（lastPage=0 未知模式，站点 HTML 翻页无总数；越界空页 Toast「已经是最后一页」并停留原页）；分类 chips 显示 `${c.name} (${c.count})`（WP REST categories 自带 count）。
+  ④ **本子章节张数**：BikaClient 新增 `fetchChapterPageCount()`（本章 pages 接口第一页，多分页时并行补齐 docs 数，失败返回 null 不冒充 0）；BikaComicDetailScreen 用 Semaphore(4) 后台逐章探测，结果存 `BikaUiCache.chapterCounts[comicId]`，章节行右侧显示「N 张」（与漫画 Komiic 的 `${ch.size} 张` 对齐）。
+  ⑤ **分类数量**：X 站 `XSiteClient.categoryTotal(range, code)` = list(page1).total，UI 侧 Semaphore(6) 并发探测，按 code 缓存，切榜单会清空重探；P 站 `PsiteClient.categoryCount(catId)` 从分类页 HTML 抓 `1.2M Videos` 文案（站点无数字接口），**仅在分类下拉展开时** Semaphore(3) 探测并缓存，抓不到就不显示后缀。
+  ⑥ 编译坑：kotlinx `JsonArray.size` 是属性不是函数（`size()` 会报 "cannot be invoked"）；`async`/`awaitAll`/`withPermit` 都是扩展函数必须 import，全限定调用无效。
+  ⑦ 发版记录：commit `2ede769` / tag `v0.305` / **Release `421573344`** / 资产 `LaoZhengFenXiang-0.305.apk`（20,301,343 字节，SHA256 `884987120AEFDE4F0A1A3480C80254C6A5CBF2EA184F5DE980F2E3EE6D2813DC`）；桌面已更新为 `老郑分享-0.305.apk`。⚠️ 创建 Release 若返回 422 already_exists，说明上一次其实已建好（只是 curl 输出解析丢了 id），用 releases 列表查 id 再上传资产即可。
+- **v0.306（页码条/分类数量对齐，2026-10-23）**：
+  ① **页码条统一为 X 站形态**（用户明确「X站做过，直接参考」）：页码条不再固定在屏幕底部，而是作为 `LazyVerticalGrid` 的跨列 footer item（`GridItemSpan(maxLineSpan)` / 3 列用 3），跟着列表滚到底才出现。游戏与番号都改成这种；P站也把自有 PPageBar 换成 AppPageBar（PPageBar 函数暂留未删）。
+  ② **尾页解析**：`WygamerClient` 新增 `GameListPage(items,lastPage)` + `parsePage()`（扫 `a[href*=/page/]` 取最大页码），home/search/category 三个方法返回值改类型；`PsiteClient.list()` 改返回 `PListPage(items,lastPage)`，`lastPageOf(html)` 用 `[?&]page=(\d+)` 取全页最大页码（PH 分页尾部有末页按钮）；PsiteScreens 增加 lastPage 状态 + PsiteCache.lastPage。
+  ③ **番号补回分类**：H1SearchScreen 增加 categories/selectedType/catCounts/catExpanded，分类行与 SourceBrowseScreen 同款（收起横滑 + 展开 FlowRow），`fetchList(src, kw, page, typeId)` 带分类；**展开时才并发探测各分类数量**（Semaphore(6)，`fetchList(src,"",1,catId)?.total`）；分类/关键词切换用 reqSeq 竞态防护（去掉原 `if (loading) return` 防卡死）。
+  ④ **P站分类数量兜底**：`categoryCount()` 先抓页面 `N Videos`，抓不到就 `lastPageOf(html) × parseList(html).size` 估算，≥1 万折成「x.x万」；仅下拉展开时探测（Semaphore(3)）。
+  ⑤ 发版记录：commit `8dee39c` / tag `v0.306` / **Release `421628504`** / 资产 `LaoZhengFenXiang-0.306.apk`（20,317,727 字节，SHA256 `9DEC075FCE6C804B03747BEA03E32E1C1A61E660BBBE4C22576CF978EB0717F7`）；桌面已更新为 `老郑分享-0.306.apk`。
+- **v0.307（P站页码条/番号空分类，2026-10-23）**：
+  ① **P站页码条回到「末页未知」模式**（用户：页数太多不显示页数，只显示当前±2页、左右箭头可无限翻）：`PsiteClient.list()` 改回返回 `List<PVideo>`（撤掉 v0.306 的 `PListPage`），UI 传 `AppPageBar(lastPage = 0)`。`lastPageOf()` 保留（P站分类数量估算还在用）。
+  ② **番号隐藏空分类**：`visibleCats = categories.filter { (catCounts[it.type_id] ?: 1) > 0 }`，探测到 0 的分类从横滑/下拉里消失；未探测到的先按有资源显示（与 SourceBrowseScreen 同一套规则）。
+  ③ 发版记录：commit `ea690aa` / tag `v0.307` / **Release `421648993`** / 资产 `LaoZhengFenXiang-0.307.apk`（20,317,731 字节，SHA256 `AF6A27C5462A9F4CC620F6DB251B97149246BEE17C81CB4511D0D2C6FB407F16`）；桌面已更新为 `老郑分享-0.307.apk`。
+- **v0.314（图标「郑」字放大 10%，2026-10-26）**：用户「这个郑字帮我稍大一点」，试看后定 **1.10 倍** 并直接发版。
+  ① **做法（可复用）**：**只放大中心区域** —— 以图标中心为圆心、半径 `0.37×边长` 的圆内（郑字 + 光晕）按 1.10 重采样，再在 `0.74R ~ R` 之间用 smoothstep 羽化融回原图。外框描边、左上高光、圆角完全不动，所以不会出现「整图放大后边框被裁掉」的问题（整图 zoom + 重做圆角蒙版的方案试过，会丢掉外层描边，已弃用）。圆形版仍走 1.12 整图圆形裁切（叠加后郑字等效约 1.23×）。
+  ② ⚠️ **母版位置**：桌面 `logo.jpg` 原图在几轮后被清理（再读已不存在），现在唯一的高清母版是 `C:\Users\62496\AppData\Local\Temp\sy_logo\master.png`（1181×1181，已抠白底/去水印）；以后调图标直接用它，**别再找桌面原图**（临时目录可能被系统清，想长期留需另存）。
+  ③ **发版**：commit `7f02ede` / tag `v0.314` / **Release `424033701`** / 资产 `LaoZhengFenXiang-0.314.apk`（20,749,753 字节，SHA256 `7F6E1885D90C24885C0295702DE81CF5F83DA30CE0E3F526401511BC5ECC8519`）；桌面已更新为 `老郑分享-0.314.apk`（旧的 0.313 已删除）。
+- **v0.313（新 App 图标，2026-10-26）**：用户发来一张「郑」字 logo（桌面 `logo.jpg`，1312×1312，白底 + 右下角「清言 AI生成」水印），要求「处理成可以做 app 图标的」。
+  ① **处理链路**（本机无 Python，用 PowerShell + System.Drawing）：按亮度 <220 求图形 bbox `(65,62,1181,1181)`（水印落在白边外，裁切即去掉）→ 从四边泛洪（RGB 三通道全 ≥245 视为白）把外部白底 alpha 置 0 → 方形版保留原圆角描边与高光；圆形版先把图形放大 **1.12×** 再套 4× 超采样圆形 alpha（不放大时圆边会露出一圈方形描边亮边）。
+  ② **输出**：5 密度 × 2 文件（48/72/96/144/192 的 `ic_launcher.png` / `ic_launcher_round.png`，32 位 PNG 带 alpha）；Manifest 未改，仍是裸 PNG（项目惯例不用 adaptive icon）。
+  ③ **⚠️ 本轮踩坑（PS 5.1 编码）**：用 `powershell -File` 跑**含中文的 .ps1**（Write 工具写出的 UTF-8 无 BOM）会被按 ANSI 读 → 中文变乱码：Release 描述写成乱码、`-InFile` 的中文 APK 路径直接 `PathNotFound`。**对策：脚本里只留 ASCII；中文放 UTF-8 文件用 `[Text.Encoding]::UTF8` 读；上传前把 APK 复制到 ASCII 临时路径；API 请求体用 `UTF8.GetBytes` 显式编码，写坏了用 `PATCH /releases/{id}` 修描述。**
+  ④ **发版**：commit `ac686f1` / tag `v0.313` / **Release `424014626`** / 资产 `LaoZhengFenXiang-0.313.apk`（20,749,301 字节，SHA256 `19ADDB007766B0681E883BA7AFFED2B87754477396AD0FB633BF9C969D8D6013`）；桌面已更新为 `老郑分享-0.313.apk`。旧图标备份在 `C:\Users\62496\AppData\Local\Temp\sy_logo\backup`（临时目录，非长期保存）。
+- **v0.312（修电视源未播种，2026-10-26）**：用户反馈「电视源好像没加上啊」。
+  ① **根因**：v0.311 生成 `assets/default_seed.json` 时，`liveSources` 被 PowerShell 5.1 序列化成了**对象** `{ "value":[...], "Count":1 }`（`($config.live_sources_json | ConvertFrom-Json)` 单元素数组被管道展开），`root.optJSONArray("liveSources")` 直接返回 null → 电视源一条都没写。（同类坑：PS 5.1 里单元素数组经 `|` 会散开，写 JSON 要用 `[object[]]@(...)` 包一层。）
+  ② **修复**：资产里 `liveSources` 重新生成为真正的数组（文件内 5 个数组字段已用正则逐个核对）；`DefaultSeed.seedVodSources/seedLiveSources` 在解析结果为空时**兜底调用** `ensureDefaultVodSourcesSeeded()/ensureDefaultLiveSourcesSeeded()`，以后资产坏掉也不会静默丢源。
+  ③ **让 v0.311 老用户也修好**：`KEY_DEFAULT_SEED_DONE` 从 `default_seed_v1` 改成 `default_seed_v2`，升级后会重跑一次播种（只填空数据，已有数据不动）。
+  ④ 发版：commit `9217e52`（记忆同步 `3d670d7`）/ tag `v0.312` / **Release `423920833`** / 资产 `LaoZhengFenXiang-0.312.apk`（20,586,717 字节）；桌面已更新为 `老郑分享-0.312.apk`。⚠️ 本次发版途中遇到**网络中断**（先 `Connection was reset`，后 DNS 解析失败，本机 7890/7899/10809 等代理端口均未监听），代码与 tag 先落本地，用户恢复网络后才补 push 与建 Release —— 以后遇到同类失败要如实说明「已本地提交、未推送」，恢复后一次性补齐。
+- **v0.311（默认数据内置，2026-10-26）**：用户提供备份 `老郑分享_20261026_110104.json`，要求「app 的默认数据用这个 json 里的影视源、电视源以及表世界的清单」，并「账号管理说明文字里把哔咔删掉」。
+  ① **说明文字**：`SettingsScreen` 账号管理卡片 hint `"豆瓣·哔咔·无忧·Zlib"` → `"豆瓣·无忧·Zlib"`。
+  ② **默认数据资产化**：新建 `app/src/main/assets/default_seed.json`（1.0MB，由用户备份裁剪：39 个影视源、1 个电视源、63 个表世界清单、457 个条目、457 条关联；**不含**里世界收藏/登录态/下载记录）。
+  ③ **播种逻辑**：新增 `data/DefaultSeed.kt` —— `App.onCreate` 里 IO 协程调用 `seedIfNeeded()`：影视源为空→写、电视源为空→写、库中无任何清单且无条目→一次性写清单+条目+关联（`Repo.hasAnyCollection()` / `Repo.seedCollectionData()`，保留原 id 维持父子层级与排序）；完成后置 `SettingsStore.defaultSeedDone`（`default_seed_v1`，已加入 `NON_BACKUP_KEYS`）。**只对"对应数据为空"生效，老用户已有数据一律不覆盖**；资产缺失时退回原 `ensureDefaultVodSourcesSeeded/ensureDefaultLiveSourcesSeeded`（旧常量仍保留作兜底，不再是主路径）。
+  ④ 注意：已安装用户想看到这套默认数据需清应用数据/重装；覆盖升级不会覆盖现有数据。
+  ⑤ 发版记录：commit `25f52f0` / tag `v0.311` / **Release `423822383`** / 资产 `LaoZhengFenXiang-0.311.apk`（20,586,753 字节）；桌面已更新为 `老郑分享-0.311.apk`。
+- **v0.310（哔咔内置账号 + 注册入口，2026-10-26）**：用户要求「哔咔登录按方案2改，把这项在登录管理里隐藏，账号 dblz123007 / 密码 123qweasd 默认存在 app 里，新用户直接用；账号管理里其他项后面加注册按钮」。
+  ① **登录区分网络与账密**：`BikaClient` 新增 `BikaNetworkException`（连不上/超时/被墙/空响应/解析失败统一转成它）+ `autoSignInResult(): Boolean?`（true=成功；false=账密缺失或被拒；null=网络问题）。`withAuth()` 在 401 后用三态决定：成功→重放请求；false→清 token 抛「登录已失效」；**null→保留 token**、抛「网络不通…」，下次请求自动重试。`sessionOk()` 同样 null 时不清 token。⚠️ 旧实现把网络失败当账密失败 → 清 token → 本子页卡在"未登录"要手动登，这是用户问题的根因。
+  ② **内置账号**：`SettingsStore.ensureDefaultBikaAccountSeeded()`（`DEFAULT_BIKA_ACCOUNT="dblz123007"` / `DEFAULT_BIKA_PASSWORD="123qweasd"`），`App.onCreate` 里调用；只在本地无账密时写入，不覆盖用户自填。**凭据是明文硬编码在源码里的（仓库公开），存在被滥用/封号风险，用户知情并要求如此**。
+  ③ **本子页全自动登录**：`H2SearchScreen` 从「token 为空就显示未登录引导」改为 `LaunchedEffect` 调 `autoSignInResult()`，期间显示「正在准备账号…」，失败按 网络/账密 给不同文案 + 重试按钮，不再跳账号管理。
+  ④ **隐藏哔咔登录项**：`AccountScreen` 删掉哔咔 SettingCard 与其登录/登出对话框挂载（`BikaLoginDialog` 函数保留未删，便于以后恢复）；相关 state（bikaLoginKey/isBikaLoggedIn/showBikaLogin/showBikaLogout/bikaSessionOk/bikaChecked）一并清理。`BikaComicDetailScreen.handleAuthError(e)` 改签名，区分网络（只提示、留在本页）与账号异常（提示并返回）。
+  ⑤ **注册入口**：新增私有 `RegisterHint(url)`（「还没有账号？去注册」，跳系统浏览器），挂在豆瓣 `https://www.douban.com/accounts/register`、无忧 `https://www.wygamer.com/user-sign-2?tab=signup`、Z-Library `https://z-library.sk/registration` 三张卡片下方。哔咔无网页注册（只能 App 内），且已隐藏。
+  ⑥ README 同步（账号管理说明、本子无需手动登录、注册入口）。发版记录：commit `d53d6de` / tag `v0.310` / **Release `423813426`** / 资产 `LaoZhengFenXiang-0.310.apk`（20,317,727 字节）；桌面已更新为 `老郑分享-0.310.apk`。
+- **v0.309（模块开关 + 番号固定片源，2026-10-23）**：
+  ① **模块管理点图标第二次点击无效**（用户：需返回再进才可以）。根因：`dragReorderModifier` 里 `pointerInput(itemId)` 只以 `itemId` 为 key，lambda 捕获的是**首次组合**时的 `onTap/onLongPress/onReorder`，state 更新后不会重建 → 第二次点击仍用旧的 `!on`（=关），看起来"没反应"；**同类隐患影响所有用该手势的页面**（列表长按删除删到旧数据等）。修复：`DragReorder.kt` 内统一 `rememberUpdatedState` 包四个回调（`currentOnTap/currentOnLongPress/currentOnReorder/currentOnDragStateChange`），并在 `ModuleManageScreen` 让 onTap 直接读 `SettingsStore.disabledInnerModules.value` 取反，双重保险。⚠️ 通用教训：**`pointerInput(key)` 内使用的回调必须走 rememberUpdatedState**，否则只有重进页面才恢复。
+  ② **番1~番4 改为固定片源**（用户指定，不再按"外网目录第 N 个启用源"）：`H1SearchScreen` 新增 `H1_FIXED_SOURCES`（hsckzy.vip / 91md.me / Naixxzy.com / jingpinx.com 的 `/api.php/provide/vod`）与 `h1FixedSource(idx)`，构造 `VodSource(id="h1_fixed_$idx", region="proxy")`；空态文案同步改为"固定对应 4 个片源"，去掉「去片源管理」按钮。
+  ③ 发版记录：commit `79de758` / tag `v0.309` / **Release `423791186`** / 资产 `LaoZhengFenXiang-0.309.apk`（20,317,731 字节）；桌面已更新为 `老郑分享-0.309.apk`。
+- **v0.308（备份全量 + 缓存修复，2026-10-23）**：用户连问「缓存机制都没问题吧 看过的页面图片啥的不用再打开重新加载吧 / 数据备份够全吗 除了播放位置记忆啥的其他的包括以后新增的都要有数据备份导入导出或上传」，补充「倒是不用自动备份 数据导出和上传这我手动就行」。
+  ① **备份改为全量键（不再维护白名单）**：`SettingsStore.exportConfig()` 从「遍历 `ConfigBackup.KEYS`」改为「遍历 `sp.all`」，`isBackupKey(key)` = 排除 `last_cloud_sync`、`cache_cleared_version` 与 `vod_progress_*`（播放位置记忆，用户明确不备份）。值编码加类型前缀 `@b:`/`@s:`/`@i:`/`@l:`/`@f:`（String 原样），导入按前缀还原类型 → **以后新增任何键/任何类型自动进出备份**；旧备份无前缀仍兼容（`BOOLEAN_BACKUP_KEYS` + `disabled_inner_modules` 特判保留）。`ConfigBackup` 的公共目录自动备份/补缺恢复同步改为全量键（该机制早就存在，用户说"不用自动备份"，故**未新增也未删除**，只统一范围）。
+  ② **`regionManual` 修复**：`ExportJson` 片源序列化补该字段（以前导入后自动测试归组会覆盖用户手选目录）。
+  ③ **详情页缓存**（新增 `data/DetailCache.kt`，LinkedHashMap LRU 上限 80）：吃瓜/X站/游戏/图书详情**先取缓存立刻渲染，再后台静默刷新**（不闪 loading、失败不覆盖已显示内容）；key = `melon:`/`xsite:`/`game:`/`zlib:` + id。「清理缓存」一并 `DetailCache.clear()`。
+  ④ **缓存 bug 修复**：⒜ `App.clearAllCaches` 原来调 `newImageLoader()`（工厂方法，每次新建实例 → 清的是空内存缓存，对正在用的单例无效）→ 改 `coil.Coil.imageLoader(ctx).memoryCache?.clear()`；⒝ `DoubanClient` 与 Coil 同时 `Cache(cacheDir/http)` → OkHttp 同目录双实例冲突，删掉 DoubanClient 的 disk cache（豆瓣请求本来就 noCache/noStore）；⒞ `melon_web_img` 明文缓存只写不删 → 200MB 上限、超限按 lastModified 最旧淘汰到 160MB，并计入 `cacheSizeBytes`。
+  ⑤ **明确不备份**（用户要求排除的"位置记忆"类 + 可重建项）：`vod_progress_*` 播放进度、`read_progress`（漫画/本子最后章节，另一 SP 文件）、`nav_restore`（导航恢复）、图片/HTTP/漫画详情缓存、下载的实体文件。
+  ⑥ 发版记录：commit `3f527ce` / tag `v0.308` / **Release `421668691`** / 资产 `LaoZhengFenXiang-0.308.apk`（20,317,727 字节）；桌面已更新为 `老郑分享-0.308.apk`（旧 0.307 已删）。
+- **仓库整理（2026-10-23，无版本号变更）**：用户反馈 GitHub 仓库根目录「乱套了」—— 截图里根目录堆着 `老郑分享-0.302~0.307.apk` 六个包，另有一批调试残留。排查确认**全部被 git 跟踪**：6 个 APK、`a.bin / b.bin / c.bin / t1.bin / t2.bin`、`parse_test.py`、`.trae-html-share-packages/docs/ui-redesign/ui-style-mockups.html.zip`。处理：`git rm --cached` 全部 14 个文件 + 删本地副本（APK 已有 Release 归档与桌面副本，`docs/ui-redesign/ui-style-mockups.html` 源文件仍在），`.gitignore` 补 `*.apk`、`*.aab`、`.trae-html-share-packages/`、`parse_test.py`（原 `.gitignore` 只挡了 debug 包名，中文名正式包没挡）。commit `db32d7b`，push 后 `origin/main` 根目录只剩 `.gitignore / README.md / app / build.gradle.kts / docs / gradle / gradle.properties / gradlew.bat / settings.gradle.kts`。**约定：APK 一律不入库**（只做 Release 资产 + 桌面留最新一份）；`.bin`/临时 py/分享打包目录同理。**遗留（未做）**：旧 APK 仍在 git 历史里，仓库体积不会因这次删除而减小；要真正瘦身得 `git filter-repo` 重写历史并强推，风险高，用户未要求。
