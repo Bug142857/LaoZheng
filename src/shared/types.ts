@@ -9,6 +9,24 @@ import type {
   SubjectKind,
   SubjectSearchResponse
 } from './douban'
+import type {
+  VodDetailResponse,
+  VodSearchResponse,
+  VodSourceInput,
+  VodTestResponse
+} from './vod'
+import type { LiveChannelResult, LiveImportResult, LiveSource } from './live'
+import type { MusicResolveResponse, MusicSearchResponse } from './music'
+import type {
+  DownloadAddInput,
+  DownloadAddResult,
+  DownloadListResponse
+} from './downloads'
+import type { XCategoriesResponse, XDetailResponse, XListResponse } from './xsite'
+import type { PListResponse, PMediaResponse } from './psite'
+import type { MelonDetailResponse, MelonListResponse } from './melon'
+import type { SyncActionResult, SyncConfigInput, SyncConfigView } from './sync'
+import type { UpdateCheckResult } from './update'
 
 export interface CollectionItem {
   id: number
@@ -112,6 +130,35 @@ export interface LaozhengApi {
   appVersion: () => Promise<string>
   searchSubjects: (category: SearchCategory, query: string) => Promise<SubjectSearchResponse>
   fetchSubjectDetail: (kind: SubjectKind, id: string) => Promise<SubjectDetailResponse>
+  searchVod: (source: VodSourceInput, keyword: string, year?: string) => Promise<VodSearchResponse>
+  fetchVodDetail: (source: VodSourceInput, vodId: number) => Promise<VodDetailResponse>
+  testVodSource: (source: VodSourceInput) => Promise<VodTestResponse>
+  loadLiveSources: () => Promise<LiveSource[]>
+  saveLiveSources: (sources: LiveSource[]) => Promise<void>
+  loadLiveChannels: (source: LiveSource) => Promise<LiveChannelResult>
+  importLiveFile: () => Promise<LiveImportResult>
+  searchMusic: (keyword: string, page?: number) => Promise<MusicSearchResponse>
+  resolveMusic: (songId: string) => Promise<MusicResolveResponse>
+  listDownloads: () => Promise<DownloadListResponse>
+  addDownload: (input: DownloadAddInput) => Promise<DownloadAddResult>
+  removeDownload: (id: string, deleteFile: boolean) => Promise<void>
+  cancelDownload: (id: string) => Promise<void>
+  openDownloadsDir: () => Promise<void>
+  onDownloadsChanged: (callback: () => void) => () => void
+  xCategories: () => Promise<XCategoriesResponse>
+  xList: (range: string, page: number, category: string) => Promise<XListResponse>
+  xDetail: (urlCd: string) => Promise<XDetailResponse>
+  pList: (sort: string, catId: number, query: string, page: number) => Promise<PListResponse>
+  pResolve: (vkey: string) => Promise<PMediaResponse>
+  melonList: (path: string) => Promise<MelonListResponse>
+  melonDetail: (id: string) => Promise<MelonDetailResponse>
+  getSyncConfig: () => Promise<SyncConfigView>
+  saveSyncConfig: (input: SyncConfigInput) => Promise<SyncConfigView>
+  testSync: () => Promise<SyncActionResult>
+  uploadSync: (data: AppData) => Promise<SyncActionResult>
+  downloadSync: () => Promise<SyncActionResult>
+  checkUpdate: () => Promise<UpdateCheckResult>
+  openExternal: (url: string) => Promise<void>
 }
 
 export const EMPTY_DATA: AppData = {

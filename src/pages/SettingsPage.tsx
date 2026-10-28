@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Download, FolderOpen, Upload } from 'lucide-react'
+import { Cloud, Download, FolderOpen, Upload } from 'lucide-react'
 import type { AppData } from '../shared/types'
+import type { SyncConfigView } from '../shared/sync'
 import { useData } from '../state/DataContext'
 import { ConfirmDialog } from '../components/ui'
 
@@ -9,10 +10,22 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
   const [version, setVersion] = useState('—')
   const [dataDir, setDataDir] = useState('')
   const [pendingImport, setPendingImport] = useState<AppData | null>(null)
+  const [sync, setSync] = useState<SyncConfigView | null>(null)
+  const [syncUrl, setSyncUrl] = useState('')
+  const [syncUser, setSyncUser] = useState('')
+  const [syncPass, setSyncPass] = useState('')
+  const [syncBusy, setSyncBusy] = useState<string | null>(null)
+  const [pendingSync, setPendingSync] = useState<AppData | null>(null)
+  const [checking, setChecking] = useState(false)
 
   useEffect(() => {
     window.laozheng.appVersion().then(setVersion)
     window.laozheng.dataDir().then(setDataDir)
+    window.laozheng.getSyncConfig().then((cfg) => {
+      setSync(cfg)
+      setSyncUrl(cfg.url)
+      setSyncUser(cfg.username)
+    })
   }, [])
 
   const doImport = async () => {
@@ -49,6 +62,75 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
     } catch (err) {
       onNotice(`打开目录失败：${(err as Error).message}`)
     }
+  }
+
+  const saveSyncConfig = async () => {
+    setSyncBusy('save')
+    const cfg = await window.laozheng.saveSyncConfig({
+      url: syncUrl,
+      username: syncUser,
+      password: syncPass || undefined
+    })
+    setSyncBusy(null)
+    setSync(cfg)
+    setSyncPass('')
+    onNotice('云同步配置已保存到本机')
+  }
+
+  const testSync = async () => {
+    setSyncBusy('test')
+    const res = await window.laozheng.testSync()
+    setSyncBusy(null)
+    onNotice(res.message)
+  }
+
+  const uploadSync = async () => {
+    setSyncBusy('upload')
+    const res = await window.laozheng.uploadSync(data)
+    setSyncBusy(null)
+    onNotice(res.message)
+  }
+
+  const downloadSync = async () => {
+    setSyncBusy('download')
+    const res = await window.laozheng.downloadSync()
+    setSyncBusy(null)
+    if (!res.ok) {
+      onNotice(res.message)
+      return
+    }
+    if (res.data) setPendingSync(res.data as AppData)
+  }
+
+  const checkUpdate = async () => {
+    setChecking(true)
+    const res = await window.laozheng.checkUpdate()
+    setChecking(false)
+    if (!res.ok) {
+      onNotice(res.error ?? '检查更新失败')
+      return
+    }
+    if (!res.hasUpdate) {
+      onNotice(`已是最新版本 ${res.current}`)
+      return
+    }
+    onNotice(`发现新版本 ${res.latest}，正在打开下载页…`)
+    if (res.url) {
+      try {
+        await window.laozheng.openExternal(res.url)
+      } catch {
+        onNotice(`新版本 ${res.latest} 已发布，但打开下载页失败`)
+      }
+    }
+  }
+
+  const confirmSyncImport = () => {
+    if (!pendingSync) return
+    replaceData(pendingSync)
+    onNotice(
+      `已从云端恢复：${pendingSync.items.length} 个条目 / ${pendingSync.lists.length} 个清单 / ${pendingSync.innerFavs.length} 条收藏`
+    )
+    setPendingSync(null)
   }
 
   return (
@@ -111,10 +193,58 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
         </section>
 
         <section className="settings-card">
+          <h3>云同步（WebDAV）</h3>
+          <p className="settings-hint">
+            与手机端共用同一份 data.json，可手动上传 / 恢复。坚果云地址形如
+            https://dav.jianguoyun.com/dav/老郑分享/ ，密码要用「应用密码」。账号密码只存本机（加密），不会写进备份。
+          </p>
+          <div className="form-grid">
+            <label>
+              WebDAV 地址
+              <input
+                value={syncUrl}
+                onChange={(e) => setSyncUrl(e.target.value)}
+                placeholder="https://dav.jianguoyun.com/dav/老郑分享/"
+              />
+            </label>
+            <label>
+              账号
+              <input value={syncUser} onChange={(e) => setSyncUser(e.target.value)} placeholder="邮箱" />
+            </label>
+            <label>
+              密码 / 应用密码
+              <input
+                type="password"
+                value={syncPass}
+                onChange={(e) => setSyncPass(e.target.value)}
+                placeholder={sync?.hasPassword ? '已保存，留空表示不修改' : '输入应用密码'}
+              />
+            </label>
+          </div>
+          <div className="settings-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <button className="btn" disabled={!!syncBusy} onClick={() => void saveSyncConfig()}>
+              {syncBusy === 'save' ? '保存中…' : '保存配置'}
+            </button>
+            <button className="btn" disabled={!!syncBusy} onClick={() => void testSync()}>
+              <Cloud size={15} /> {syncBusy === 'test' ? '测试中…' : '测试连接'}
+            </button>
+            <button className="btn" disabled={!!syncBusy} onClick={() => void uploadSync()}>
+              <Upload size={15} /> {syncBusy === 'upload' ? '上传中…' : '上传到云端'}
+            </button>
+            <button className="btn" disabled={!!syncBusy} onClick={() => void downloadSync()}>
+              <Download size={15} /> {syncBusy === 'download' ? '下载中…' : '从云端恢复'}
+            </button>
+          </div>
+        </section>
+
+        <section className="settings-card">
           <h3>关于</h3>
           <div className="settings-row">
             <span className="settings-label">PC 端版本</span>
             <span className="settings-value">{version}</span>
+            <button className="btn" disabled={checking} onClick={() => void checkUpdate()}>
+              {checking ? '检查中…' : '检查更新'}
+            </button>
           </div>
           <div className="settings-row">
             <span className="settings-label">技术栈</span>
@@ -135,6 +265,17 @@ export function SettingsPage({ onNotice }: { onNotice: (text: string) => void })
           danger
           onConfirm={confirmImport}
           onCancel={() => setPendingImport(null)}
+        />
+      )}
+
+      {pendingSync && (
+        <ConfirmDialog
+          title="从云端恢复"
+          message={`将用云端备份覆盖本机数据：\n${pendingSync.items.length} 个条目 · ${pendingSync.lists.length} 个清单 · ${pendingSync.innerFavs.length} 条收藏 · ${pendingSync.vodSources.length} 个片源\n\n当前本机数据会被替换，建议先点「上传到云端」保留一份。`}
+          confirmText="覆盖恢复"
+          danger
+          onConfirm={confirmSyncImport}
+          onCancel={() => setPendingSync(null)}
         />
       )}
     </>

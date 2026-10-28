@@ -1,7 +1,7 @@
 # 老郑分享 · PC 端项目记忆
 
 > 本文件是 **PC 端仓库（https://github.com/Bug142857/LaoZheng）** 的唯一记忆入口，换电脑 / 换 AI 账号后从这里恢复上下文。
-> 最后更新：2026-10-28（PC 端 v0.2.0 搜索模块）。
+> 最后更新：2026-10-28（PC 端 v0.3.0：观影 / 电视 / 音乐 / 下载 / X站 / P站 / 吃瓜 / 云同步）。
 >
 > 结构：**第一部分 = PC 端工程约定与进度**；**第二部分 = 手机端（ShangYin）历史记忆**，原样迁移，仅供功能口径与踩坑参考，不代表 PC 端已经实现。
 
@@ -25,25 +25,35 @@
 - `package.json` 的 `version` 从 `0.1.0` 起；每轮发版 **minor +1**（`0.1.0` → `0.2.0` → `0.3.0`…），tag 用 `v0.x.0`。
 - 构建产物 `out/`、安装包 `release/`、`node_modules/` 一律不入库（`.gitignore` 已按通配符写好）。
 - 发版前必须 `npm run build` 通过；安装包用 `npm run dist`（electron-builder，NSIS，可选安装目录、桌面快捷方式「老郑分享」）。
-- 当前阶段尚未建立自动更新与云同步，后续接入时在本文档补流程。
+- 云同步（WebDAV 手动上传/恢复）与 GitHub Releases 更新检查已在 v0.3.0 接入；静默自动更新与安装包签名仍未做。
 
 ### 4. 工程结构（当前）
 
 ```
-electron/main.ts     主进程：窗口、单实例锁、IPC、外链交给系统浏览器、封面图请求头
-electron/preload.ts  contextBridge 暴露最小 API（loadData/saveData/import/export/openDir/version/search/detail）
-electron/store.ts    userData/data.json 读写；导入校验 items/lists/listItems；导出补 version/exportAt
-electron/douban.ts   条目搜索与详情抓取（影视 / 图书 / 游戏 / 人物），主进程发起网络请求
-src/shared/types.ts  两端共用备份类型 + normalizeData + EMPTY_DATA
-src/shared/douban.ts 搜索枚举、结果/详情类型、分类与条目标签（电影/剧集/图书/游戏/人物）
-src/state/           DataProvider：启动加载、防抖 350ms 保存、replaceData 立即落盘
-src/modules.tsx      首页模块注册表（与手机端 INNER_MODULE_ENTRIES 对应）
-src/pages/           首页 / 搜索 / 清单 / 清单详情 / 收藏 / 设置
-src/utils/data.ts    根清单、递归子清单、递归计数、条目查询、清单配色、收藏筛选、条目所在清单名
+electron/main.ts      主进程：窗口、单实例锁、IPC、请求层规则（Referer/UA/CORS）
+electron/preload.ts   contextBridge 暴露 API（数据 / 搜索 / 观影 / 电视 / 音乐 / 下载 / X站 / P站 / 吃瓜 / 云同步 / 更新）
+electron/store.ts     userData/data.json 读写；导入校验 items/lists/listItems；导出补 version/exportAt
+electron/douban.ts    条目搜索与详情抓取（影视 / 图书 / 游戏 / 人物）
+electron/vod.ts       苹果CMS 采集源：搜索 / 详情 / 测速 / 播放线路解析
+electron/live.ts      电视源（M3U）本地落盘、解析与频道加载
+electron/music.ts     无名音乐网：搜索 / 直链解析
+electron/downloads.ts 下载管理：直链 / HLS 切片合并（AES-128） / 本地媒体服务（Range + CORS）
+electron/xsite.ts     X站（pektino）JSON API
+electron/psite.ts     P站网页解析 + mediaDefinitions 解流
+electron/melon.ts     吃瓜：镜像线路发现 + 列表/正文/视频解析
+electron/sync.ts      WebDAV 云同步（safeStorage 加密密码）
+src/shared/types.ts   两端共用备份类型 + normalizeData + EMPTY_DATA
+src/shared/{douban,vod,vodDefaults,live,music,downloads,xsite,psite,melon,sync,update}.ts
+src/state/            DataProvider：启动加载、防抖 350ms 保存、replaceData 立即落盘
+src/modules.tsx       首页模块注册表（本子/漫画仍未实现，其余 ready）
+src/components/       VideoPlayer（hls.js）/ 通用弹层
+src/pages/            首页 / 搜索 / 观影 / 电视 / 音乐 / X站 / P站 / 吃瓜 / 图书 / 游戏 /
+                      清单 / 清单详情 / 收藏 / 下载 / 设置
+src/utils/data.ts     根清单、递归子清单、递归计数、条目查询、清单配色、收藏筛选、条目所在清单名
 docs/AI_PROJECT_MEMORY.md  本文件
 ```
 
-- 安全基线：`contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`，渲染进程只通过 preload API 访问数据；页面 CSP 只允许 self + https 图片。
+- 安全基线：`contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`，渲染进程只通过 preload API 访问数据；CSP 允许 self + http(s) 图片/媒体与 `blob:`（hls.js MediaSource 必需），脚本仍限制 self + inline + blob。
 - 数据写入：先写 `data.json.tmp` 再 rename，避免中断损坏。
 - 界面文案与手机端保持一致（收藏 / 清单 / 下载 / 模块名），品牌色仍是紫色系（`--brand: #8b7cff`，深色为默认，浅色跟随系统）。
 
@@ -60,42 +70,95 @@ docs/AI_PROJECT_MEMORY.md  本文件
 - `config`：手机端配置快照（字符串 Map，导入时原样保留）。
 - 导入判据与手机端一致：必须同时存在 `items / lists / listItems`，否则拒绝（防止误选普通 JSON）。
 
-### 6. 当前进度（PC 端 v0.2.0，2026-10-28）
+### 6. 当前进度（PC 端 v0.3.0，2026-10-28）
 
-- 可运行桌面框架：左侧导航（首页 / 搜索 / 清单 / 收藏 / 下载 / 设置）+ 首页模块宫格，深浅色跟随系统，数据保存状态指示。
-- **搜索**（v0.2.0）：影视 / 图书 / 游戏 / 人物四个分类，必须先选分类再搜；影视 = 电影 + 剧集 + 网页搜索合并去重；结果行展示封面、年份、评分、简介；除人物外可拉取详情后加入指定清单（根 / 子清单选择器），已收藏条目显示「已收藏在『清单名』」；人物结果只展示资料、不提供收藏。
-- **清单**：根/子清单查看、新建、重命名、删除（级联删除子清单与关联，条目本身保留）；清单条目浏览、从清单移除；按清单名 hash 稳定渐变配色。
-- **收藏**：聚合 `innerFavs`，关键词搜索（标题 / 作者）+ 模块筛选 + 按收藏时间倒序。
-- **设置**：数据概览、导入手机端备份（覆盖前确认）、导出手机端可识别 JSON、打开数据目录、版本与格式信息。
-- 未实现模块：观影、番1~番4、本子、漫画、游戏、图书、电视、音乐、吃瓜、X站、P站、下载管理（点击提示「后续版本接入」）。
+- 可运行桌面框架：左侧导航（首页 / 搜索 / 观影 / 电视 / 音乐 / X站 / P站 / 吃瓜 / 清单 / 收藏 / 下载 / 设置）+ 首页模块宫格，深浅色跟随系统，数据保存状态指示。
+- **搜索**：影视 / 图书 / 游戏 / 人物四类；结果可拉详情写入 `items` 并加入指定清单；已收藏显示所在清单。
+- **观影 + 番1~番4**：片源管理（增删改 / 启停 / 测速 / 批量导入 / 内置 73 源）、跨源并发搜索（结果实时追加）、线路与剧集选择、hls.js 播放、收藏、下载。
+- **电视**：M3U 网络源 / 本地导入、频道分组与搜索、HLS 播放、收藏；电视源独立存 `userData/live-sources.json`（不进备份，与手机端一致）。
+- **音乐**：无名音乐网搜索 / 分页 / 直链解析 / 播放 / 歌词 / 收藏 / 下载。
+- **X站**：pektino 排行榜（每周/每月/总榜）、分类、详情、直链播放、收藏、下载。
+- **P站**：推荐/最新/最热/人气/高分、分类、搜索、mediaDefinitions 解流（HLS 优先）、播放、收藏、下载。
+- **吃瓜**：镜像自动发现、分类 / 搜索 / 翻页、正文图文混排、视频播放与下载、收藏。
+- **图书 / 游戏**：已收藏条目按分类聚合、搜索、加入更多清单。
+- **清单 / 收藏 / 下载**：清单增删改与递归计数；爱心收藏聚合筛选；下载管理支持 mp4 直链与 m3u8 切片合并（AES-128 解密）、本地媒体服务播放、删除记录/文件。
+- **设置**：数据概览、导入导出、数据目录、WebDAV 云同步（上传 / 恢复 / 测试连接）、检查更新（GitHub Releases）。
+- **仍未实现**：本子（哔咔，需要账号登录与 HmacSHA256 签名）、漫画（Komiic API 可用但 `/api/image/{kid}` 实测 402）。本子/漫画入口仍提示「后续版本接入」。
 
-### 7. 搜索模块实现口径（v0.2.0）
+### 7. 各模块实现口径
 
-- 网络请求全部在主进程 `electron/douban.ts`，渲染进程只走 preload 的 `subject:search` / `subject:detail` 两个 IPC；参数在主进程白名单校验。
-- 接口与手机端 `DoubanClient` 对齐：
-  - 影视：`movie.douban.com/subject_search?...&cat=1002`（电影 / 剧集同一入口，按 `labels` 的「剧集/电视」或 URL `/tv/` 区分）+ 网页搜索 `www.douban.com/search?cat=1002` 兜底合并；
-  - 图书：`book.douban.com/subject_search?...&cat=1001`（从 `window.__DATA__` 解析，过滤 `/series/` 丛书条目）；
-  - 游戏：`www.douban.com/search?cat=3114` HTML 解析；
-  - 人物：`www.douban.com/search?cat=1065`，只展示不落库（手机端同样没有「添加人物」）。
-- `window.__DATA__` 必须用**括号配对**截取（非贪婪正则会被嵌套 JSON 截断）；解析失败 / 反爬页面要显式抛错并重试，不能静默返回空结果。
-- 详情走 `m.douban.com/rexxar/api/v2/{movie|tv|book|game}/{id}`，移动 UA + `m.douban.com` Referer；封面取 `cover_url` → `pic.large/normal` → `images.large`；`pubdate/release_date` 合并进 `card_subtitle`，去掉纯年份重复段。
-- 落库口径与手机端 `Repo.saveFromDouban` 一致：`category` 用中文 label（`电影 / 剧集 / 图书 / 游戏`），按 `category + doubanId` 去重；图书的 `subTitle` 优先用详情 `info`；详情抓取失败时用搜索结果兜底并提示「详情暂未补全」。
-- UI 硬约束（沿用手机端）：界面文案**不出现「豆瓣」**；不提供任何「在豆瓣打开」外链；搜索必须显式分类。
-- 封面防盗链：主进程 `webRequest` 对 `*.doubanio.com / *.douban.com` 图片补 `Referer: https://m.douban.com/` 与 iPhone UA；旧图床 `qnmob*.doubanio.com` 自动重写到 `img2.doubanio.com`。
-- `node-html-parser` 通过 `externalizeDepsPlugin({ exclude: [...] })` 打进主进程 bundle（安装包 `files` 只含 `out/**`，避免依赖漏打包）；它是纯 JS 小依赖，不引入 undici 等重包。
+#### 7.1 条目搜索（`electron/douban.ts`）
 
-### 8. 下一步优先级（按此顺序推进）
+- 网络请求全部在主进程，渲染进程只走 `subject:search` / `subject:detail`，参数白名单校验。
+- 影视：`movie.douban.com/subject_search?...&cat=1002`（按 labels 的「剧集/电视」或 URL `/tv/` 区分）+ `www.douban.com/search?cat=1002` 兜底合并；
+- 图书：`book.douban.com/subject_search?...&cat=1001`（`window.__DATA__`，过滤 `/series/` 丛书）；游戏：`www.douban.com/search?cat=3114`；人物：`cat=1065`（只展示不落库）。
+- `window.__DATA__` 用**括号配对**截取；反爬 / 空壳页面显式抛错并重试，不静默返回空。
+- 详情走 `m.douban.com/rexxar/api/v2/{movie|tv|book|game}/{id}`（移动 UA + m.douban Referer）；`category` 用中文 label（电影/剧集/图书/游戏），按 `category + doubanId` 去重。
+- UI 硬约束：界面文案不出现「豆瓣」、无「在豆瓣打开」外链、搜索必须显式分类。
 
-1. 观影 + 片源管理：导入 / 编辑 `vodSources`、跨源搜索（实时追加）、播放器（HLS / m3u8，自定义请求头）；
-2. 电视（M3U）、音乐（搜索 / 播放 / 收藏队列 / 本地下载目录）；
-3. 吃瓜、X站、P站、漫画、本子、番号；
-4. 下载管理：目录规范与手机端对齐（视频 / 漫画 / 本子 / 音乐 / 书籍）；
-5. 云同步（坚果云 WebDAV，与手机端共用备份）、自动更新、安装包签名。
+#### 7.2 观影 / 番N（`electron/vod.ts`）
+
+- 苹果CMS V10：`?ac=videolist&wd=` 搜索、`&ids=` 详情；`vod_play_url` 按 `$$$` 分组、`#` 分集、第一个 `$` 切名称/URL；默认只留 3u8 线路，全无 3u8 才回退。
+- 标题归一化匹配：精确 3 分、互相包含 2 分、同年份 +1，低于 2 分不展示。
+- 渲染进程按 6 并发逐源搜索，结果随返回实时追加；片源测速区分 ok / dead / proxy，`regionManual` 为 true 时不覆盖手选目录。
+- 番1~番4 = 第 1~4 个「已启用且 region=proxy」的片源，复用观影搜索/播放，收藏 module = `h1`。
+
+#### 7.3 电视（`electron/live.ts`）
+
+- 电视源单独存 `userData/live-sources.json`（首次启动播种内置 IPv4 源），不进备份 JSON。
+- M3U 解析：`group-title` / `tvg-name` / 逗号后频道名，同一地址只留第一条；网络源 20s 超时，本地导入存 `content`。
+
+#### 7.4 音乐（`electron/music.ts`）
+
+- 无名音乐网（mvmp3）：`GET /so.php?wd=&page=` 解析 `<li>` 卡片，`POST /style/js/play.php` 表单 `id + type=dance|music|mp3` 拿直链与歌词；直链缓存 4 分钟。
+- 播放直链来自酷我 CDN，只需 UA（请求层已统一补 UA）。
+
+#### 7.5 下载（`electron/downloads.ts`）
+
+- 目录：系统下载目录/老郑分享/{视频,音乐}；记录 `userData/downloads.json`。
+- 直链：流式写 `.part` → rename，按 Content-Length 报进度。
+- HLS：master 选最高码率 → 解析切片 / EXT-X-KEY / EXT-X-MAP → 5 并发下载、AES-128-CBC 解密（无 IV 时按序号构造）→ 生成本地 `index.m3u8`。
+- 本地播放：`http://127.0.0.1:{随机端口}/media/...` 提供 Range + CORS；端口每次启动变化，列表时动态拼 `playUrl`。
+
+#### 7.6 X站 / P站
+
+- X站（pektino）：`/api/media?range&page&per_page&sort=favorite&category&lang`、`/api/tags`、`/api/media/{url_cd}`；直链在 video.twimg.com，可直连。
+- P站：列表/搜索网页解析 `li[data-video-vkey]`，详情从 `mediaDefinitions` 数组（括号配对截取）选最高数值清晰度 HLS，失败退 mp4 / 全页正则；带年龄 cookie。**P站 CDN 对部分节点校验 Referer，请求层对 `*.phncdn.com` 统一补 `Referer: https://www.pornhub.com/`**。
+- 收藏 module 分别 `xsite`（id = urlCd）/ `psite`（id = vkey）。
+
+#### 7.7 吃瓜（`electron/melon.ts`）
+
+- 着陆页 `www.ipqegzvg.cc` 是 Base64 混淆，解码提取镜像 + 兜底列表，逐个探活（页面须含 `post-card`），301 后采纳落地 origin。
+- 列表：`article div.post-card`，封面在 `loadBannerDirect('...')`；翻页跟随站点 next；正文 `[itemprop=articleBody]`，视频在 `.dplayer[data-config]` 的 `video.url`（HLS，auth_key 有时效）。
+- 图片真实地址在 img 任意属性里（src 是占位图）；`txt-apps` / `table` / `blockquote` / banner 全部跳过。
+
+#### 7.8 云同步 / 更新
+
+- WebDAV：配置存 `userData/sync.json`，密码用 `safeStorage` 加密；上传 PUT `{目录}/data.json`，恢复 GET 并校验 items/lists/listItems；测试连接用 PROPFIND（207/200）。
+- 更新：`app:checkUpdate` 查 GitHub Releases latest，与 `app.getVersion()` 语义化比较；有新版本仅打开 Release 页（未接 electron-updater 静默更新）。
+
+#### 7.9 播放与请求层规则（`electron/main.ts setupRequestRules`）
+
+- hls.js 需要 `blob:` MediaSource：CSP 必须含 `media-src 'self' blob: http: https:` 与 `worker-src blob:`（v0.2.0 曾因此播放全黑，实测已修）。
+- 单一 `onBeforeSendHeaders`：豆瓣图片补 m.douban Referer + iPhone UA；`*.phncdn.com` 补 pornhub Referer + 移动 UA；其余 media / m3u8 分片补移动 UA。
+- 单一 `onHeadersReceived`：对 xhr / media 注入 `Access-Control-Allow-Origin: *`（远端多数流不带 CORS，必须注入）。
+- `onBeforeRequest`：`qnmob*.doubanio.com` 重写到 `img2.doubanio.com`。
+- `node-html-parser` 通过 `externalizeDepsPlugin({ exclude: [...] })` 打进主进程 bundle，避免安装包漏依赖。
+
+### 8. 已知缺口 / 下一步
+
+1. **本子（哔咔）**：需要账号登录（`auth/sign-in` 拿 JWT，请求签名 HmacSHA256），PC 还没有账号管理与安全存 token；未实现。
+2. **漫画（Komiic）**：GraphQL 列表/章节/图片列表均正常，但章节图 `/api/image/{kid}` 实测返回 402（疑似改为付费/登录），需要账号后再做。
+3. **自动更新**：目前只做「检查 + 打开下载页」，未接 electron-updater 静默下载安装。
+4. **音乐多平台**：只实现 mvmp3；旧收藏里的 `joox|` / `netease|` 条目没有「按歌名回退搜索」逻辑。
+5. **下载范围**：只覆盖视频/音乐；漫画、本子、书籍目录下载依赖上述模块。
+6. **安装包签名与发布流程**：需代码签名证书。
 
 ### 9. 每轮收尾约定
 
 - 改完代码先 `npm run typecheck` / `npm run build`，通过后再提交；
 - 同步更新本文件的「当前进度 / 下一步」，必要时更新 README；
+- 真实接口改动必须用真实请求或本地 mock 实测（本轮已用临时 Electron 脚本验证：四类搜索、片源播放、M3U、音乐、下载（直链/HLS/音乐）、X/P 播放、吃瓜、WebDAV mock）；临时脚本一律 `.tmp-*` 并在提交前删除；
 - `git add` 只加源码与文档，确认没有 `out/`、`release/`、`node_modules/` 进入版本库；
 - 不在手机端仓库提交任何内容。
 

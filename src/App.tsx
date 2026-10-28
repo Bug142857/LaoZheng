@@ -1,26 +1,50 @@
 import { useEffect, useState } from 'react'
 import {
   Download,
+  Globe,
   Heart,
   Home,
   ListChecks,
+  MonitorPlay,
+  Music,
+  PlayCircle,
+  Popcorn,
   Search,
   Settings,
+  Tv,
   type LucideIcon
 } from 'lucide-react'
 import { DataProvider, useData } from './state/DataContext'
 import { HomePage } from './pages/HomePage'
 import { SearchPage } from './pages/SearchPage'
+import { WatchPage } from './pages/WatchPage'
+import { LivePage } from './pages/LivePage'
+import { MusicPage } from './pages/MusicPage'
+import { DownloadsPage } from './pages/DownloadsPage'
+import { XSitePage } from './pages/XSitePage'
+import { PsitePage } from './pages/PsitePage'
+import { CollectionPage } from './pages/CollectionPage'
+import { MelonPage } from './pages/MelonPage'
 import { ListsPage } from './pages/ListsPage'
 import { ListDetailPage } from './pages/ListDetailPage'
 import { FavoritesPage } from './pages/FavoritesPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { EmptyState } from './components/ui'
+
 import type { HomeModule } from './modules'
 
 type Route =
   | { name: 'home' }
   | { name: 'search' }
+  | { name: 'watch' }
+  | { name: 'live' }
+  | { name: 'music' }
+  | { name: 'xsite' }
+  | { name: 'psite' }
+  | { name: 'melon' }
+  | { name: 'h1'; index: number }
+  | { name: 'book' }
+  | { name: 'game' }
   | { name: 'lists' }
   | { name: 'list'; id: number }
   | { name: 'favorites' }
@@ -28,7 +52,19 @@ type Route =
   | { name: 'settings' }
 
 interface NavItem {
-  key: 'home' | 'search' | 'lists' | 'favorites' | 'downloads' | 'settings'
+  key:
+    | 'home'
+    | 'search'
+    | 'watch'
+    | 'live'
+    | 'music'
+    | 'xsite'
+    | 'psite'
+    | 'melon'
+    | 'lists'
+    | 'favorites'
+    | 'downloads'
+    | 'settings'
   label: string
   icon: LucideIcon
   ready: boolean
@@ -37,9 +73,15 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { key: 'home', label: '首页', icon: Home, ready: true },
   { key: 'search', label: '搜索', icon: Search, ready: true },
+  { key: 'watch', label: '观影', icon: MonitorPlay, ready: true },
+  { key: 'live', label: '电视', icon: Tv, ready: true },
+  { key: 'music', label: '音乐', icon: Music, ready: true },
+  { key: 'xsite', label: 'X站', icon: Globe, ready: true },
+  { key: 'psite', label: 'P站', icon: PlayCircle, ready: true },
+  { key: 'melon', label: '吃瓜', icon: Popcorn, ready: true },
   { key: 'lists', label: '清单', icon: ListChecks, ready: true },
   { key: 'favorites', label: '收藏', icon: Heart, ready: true },
-  { key: 'downloads', label: '下载', icon: Download, ready: false },
+  { key: 'downloads', label: '下载', icon: Download, ready: true },
   { key: 'settings', label: '设置', icon: Settings, ready: true }
 ]
 
@@ -49,6 +91,18 @@ function leafRoute(key: NavItem['key']): Route {
       return { name: 'home' }
     case 'search':
       return { name: 'search' }
+    case 'watch':
+      return { name: 'watch' }
+    case 'live':
+      return { name: 'live' }
+    case 'music':
+      return { name: 'music' }
+    case 'xsite':
+      return { name: 'xsite' }
+    case 'psite':
+      return { name: 'psite' }
+    case 'melon':
+      return { name: 'melon' }
     case 'lists':
       return { name: 'lists' }
     case 'favorites':
@@ -86,6 +140,43 @@ function Shell() {
   const openModule = (m: HomeModule) => {
     if (m.key === 'lists') {
       setRoute({ name: 'lists' })
+      return
+    }
+    if (m.key === 'watch') {
+      setRoute({ name: 'watch' })
+      return
+    }
+    if (m.key === 'tv') {
+      setRoute({ name: 'live' })
+      return
+    }
+    if (m.key === 'music') {
+      setRoute({ name: 'music' })
+      return
+    }
+    if (m.key === 'xsite') {
+      setRoute({ name: 'xsite' })
+      return
+    }
+    if (m.key === 'psite') {
+      setRoute({ name: 'psite' })
+      return
+    }
+    if (m.key === 'melon') {
+      setRoute({ name: 'melon' })
+      return
+    }
+    if (m.key === 'book') {
+      setRoute({ name: 'book' })
+      return
+    }
+    if (m.key === 'game') {
+      setRoute({ name: 'game' })
+      return
+    }
+    const h1 = m.key.match(/^h1_(\d)$/)
+    if (h1) {
+      setRoute({ name: 'h1', index: Number(h1[1]) - 1 })
       return
     }
     setNotice(`「${m.title}」模块将在后续版本接入，当前先完成框架与数据迁移。`)
@@ -143,6 +234,36 @@ function Shell() {
       <main className="content">
         {route.name === 'home' && <HomePage onOpen={openModule} />}
         {route.name === 'search' && <SearchPage onNotice={setNotice} />}
+        {route.name === 'watch' && <WatchPage onNotice={setNotice} />}
+        {route.name === 'live' && <LivePage onNotice={setNotice} />}
+        {route.name === 'music' && <MusicPage onNotice={setNotice} />}
+        {route.name === 'xsite' && <XSitePage onNotice={setNotice} />}
+        {route.name === 'psite' && <PsitePage onNotice={setNotice} />}
+        {route.name === 'melon' && <MelonPage onNotice={setNotice} />}
+        {route.name === 'h1' && (
+          <WatchPage
+            variant={{ label: `番${route.index + 1}`, proxyIndex: route.index }}
+            onNotice={setNotice}
+          />
+        )}
+        {route.name === 'book' && (
+          <CollectionPage
+            category="图书"
+            title="图书"
+            desc="已收藏的图书"
+            onNotice={setNotice}
+            onGoSearch={() => setRoute({ name: 'search' })}
+          />
+        )}
+        {route.name === 'game' && (
+          <CollectionPage
+            category="游戏"
+            title="游戏"
+            desc="已收藏的游戏"
+            onNotice={setNotice}
+            onGoSearch={() => setRoute({ name: 'search' })}
+          />
+        )}
         {route.name === 'lists' && (
           <ListsPage
             onOpenList={(id) => setRoute({ name: 'list', id })}
@@ -158,12 +279,7 @@ function Shell() {
           />
         )}
         {route.name === 'favorites' && <FavoritesPage />}
-        {route.name === 'downloads' && (
-          <EmptyState
-            title="下载管理规划中"
-            desc="PC 端会先接入搜索与播放，再复用手机端的下载目录结构（视频 / 漫画 / 本子 / 音乐 / 书籍）。"
-          />
-        )}
+        {route.name === 'downloads' && <DownloadsPage onNotice={setNotice} />}
         {route.name === 'settings' && <SettingsPage onNotice={setNotice} />}
       </main>
 
