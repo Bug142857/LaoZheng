@@ -1,7 +1,7 @@
 # 老郑分享 · PC 端项目记忆
 
 > 本文件是 **PC 端仓库（https://github.com/Bug142857/LaoZheng）** 的唯一记忆入口，换电脑 / 换 AI 账号后从这里恢复上下文。
-> 最后更新：2026-10-28（PC 端 v0.4.0：内置三站账号 + 本子（哔咔）/ 漫画（Komiic）模块）。
+> 最后更新：2026-10-28（PC 端 v0.4.1：修复私有仓库下的应用内检查更新，改用公开更新清单）。
 >
 > 结构：**第一部分 = PC 端工程约定与进度**；**第二部分 = 手机端（ShangYin）历史记忆**，原样迁移，仅供功能口径与踩坑参考，不代表 PC 端已经实现。
 
@@ -22,10 +22,10 @@
 
 ### 3. 版本与发布约定
 
-- `package.json` 的 `version` 从 `0.1.0` 起；每轮发版 **minor +1**（`0.1.0` → `0.2.0` → `0.3.0`…），tag 用 `v0.x.0`。
+- `package.json` 的 `version` 从 `0.1.0` 起；功能轮 **minor +1**（`0.1.0` → `0.2.0` → `0.3.0`…），修复轮 **patch +1**，tag 用 `v0.x.y`。
 - 构建产物 `out/`、安装包 `release/`、`node_modules/` 一律不入库（`.gitignore` 已按通配符写好）。
 - 发版前必须 `npm run build` 通过；安装包用 `npm run dist`（electron-builder，NSIS，可选安装目录、桌面快捷方式「老郑分享」）。
-- 云同步（WebDAV 手动上传/恢复）与 GitHub Releases 更新检查已在 v0.3.0 接入；v0.4.0 接入内置账号、本子、漫画；静默自动更新与安装包签名仍未做。
+- 云同步（WebDAV 手动上传/恢复）与 GitHub Releases 更新检查已在 v0.3.0 接入；v0.4.0 接入内置账号、本子、漫画；v0.4.1 修复私有仓库下的检查更新（公开清单）；静默自动更新与安装包签名仍未做。
 
 ### 4. 工程结构（当前）
 
@@ -141,7 +141,7 @@ docs/AI_PROJECT_MEMORY.md  本文件
 #### 7.8 云同步 / 更新
 
 - WebDAV：配置存 `userData/sync.json`，密码用 `safeStorage` 加密；上传 PUT `{目录}/data.json`，恢复 GET 并校验 items/lists/listItems；测试连接用 PROPFIND（207/200）。
-- 更新：`app:checkUpdate` 查 GitHub Releases latest，与 `app.getVersion()` 语义化比较；有新版本仅打开 Release 页（未接 electron-updater 静默更新）。
+- 更新：`app:checkUpdate` 优先读公开 Gist 清单（`gist_id=802551160083623580189fc536724d65`，raw 地址见 `main.ts` 的 `UPDATE_MANIFEST_URL`），清单含 `version / url / notes`；私有仓库的 Releases 匿名 API 不可见，清单失败时才回退 GitHub API。发版后需同步更新该 Gist（PATCH `/gists/{id}` 的 `update.json`），应用才能提示新版本。目前仍只打开 Release 页，未接 electron-updater 静默安装。
 
 #### 7.9 播放与请求层规则（`electron/main.ts setupRequestRules`）
 

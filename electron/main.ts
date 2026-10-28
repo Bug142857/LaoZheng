@@ -107,6 +107,9 @@ const VOD_UA =
 const KOMIIC_UA =
   'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36'
 const BIKA_UA = 'okhttp/3.8.1'
+/** 公开更新清单：私有仓库的 Releases 匿名 API 不可见，这里只公开版本号与发布页地址 */
+const UPDATE_MANIFEST_URL =
+  'https://gist.githubusercontent.com/Bug142857/802551160083623580189fc536724d65/raw/update.json'
 
 function setResponseHeader(headers: Record<string, string[]>, name: string, value: string): void {
   const key = Object.keys(headers).find((k) => k.toLowerCase() === name.toLowerCase()) ?? name
@@ -541,6 +544,31 @@ function registerIpc(): void {
 
   ipcMain.handle('app:checkUpdate', async (): Promise<UpdateCheckResult> => {
     const current = app.getVersion()
+
+    // 优先读公开清单（私有仓库也能查）；清单不可用时回退 GitHub Releases
+    try {
+      const res = await fetch(UPDATE_MANIFEST_URL, {
+        headers: { 'User-Agent': 'laozheng-pc', Accept: 'application/json' },
+        signal: AbortSignal.timeout(15_000)
+      })
+      if (res.ok) {
+        const json = (await res.json()) as { version?: string; url?: string; notes?: string }
+        const latest = (json.version ?? '').trim().replace(/^v/i, '')
+        if (latest) {
+          return {
+            ok: true,
+            current,
+            latest,
+            hasUpdate: compareVersions(latest, current) > 0,
+            url: typeof json.url === 'string' ? json.url : undefined,
+            notes: (json.notes ?? '').slice(0, 2000)
+          }
+        }
+      }
+    } catch {
+      // 清单读取失败时继续尝试 GitHub API
+    }
+
     try {
       const res = await fetch('https://api.github.com/repos/Bug142857/LaoZheng/releases/latest', {
         headers: { 'User-Agent': 'laozheng-pc', Accept: 'application/vnd.github+json' },

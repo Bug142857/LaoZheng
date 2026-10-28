@@ -1,4 +1,4 @@
-/** 更新检查结果（GitHub Releases） */
+/** 更新检查结果（公开更新清单 / GitHub Releases） */
 export interface UpdateCheckResult {
   ok: boolean
   current: string
