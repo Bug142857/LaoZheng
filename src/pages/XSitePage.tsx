@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react'
-import { ChevronLeft, Download, Heart, Play } from 'lucide-react'
+import { ChevronLeft, Download, Heart } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { EmptyState, Modal } from '../components/ui'
+import { EmptyState, LoadingBlock, ModuleShortcuts, Pagination } from '../components/ui'
 import { VideoPlayer } from '../components/VideoPlayer'
+import { loadCache, saveCache } from '../utils/cache'
+import { requestDownload } from '../utils/download'
 import {
-  X_RANGES,
   formatCount,
   formatDuration,
   type XCategory,
-  type XDetail,
   type XPost
 } from '../shared/xsite'
 
@@ -21,17 +21,46 @@ interface XCache {
   items: XPost[]
 }
 
-const cache: XCache = { range: 'weekly', category: '', page: 1, lastPage: 0, total: 0, items: [] }
+const EMPTY_X_CACHE: XCache = {
+  range: 'weekly',
+  category: '',
+  page: 1,
+  lastPage: 0,
+  total: 0,
+  items: []
+}
+
+const cache: XCache = (() => {
+  const cached = loadCache<XCache>('xsite', EMPTY_X_CACHE)
+  // 重开应用回到「最新 + 全部分类」；默认列表缓存仍直接显示
+  if (cached.range !== 'weekly' || cached.category || cached.page !== 1) {
+    return { ...EMPTY_X_CACHE }
+  }
+  return cached
+})()
+
+/** 分类数量：按「榜单 + 分类」缓存（来自列表接口的 total），切榜单会重探 */
+const countCache = new Map<string, number>()
+let countRange = ''
 
 export function XSitePage({
   onNotice,
-  focusId
+  focusId,
+  resetSignal,
+  onExit,
+  onOpenFavorites,
+  onOpenDownloads
 }: {
   onNotice: (text: string) => void
   focusId?: string
+  resetSignal?: number
+  /** 从收藏进入时，播放页返回走全局上一页 */
+  onExit?: () => void
+  onOpenFavorites?: () => void
+  onOpenDownloads?: () => void
 }) {
   const { data, update } = useData()
-  const [range, setRange] = useState(cache.range)
+  const [range, setRange] = useState(cache.range === 'all' ? 'all' : 'weekly')
   const [category, setCategory] = useState(cache.category)
   const [page, setPage] = useState(cache.page)
   const [lastPage, setLastPage] = useState(cache.lastPage)
@@ -39,15 +68,31 @@ export function XSitePage({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [categories, setCategories] = useState<XCategory[]>([])
-  const [detail, setDetail] = useState<XDetail | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailError, setDetailError] = useState<string | null>(null)
+  const [catCounts, setCatCounts] = useState<Record<string, number>>({})
+  const [pending, setPending] = useState<{ range: string; category: string } | null>(null)
   const [playing, setPlaying] = useState<XPost | null>(null)
+  /** 从收藏进入时先显示打开中，避免闪一下榜单界面 */
+  const [opening, setOpening] = useState(false)
+  const [openError, setOpenError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (resetSignal === undefined) return
+    setPlaying(null)
+    setOpening(false)
+    setOpenError(null)
+  }, [resetSignal])
+
+  useEffect(() => {
+    if (!playing) return
+    document.querySelector<HTMLElement>('.content')?.scrollTo({ top: 0 })
+  }, [playing])
 
   const load = async (nextRange: string, nextCategory: string, nextPage: number) => {
+    setPending({ range: nextRange, category: nextCategory })
     setLoading(true)
     setError(null)
     const res = await window.laozheng.xList(nextRange, nextPage, nextCategory)
+    setPending(null)
     setLoading(false)
     if (!res.ok || !res.page) {
       setError(res.error ?? '加载失败')
@@ -66,43 +111,77 @@ export function XSitePage({
       total: res.page.total,
       items: res.page.items
     })
+    // 只把「最新 + 全部分类 + 第一页」写进本地缓存
+    if (nextRange === 'weekly' && !nextCategory && res.page.page === 1) {
+      saveCache<XCache>('xsite', { ...cache })
+    }
   }
 
   useEffect(() => {
     window.laozheng.xCategories().then((res) => {
       if (res.ok) setCategories(res.items)
     })
-    if (!cache.items.length) void load(cache.range, cache.category, 1)
+    if (!cache.items.length) void load(range, cache.category, 1)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
-    if (!focusId) return
-    setDetail(null)
-    setDetailError(null)
-    setDetailLoading(true)
-    void window.laozheng.xDetail(focusId).then((res) => {
-      setDetailLoading(false)
-      if (!res.ok || !res.detail) {
-        setDetailError(res.error ?? '加载失败')
-        return
-      }
-      setDetail(res.detail)
-    })
-  }, [focusId])
-
-  const openDetail = async (post: XPost) => {
-    setDetail(null)
-    setDetailError(null)
-    setDetailLoading(true)
-    const res = await window.laozheng.xDetail(post.urlCd)
-    setDetailLoading(false)
-    if (!res.ok || !res.detail) {
-      setDetailError(res.error ?? '加载失败')
+    if (!categories.length) return
+    if (countRange !== range) {
+      countCache.clear()
+      countRange = range
+    }
+    let alive = true
+    const pending = categories.filter((c) => !countCache.has(c.code))
+    if (!pending.length) {
+      setCatCounts(Object.fromEntries(countCache))
       return
     }
-    setDetail(res.detail)
-  }
+    const queue = [...pending]
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const category = queue.shift()
+        if (!category) return
+        const res = await window.laozheng.xList(range, 1, category.code)
+        if (res.ok && res.page) {
+          countCache.set(category.code, res.page.total)
+          if (alive) setCatCounts(Object.fromEntries(countCache))
+        }
+      }
+    }
+    void Promise.all(Array.from({ length: Math.min(6, queue.length) }, worker))
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categories, range])
+
+  useEffect(() => {
+    if (!focusId) {
+      setOpening(false)
+      setOpenError(null)
+      return
+    }
+    let alive = true
+    setOpening(true)
+    setOpenError(null)
+    setPlaying(null)
+    void window.laozheng.xDetail(focusId).then((res) => {
+      if (!alive) return
+      setOpening(false)
+      if (res.ok && res.detail) {
+        setPlaying(res.detail.post)
+        return
+      }
+      setOpenError(res.error ?? '未知错误')
+    })
+    return () => {
+      alive = false
+      setPlaying(null)
+      setOpening(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId])
 
   const favOf = (post: XPost) =>
     data.innerFavs.find((f) => f.module === 'xsite' && f.id === post.urlCd)
@@ -136,22 +215,54 @@ export function XSitePage({
     onNotice(exists ? '已取消收藏' : '已收藏，可在「收藏」页查看')
   }
 
-  const download = async (post: XPost) => {
-    const res = await window.laozheng.addDownload({
+  const download = (post: XPost) => {
+    requestDownload({
       title: post.account ? `X站 @${post.account}` : 'X站视频',
       url: post.videoUrl,
       kind: 'video',
       coverUrl: post.thumbnail ?? '',
-      sourceName: 'X站'
+      sourceName: 'X站',
+      durationSec: post.durationSec
     })
-    onNotice(res.ok ? '已加入下载队列' : `下载失败：${res.error}`)
+  }
+
+  if ((opening || openError) && !playing) {
+    return (
+      <>
+        <header className="page-header">
+          <button
+            className="btn ghost"
+            onClick={() => {
+              setOpening(false)
+              setOpenError(null)
+              if (focusId && onExit) onExit()
+            }}
+          >
+            <ChevronLeft size={15} /> 返回
+          </button>
+          <h1 className="page-title">X站视频</h1>
+        </header>
+        {opening ? (
+          <EmptyState title="正在打开视频…" desc="正在解析播放地址，请稍等。" />
+        ) : (
+          <EmptyState title="打开失败" desc={openError ?? '请稍后重试'} />
+        )}
+      </>
+    )
   }
 
   if (playing) {
     return (
       <>
         <header className="page-header">
-          <button className="btn ghost" onClick={() => setPlaying(null)}>
+          <button
+            className="btn ghost"
+            onClick={() => {
+              // 先关掉播放页再返回，避免返回上一页后又弹回播放页
+              setPlaying(null)
+              if (focusId && onExit) onExit()
+            }}
+          >
             <ChevronLeft size={15} /> 返回
           </button>
           <h1 className="page-title">{playing.account ? `@${playing.account}` : 'X站视频'}</h1>
@@ -166,7 +277,7 @@ export function XSitePage({
             </button>
           </div>
         </header>
-        <VideoPlayer src={playing.videoUrl} />
+        <VideoPlayer src={playing.videoUrl} resumeKey={`xsite|${playing.urlCd}`} />
       </>
     )
   }
@@ -174,37 +285,60 @@ export function XSitePage({
   return (
     <>
       <header className="page-header">
+        {focusId && onExit ? (
+          <button className="btn ghost" onClick={onExit}>
+            <ChevronLeft size={15} /> 返回
+          </button>
+        ) : null}
         <h1 className="page-title">X站</h1>
-        <span className="page-desc">
-          排行榜 · {cache.total ? `共 ${formatCount(cache.total)} 条` : '数据来自站点公开接口'}
-        </span>
+        <div className="page-actions">
+          <ModuleShortcuts onOpenFavorites={onOpenFavorites} onOpenDownloads={onOpenDownloads} />
+        </div>
       </header>
 
       <div className="toolbar">
-        {X_RANGES.map((r) => (
-          <button
-            key={r.code}
-            className={`chip ${range === r.code ? 'active' : ''}`}
-            onClick={() => void load(r.code, category, 1)}
-          >
-            {r.label}
-          </button>
-        ))}
-        <select
-          className="select-inline"
-          value={category}
-          onChange={(e) => void load(range, e.target.value, 1)}
+        <button
+          className={`chip ${(pending ? pending.range : range) === 'weekly' ? 'active' : ''}`}
+          onClick={() => void load('weekly', category, 1)}
         >
-          <option value="">全部分类</option>
-          {categories.map((c) => (
-            <option key={c.code} value={c.code}>
+          最新
+        </button>
+        <button
+          className={`chip ${(pending ? pending.range : range) === 'all' ? 'active' : ''}`}
+          onClick={() => void load('all', category, 1)}
+        >
+          热门
+        </button>
+        <button
+          className={`chip ${
+            (pending ? pending.category : category) === '' ? 'active' : ''
+          }`}
+          onClick={() => void load(range, '', 1)}
+        >
+          全部分类
+        </button>
+        {categories.map((c) => {
+          const active = pending
+            ? pending.range === range && pending.category === c.code
+            : category === c.code
+          return (
+            <button
+              key={c.code}
+              className={`chip ${active ? 'active' : ''}`}
+              onClick={() => void load(range, c.code, 1)}
+            >
               {c.name}
-            </option>
-          ))}
-        </select>
+              {catCounts[c.code] > 0 ? (
+                <span className="chip-count">{formatCount(catCounts[c.code])}</span>
+              ) : null}
+            </button>
+          )
+        })}
       </div>
 
-      {loading ? (
+      {loading && items.length > 0 ? <LoadingBlock text="正在切换，请稍等…" /> : null}
+
+      {loading && items.length === 0 ? (
         <EmptyState title="正在加载排行榜…" />
       ) : error ? (
         <EmptyState
@@ -222,10 +356,21 @@ export function XSitePage({
         <>
           <div className="media-grid">
             {items.map((post) => (
-              <button key={post.urlCd} className="media-card" onClick={() => void openDetail(post)}>
+              <button key={post.urlCd} className="media-card" onClick={() => setPlaying(post)}>
                 <span className="media-thumb">
                   {post.thumbnail ? <img src={post.thumbnail} alt="" loading="lazy" /> : null}
                   <span className="media-duration">{formatDuration(post.durationSec)}</span>
+                  <span
+                    className={`fav-heart ${favOf(post) ? 'on' : ''}`}
+                    role="button"
+                    title={favOf(post) ? '取消收藏' : '收藏'}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      toggleFav(post)
+                    }}
+                  >
+                    <Heart size={15} fill={favOf(post) ? 'currentColor' : 'none'} />
+                  </span>
                 </span>
                 <span className="media-title">{post.account ? `@${post.account}` : 'X视频'}</span>
                 <span className="media-meta">
@@ -235,71 +380,13 @@ export function XSitePage({
             ))}
           </div>
 
-          <div className="toolbar" style={{ marginTop: 14 }}>
-            <button className="btn" disabled={page <= 1} onClick={() => void load(range, category, page - 1)}>
-              上一页
-            </button>
-            <span className="page-desc">第 {page} 页{lastPage ? ` / 共 ${lastPage} 页` : ''}</span>
-            <button
-              className="btn"
-              disabled={lastPage > 0 && page >= lastPage}
-              onClick={() => void load(range, category, page + 1)}
-            >
-              下一页
-            </button>
-          </div>
+          <Pagination
+            page={page}
+            lastPage={lastPage}
+            disabled={loading}
+            onChange={(next) => void load(range, category, next)}
+          />
         </>
-      )}
-
-      {(detail || detailLoading || detailError) && (
-        <Modal
-          title={detail?.post.account ? `@${detail.post.account}` : 'X站视频'}
-          onClose={() => {
-            setDetail(null)
-            setDetailError(null)
-          }}
-          footer={
-            <>
-              <button className="btn ghost" onClick={() => setDetail(null)}>
-                关闭
-              </button>
-              {detail ? (
-                <>
-                  <button className="btn" onClick={() => void download(detail.post)}>
-                    <Download size={14} /> 下载
-                  </button>
-                  <button className="btn" onClick={() => toggleFav(detail.post, detail.tags)}>
-                    <Heart size={14} fill={favOf(detail.post) ? 'currentColor' : 'none'} />{' '}
-                    {favOf(detail.post) ? '已收藏' : '收藏'}
-                  </button>
-                  <button className="btn primary" onClick={() => setPlaying(detail.post)}>
-                    <Play size={14} /> 播放
-                  </button>
-                </>
-              ) : null}
-            </>
-          }
-        >
-          {detailLoading ? (
-            <p>正在加载详情…</p>
-          ) : detailError ? (
-            <p>{detailError}</p>
-          ) : detail ? (
-            <div className="detail-head">
-              <div className="detail-cover" style={{ width: 160, height: 90, flexBasis: 160 }}>
-                {detail.post.thumbnail ? <img src={detail.post.thumbnail} alt="" /> : null}
-              </div>
-              <div className="detail-meta">
-                <div>时长：{formatDuration(detail.post.durationSec) || '—'}</div>
-                <div>
-                  赞 {formatCount(detail.post.favorite)} · 观看 {formatCount(detail.post.pv)}
-                </div>
-                <div>{detail.tags.length ? detail.tags.join(' · ') : '没有标签'}</div>
-                {detail.postedAt ? <div className="detail-source">{detail.postedAt.slice(0, 10)}</div> : null}
-              </div>
-            </div>
-          ) : null}
-        </Modal>
       )}
     </>
   )

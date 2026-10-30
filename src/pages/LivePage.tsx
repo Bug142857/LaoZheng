@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronLeft, Heart, Plus, RefreshCw, Search, Trash2, Upload } from 'lucide-react'
+import { ChevronLeft, Heart } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { EmptyState, ConfirmDialog, Modal } from '../components/ui'
+import { EmptyState, ModuleShortcuts } from '../components/ui'
+import { SearchBar } from '../components/SearchBar'
 import { VideoPlayer } from '../components/VideoPlayer'
 import type { LiveChannel, LiveChannelResult, LiveSource } from '../shared/live'
 import type { InnerFav } from '../shared/types'
@@ -15,35 +16,37 @@ interface ChannelCache {
   [sourceId: string]: LiveChannelResult
 }
 
-function newSourceId(url: string): string {
-  let h = 0
-  for (let i = 0; i < url.length; i++) h = (h * 31 + url.charCodeAt(i)) | 0
-  return `live_${Math.abs(h)}`
-}
-
 export function LivePage({
   onNotice,
-  focusUrl
+  focusUrl,
+  resetSignal,
+  onExit,
+  onOpenFavorites,
+  onOpenDownloads
 }: {
   onNotice: (text: string) => void
   focusUrl?: string
+  resetSignal?: number
+  /** 从收藏进入时，播放页返回走全局上一页 */
+  onExit?: () => void
+  onOpenFavorites?: () => void
+  onOpenDownloads?: () => void
 }) {
   const { data, update } = useData()
   const [sources, setSources] = useState<LiveSource[] | null>(null)
   const [selectedId, setSelectedId] = useState('')
   const [cache, setCache] = useState<ChannelCache>({})
   const [loadingId, setLoadingId] = useState<string | null>(null)
+  const [input, setInput] = useState('')
   const [query, setQuery] = useState('')
   const [group, setGroup] = useState('全部')
   const [playing, setPlaying] = useState<Playing | null>(null)
-  const [adding, setAdding] = useState(false)
-  const [managing, setManaging] = useState(false)
-  const [deleting, setDeleting] = useState<LiveSource | null>(null)
 
   const loadChannels = async (source: LiveSource) => {
     setSelectedId(source.id)
     setGroup('全部')
     setQuery('')
+    setInput('')
     if (cache[source.id] && !cache[source.id].error) return
     setLoadingId(source.id)
     const res = await window.laozheng.loadLiveChannels(source)
@@ -68,12 +71,14 @@ export function LivePage({
   useEffect(() => {
     if (!focusUrl) return
     setPlaying({ channel: { group: '收藏', name: '收藏频道', url: focusUrl }, sourceName: '收藏' })
+    return () => setPlaying(null)
   }, [focusUrl])
 
-  const persist = (next: LiveSource[]) => {
-    setSources(next)
-    void window.laozheng.saveLiveSources(next)
-  }
+  // 从播放页去收藏/下载再返回时，回到频道列表而不是又停在播放页
+  useEffect(() => {
+    if (resetSignal === undefined) return
+    setPlaying(null)
+  }, [resetSignal])
 
   const current = sources?.find((s) => s.id === selectedId) ?? null
   const currentResult = selectedId ? cache[selectedId] : undefined
@@ -118,51 +123,6 @@ export function LivePage({
     onNotice(exists ? '已取消收藏' : '已收藏，可在「收藏」页查看')
   }
 
-  const addUrlSource = (name: string, url: string) => {
-    if (!sources) return
-    const source: LiveSource = {
-      id: newSourceId(url),
-      name: name.trim() || '直播源',
-      url: url.trim(),
-      content: '',
-      enabled: true
-    }
-    persist([...sources, source])
-    setAdding(false)
-    void loadChannels(source)
-    onNotice(`已添加「${source.name}」`)
-  }
-
-  const importFile = async () => {
-    const res = await window.laozheng.importLiveFile()
-    if (res.canceled) return
-    if (res.error) {
-      onNotice(`导入失败：${res.error}`)
-      return
-    }
-    if (!res.source || !sources) return
-    if (sources.some((s) => s.id === res.source!.id)) {
-      onNotice('该直播源已存在')
-      return
-    }
-    persist([...sources, res.source])
-    void loadChannels(res.source)
-    onNotice(`已导入「${res.source.name}」`)
-  }
-
-  const removeSource = () => {
-    if (!deleting || !sources) return
-    const next = sources.filter((s) => s.id !== deleting.id)
-    persist(next)
-    setDeleting(null)
-    if (selectedId === deleting.id) {
-      setSelectedId('')
-      const first = next.find((s) => s.enabled)
-      if (first) void loadChannels(first)
-    }
-    onNotice(`已删除「${deleting.name}」`)
-  }
-
   if (sources === null) {
     return <EmptyState title="正在加载电视源…" />
   }
@@ -171,11 +131,17 @@ export function LivePage({
     return (
       <>
         <header className="page-header">
-          <button className="btn ghost" onClick={() => setPlaying(null)}>
+          <button
+            className="btn ghost"
+            onClick={() => {
+              // 先关闭播放页再返回，避免返回上一页后又弹回播放页
+              setPlaying(null)
+              if (focusUrl && onExit) onExit()
+            }}
+          >
             <ChevronLeft size={15} /> 返回
           </button>
           <h1 className="page-title">{playing.channel.name}</h1>
-          <span className="page-desc">{playing.sourceName} · {playing.channel.group}</span>
           <div className="page-actions">
             <button className="btn" onClick={() => toggleFav(playing)}>
               <Heart size={15} fill={fav ? 'currentColor' : 'none'} /> {fav ? '已收藏' : '收藏'}
@@ -194,64 +160,35 @@ export function LivePage({
     <>
       <header className="page-header">
         <h1 className="page-title">电视</h1>
-        <span className="page-desc">
-          {sources.length} 个源 · {channels.length} 个频道
-        </span>
         <div className="page-actions">
-          <button className="btn" onClick={() => setAdding(true)}>
-            <Plus size={15} /> 添加源
-          </button>
-          <button className="btn" onClick={() => void importFile()}>
-            <Upload size={15} /> 导入 M3U
-          </button>
-          <button className="btn" onClick={() => setManaging(true)}>
-            管理源
-          </button>
+          <ModuleShortcuts
+            onOpenFavorites={
+              onOpenFavorites
+                ? () => {
+                    setPlaying(null)
+                    onOpenFavorites()
+                  }
+                : undefined
+            }
+            onOpenDownloads={
+              onOpenDownloads
+                ? () => {
+                    setPlaying(null)
+                    onOpenDownloads()
+                  }
+                : undefined
+            }
+          />
         </div>
       </header>
 
       {sources.length === 0 ? (
         <EmptyState
           title="还没有电视源"
-          desc="添加 M3U / M3U8 地址，或从本地导入播放列表。"
-          action={
-            <button className="btn primary" onClick={() => setAdding(true)}>
-              添加源
-            </button>
-          }
+          desc="到「配置管理 → 片源管理」添加 M3U / M3U8 地址，或从本地导入播放列表。"
         />
       ) : (
         <>
-          <div className="toolbar">
-            {sources
-              .filter((s) => s.enabled)
-              .map((s) => (
-                <button
-                  key={s.id}
-                  className={`chip ${selectedId === s.id ? 'active' : ''}`}
-                  onClick={() => void loadChannels(s)}
-                >
-                  {s.name}
-                </button>
-              ))}
-            {current && (
-              <button
-                className="btn ghost"
-                disabled={loadingId === current.id}
-                onClick={() => {
-                  setCache((prev) => {
-                    const next = { ...prev }
-                    delete next[current.id]
-                    return next
-                  })
-                  void loadChannels(current)
-                }}
-              >
-                <RefreshCw size={14} /> {loadingId === current.id ? '加载中…' : '重载'}
-              </button>
-            )}
-          </div>
-
           {currentResult?.error ? (
             <EmptyState
               title="频道加载失败"
@@ -279,16 +216,31 @@ export function LivePage({
             <EmptyState title="这个源没有频道" desc="换一个源，或重新导入播放列表。" />
           ) : (
             <>
-              <div className="toolbar">
-                <label className="search">
-                  <Search size={16} />
-                  <input
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder="搜索频道…"
-                  />
-                </label>
-              </div>
+              <SearchBar
+                value={input}
+                onChange={setInput}
+                onSubmit={() => setQuery(input.trim())}
+                onClear={() => {
+                  setInput('')
+                  setQuery('')
+                }}
+                placeholder="搜索频道…"
+                submitLabel="搜索"
+                extra={
+                  query ? (
+                    <button
+                      type="button"
+                      className="btn ghost"
+                      onClick={() => {
+                        setInput('')
+                        setQuery('')
+                      }}
+                    >
+                      取消搜索
+                    </button>
+                  ) : null
+                }
+              />
               <div className="toolbar">
                 <button
                   className={`chip ${group === '全部' ? 'active' : ''}`}
@@ -314,121 +266,44 @@ export function LivePage({
                 <EmptyState title="没有匹配的频道" desc="换个关键词或分组再试。" />
               ) : (
                 <div className="channel-grid">
-                  {filtered.map((c) => (
-                    <button
-                      key={`${c.url}-${c.name}`}
-                      className="channel-card"
-                      onClick={() => setPlaying({ channel: c, sourceName: current?.name ?? '' })}
-                    >
-                      <span className="channel-name">{c.name}</span>
-                      <span className="channel-group">{c.group}</span>
-                    </button>
-                  ))}
+                  {filtered.map((c) => {
+                    const item = { channel: c, sourceName: current?.name ?? '' }
+                    const saved = data.innerFavs.some(
+                      (f) => f.module === 'tv' && f.id === favId(c)
+                    )
+                    return (
+                      <div
+                        key={`${c.url}-${c.name}`}
+                        className="channel-card"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setPlaying(item)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') setPlaying(item)
+                        }}
+                      >
+                        <span className="channel-name">{c.name}</span>
+                        <span className="channel-group">{c.group}</span>
+                        <span
+                          className={`fav-heart ${saved ? 'on' : ''}`}
+                          role="button"
+                          title={saved ? '取消收藏' : '收藏'}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            toggleFav(item)
+                          }}
+                        >
+                          <Heart size={15} fill={saved ? 'currentColor' : 'none'} />
+                        </span>
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </>
           )}
         </>
       )}
-
-      {adding && (
-        <AddSourceModal
-          onClose={() => setAdding(false)}
-          onSave={addUrlSource}
-        />
-      )}
-
-      {managing && (
-        <Modal
-          title="电视源管理"
-          onClose={() => setManaging(false)}
-          footer={
-            <>
-              <button className="btn" onClick={() => void importFile()}>
-                <Upload size={14} /> 导入 M3U
-              </button>
-              <button className="btn ghost" onClick={() => setManaging(false)}>
-                关闭
-              </button>
-            </>
-          }
-        >
-          <div className="list-picker">
-            {sources.map((s) => (
-              <div key={s.id} className="list-option">
-                <span>{s.name}</span>
-                <span className="sub">{s.url.startsWith('local://') ? '本地' : '网络'}</span>
-                <button
-                  className="btn"
-                  onClick={() =>
-                    persist(sources.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x)))
-                  }
-                >
-                  {s.enabled ? '停用' : '启用'}
-                </button>
-                <button className="icon-btn danger" title="删除" onClick={() => setDeleting(s)}>
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
-        </Modal>
-      )}
-
-      {deleting && (
-        <ConfirmDialog
-          title="删除电视源"
-          message={`确定删除「${deleting.name}」吗？只影响本机电视源配置。`}
-          confirmText="删除"
-          danger
-          onConfirm={removeSource}
-          onCancel={() => setDeleting(null)}
-        />
-      )}
     </>
-  )
-}
-
-function AddSourceModal({
-  onClose,
-  onSave
-}: {
-  onClose: () => void
-  onSave: (name: string, url: string) => void
-}) {
-  const [name, setName] = useState('')
-  const [url, setUrl] = useState('')
-  const valid = /^https?:\/\//i.test(url.trim())
-
-  return (
-    <Modal
-      title="添加电视源"
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button className="btn primary" disabled={!valid} onClick={() => onSave(name, url)}>
-            添加
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <label>
-          名称
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：IPv4 直播源" />
-        </label>
-        <label>
-          M3U 地址
-          <input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://example.com/playlist.m3u"
-          />
-        </label>
-      </div>
-    </Modal>
   )
 }

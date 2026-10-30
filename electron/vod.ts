@@ -1,7 +1,10 @@
 import { normalizeBaseUrl, parsePlayGroups } from '../src/shared/vod'
 import type {
+  VodCategoriesResponse,
+  VodCategory,
   VodDetailResponse,
   VodItem,
+  VodListResponse,
   VodSearchItem,
   VodSearchResponse,
   VodSourceInput,
@@ -42,8 +45,23 @@ function errorIsNetwork(err: unknown): boolean {
 interface VodRawResponse {
   code: number
   msg: string
+  page: number
+  pagecount: number
   total: number
+  categories: VodCategory[]
   list: unknown[]
+}
+
+function mapCategory(raw: unknown): VodCategory | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  const typeId = num(o.type_id)
+  if (!typeId) return null
+  return {
+    type_id: typeId,
+    type_pid: num(o.type_pid),
+    type_name: str(o.type_name)
+  }
 }
 
 function parseResponse(body: string): VodRawResponse | null {
@@ -53,7 +71,12 @@ function parseResponse(body: string): VodRawResponse | null {
     return {
       code: Number(raw.code ?? 0),
       msg: typeof raw.msg === 'string' ? raw.msg : '',
+      page: Number(raw.page ?? 1),
+      pagecount: Number(raw.pagecount ?? 1),
       total: Number(raw.total ?? 0),
+      categories: Array.isArray(raw.class)
+        ? raw.class.map(mapCategory).filter((c): c is VodCategory => !!c)
+        : [],
       list: Array.isArray(raw.list) ? raw.list : []
     }
   } catch {
@@ -142,6 +165,55 @@ export async function searchVodSource(
     return { ok: true, items, total: resp.total }
   } catch (err) {
     return { ok: false, items: [], error: errorIsNetwork(err) ? '连接超时或被拒绝' : '请求失败' }
+  }
+}
+
+/**
+ * 番号浏览：拉某个源的整站列表（kw 为空 = 全库；typeId 非 0 = 按分类过滤）。
+ * 对应手机端 VodClient.fetchList：ac=videolist&pg=N[&wd=][&t=]。
+ */
+export async function listVodSource(
+  source: VodSourceInput,
+  page: number,
+  typeId: number,
+  keyword: string
+): Promise<VodListResponse> {
+  if (!/^https?:\/\//i.test(source.baseUrl)) return { ok: false, error: '片源地址无效' }
+  const params = [`ac=videolist`, `pg=${Math.max(1, Math.floor(page) || 1)}`]
+  if (typeId > 0) params.push(`t=${typeId}`)
+  const kw = keyword.trim()
+  if (kw) params.push(`wd=${encodeURIComponent(kw)}`)
+  try {
+    const body = await getText(buildUrl(source.baseUrl, params.join('&')), 15_000)
+    const resp = parseResponse(body)
+    if (!resp) return { ok: false, error: '返回内容不是有效接口数据' }
+    if (resp.code !== 1) {
+      return { ok: false, error: resp.msg || `接口返回 code=${resp.code}` }
+    }
+    return {
+      ok: true,
+      items: resp.list.map(mapItem).filter((item): item is VodItem => !!item),
+      total: resp.total,
+      page: resp.page,
+      pageCount: resp.pagecount,
+      categories: resp.categories
+    }
+  } catch (err) {
+    return { ok: false, error: errorIsNetwork(err) ? '连接超时或被拒绝' : '请求失败' }
+  }
+}
+
+/** 分类列表：ac=list 才会带 class（ac=videolist 在多数采集站返回空 class） */
+export async function fetchVodCategories(source: VodSourceInput): Promise<VodCategoriesResponse> {
+  if (!/^https?:\/\//i.test(source.baseUrl)) return { ok: false, error: '片源地址无效' }
+  try {
+    const body = await getText(buildUrl(source.baseUrl, 'ac=list&pg=1'), 15_000)
+    const resp = parseResponse(body)
+    if (!resp) return { ok: false, error: '返回内容不是有效接口数据' }
+    if (resp.code !== 1) return { ok: false, error: resp.msg || `接口返回 code=${resp.code}` }
+    return { ok: true, categories: resp.categories, total: resp.total }
+  } catch (err) {
+    return { ok: false, error: errorIsNetwork(err) ? '连接超时或被拒绝' : '请求失败' }
   }
 }
 

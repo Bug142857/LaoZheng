@@ -1,5 +1,5 @@
-import { BrowserWindow, session } from 'electron'
-import { mkdir, stat } from 'node:fs/promises'
+import { app, BrowserWindow, safeStorage, session } from 'electron'
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { downloadsRoot, registerLocalFile } from './downloads'
 import type {
@@ -31,6 +31,8 @@ let hidden: BrowserWindow | null = null
 let loginWindow: BrowserWindow | null = null
 let loadedHost = ''
 let hostsCache: { hosts: string[]; at: number } | null = null
+/** 最近一次被 DiamWall 反爬拦下的时间：用于把「有 Cookie」与「真能用」区分开 */
+let challengeFailedAt = 0
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -199,9 +201,38 @@ function isNotLoggedIn(text: string): boolean {
 }
 
 /**
- * 取接口文本：逐条线路尝试（有登录 Cookie 的优先），
- * 挑战页则等站点 JS 完成证明后重试。
+ * 直接走 Electron 网络栈（带分区 Cookie）。挑战已通过时这条路最快，
+ * 只有被 DiamWall 拦下时才回退隐藏窗口。
  */
+async function directFetch(host: string, path: string, form: string | null): Promise<string | null> {
+  try {
+    const res = await zlibSession().fetch(`https://${host}${path}`, {
+      method: form ? 'POST' : 'GET',
+      headers: form
+        ? {
+            'User-Agent': UA,
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Requested-With': 'XMLHttpRequest'
+          }
+        : {
+            'User-Agent': UA,
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+            'X-Requested-With': 'XMLHttpRequest'
+          },
+      body: form ?? undefined,
+      credentials: 'include',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(15_000)
+    })
+    if (!res.ok) return null
+    const text = await res.text()
+    return text && !isChallenge(text) ? text : null
+  } catch {
+    return null
+  }
+}
+
 async function fetchText(path: string, form: string | null = null): Promise<string> {
   const hosts = await candidateHosts()
   const withSession: string[] = []
@@ -211,36 +242,58 @@ async function fetchText(path: string, form: string | null = null): Promise<stri
   const tryHosts = [...withSession, ...hosts.filter((h) => !withSession.includes(h))]
   let lastChallenge = false
   let notLoggedIn = ''
-  for (const host of tryHosts) {
+  // 逐条线路尝试太慢：有会话的优先，最多试 5 条
+  for (const host of tryHosts.slice(0, 5)) {
+    // 先试直连（秒级返回），失败再走隐藏窗口
+    const direct = await directFetch(host, path, form)
+    if (direct) {
+      if (isNotLoggedIn(direct)) {
+        notLoggedIn = direct
+        challengeFailedAt = 0
+        break
+      }
+      loadedHost = host
+      challengeFailedAt = 0
+      return direct
+    }
     let win: BrowserWindow
     try {
       win = await ensureWindow(host)
     } catch {
       continue
     }
-    for (let attempt = 0; attempt < 4; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const text = await inPageFetch(win, path, form)
         if (isNotLoggedIn(text)) {
           notLoggedIn = text
+          challengeFailedAt = 0
           break
         }
         if (!isChallenge(text)) {
           loadedHost = host
+          challengeFailedAt = 0
           return text
         }
         lastChallenge = true
       } catch {
         lastChallenge = true
       }
-      await sleep(2000)
+      // 挑战页需要重新走一遍站点自己的 JS 验证：强制重载首页并等它可用
+      challengeFailedAt = Date.now()
+      try {
+        await win.loadURL(`https://${host}/`)
+      } catch {
+        // 挑战页导航报错不算失败，下面继续等
+      }
       await waitUsable(win, 10_000)
+      await sleep(800)
     }
   }
   if (notLoggedIn) return notLoggedIn
   throw new Error(
     lastChallenge
-      ? 'Z-Library 反爬验证未通过，请在 设置 → 账号管理 → Z-Library 登录 里打开登录窗口完成一次验证'
+      ? 'Z-Library 反爬验证未通过：请到 设置 → 账号管理 → Z-Library 点「打开登录窗口」，在窗口里完成一次验证（窗口会预填账号密码）'
       : 'Z-Library 请求失败，请稍后重试'
   )
 }
@@ -283,21 +336,44 @@ function cleanHtml(raw: string): string {
     .trim()
 }
 
+function formatSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return ''
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value.toFixed(unit === 0 ? 0 : 2)} ${units[unit]}`
+}
+
 function toBook(raw: unknown): ZlibBook | null {
   if (!raw || typeof raw !== 'object') return null
-  const o = raw as Record<string, unknown>
-  const id = asString(o.id)
+  const outer = raw as Record<string, unknown>
+  const nested = outer.book && typeof outer.book === 'object' ? outer.book : null
+  const o = (nested ?? outer) as Record<string, unknown>
+  // 站点有时把 id / hash 返回成数字，统一转成字符串
+  const id =
+    typeof o.id === 'number'
+      ? String(o.id)
+      : typeof o.id === 'string'
+        ? o.id.trim()
+        : ''
   if (!id) return null
   return {
     id,
-    hash: asString(o.hash),
+    hash: typeof o.hash === 'number' ? String(o.hash) : asString(o.hash),
     title: asString(o.title) || '（无标题）',
     author: asString(o.author) || null,
     cover: asString(o.cover) || null,
-    year: asString(o.year) || null,
+    year: typeof o.year === 'number' ? String(o.year) : asString(o.year) || null,
     language: asString(o.language) || null,
     extension: asString(o.extension) || null,
-    filesize: asString(o.filesize) || null,
+    filesize:
+      asString(o.filesizeString) ||
+      (typeof o.filesize === 'number' ? formatSize(o.filesize) : asString(o.filesize)) ||
+      null,
     publisher: asString(o.publisher) || null,
     description: cleanHtml(asString(o.description)) || null,
     rating: asString(o.rating) || null,
@@ -306,36 +382,149 @@ function toBook(raw: unknown): ZlibBook | null {
   }
 }
 
+interface ZlibCredentials {
+  username: string
+  password: string
+}
+
+function credentialsPath(): string {
+  return join(app.getPath('userData'), 'zlib-account.json')
+}
+
+function encryptValue(value: string): string {
+  if (safeStorage.isEncryptionAvailable()) {
+    return `enc:${safeStorage.encryptString(value).toString('base64')}`
+  }
+  return `raw:${Buffer.from(value, 'utf8').toString('base64')}`
+}
+
+function decryptValue(value: unknown): string {
+  if (typeof value !== 'string' || !value) return ''
+  try {
+    if (value.startsWith('enc:')) {
+      return safeStorage.decryptString(Buffer.from(value.slice(4), 'base64'))
+    }
+    if (value.startsWith('raw:')) return Buffer.from(value.slice(4), 'base64').toString('utf8')
+  } catch {
+    // 解密失败按未保存处理
+  }
+  return ''
+}
+
+async function readCredentials(): Promise<ZlibCredentials | null> {
+  try {
+    const raw = JSON.parse(await readFile(credentialsPath(), 'utf8')) as {
+      username?: unknown
+      password?: unknown
+    }
+    const username = typeof raw.username === 'string' ? raw.username.trim() : ''
+    const password = decryptValue(raw.password)
+    return username && password ? { username, password } : null
+  } catch {
+    return null
+  }
+}
+
+async function writeCredentials(creds: ZlibCredentials): Promise<void> {
+  await mkdir(app.getPath('userData'), { recursive: true })
+  const target = credentialsPath()
+  const tmp = `${target}.tmp`
+  await writeFile(
+    tmp,
+    JSON.stringify({ username: creds.username, password: encryptValue(creds.password) }, null, 2),
+    'utf8'
+  )
+  await rename(tmp, target)
+}
+
+async function clearZlibSession(): Promise<void> {
+  const ses = zlibSession()
+  for (const host of await candidateHosts()) {
+    for (const name of ['remix_userid', 'remix_userkey']) {
+      await ses.cookies.remove(`https://${host}/`, name).catch(() => undefined)
+    }
+  }
+}
+
+let quotaCache: { at: number; today: number | null; limit: number | null } | null = null
+
+/** 从用户资料接口里扫「今日下载 / 每日额度」，字段名各线路略有差异 */
+function scanQuota(text: string): { today: number | null; limit: number | null } {
+  let today: number | null = null
+  let limit: number | null = null
+  for (const m of text.matchAll(/"([a-z0-9_]*download[a-z0-9_]*)"\s*:\s*"?(\d+)"?/gi)) {
+    const key = m[1].toLowerCase()
+    const value = Number(m[2])
+    if (!Number.isFinite(value)) continue
+    if (/limit|max/.test(key)) limit = value
+    else if (/today|used|count|daily/.test(key)) today = value
+  }
+  return { today, limit }
+}
+
+async function fetchQuota(): Promise<{ today: number | null; limit: number | null }> {
+  if (quotaCache && Date.now() - quotaCache.at < 60_000) {
+    return { today: quotaCache.today, limit: quotaCache.limit }
+  }
+  try {
+    const text = await fetchText('/eapi/user/profile')
+    const quota = scanQuota(text)
+    quotaCache = { at: Date.now(), ...quota }
+    return quota
+  } catch {
+    return { today: null, limit: null }
+  }
+}
+
 export async function zlibStatus(): Promise<ZlibStatusResponse> {
   try {
     const host = await preferredHost()
     const loggedIn = await hasSession(host)
+    const creds = await readCredentials()
+    const blocked = Date.now() - challengeFailedAt < 10 * 60 * 1000
+    const quota = loggedIn ? await fetchQuota() : { today: null, limit: null }
     return {
       ok: true,
       loggedIn,
       host,
-      message: loggedIn ? `已登录（线路 ${host}）` : '未登录'
+      username: creds?.username ?? '',
+      downloadsToday: quota.today,
+      downloadsLimit: quota.limit,
+      message: blocked
+        ? '反爬验证未通过：请点「打开登录窗口」完成一次验证'
+        : loggedIn
+          ? `已登录（线路 ${host}）`
+          : creds
+            ? `未登录（已保存账号 ${creds.username}）`
+            : '未登录'
     }
   } catch (err) {
-    return { ok: false, loggedIn: false, host: '', message: (err as Error).message }
+    return {
+      ok: false,
+      loggedIn: false,
+      host: '',
+      username: '',
+      downloadsToday: null,
+      downloadsLimit: null,
+      message: (err as Error).message
+    }
   }
 }
 
-/** 打开可见登录窗口；登录成功后关闭并返回 */
-export async function openZlibLogin(): Promise<ZlibLoginResult> {
-  if (loginWindow && !loginWindow.isDestroyed()) {
-    loginWindow.show()
-    loginWindow.focus()
+/** 有 Cookie 的线路（登录成功后返回该 host） */
+async function sessionHost(): Promise<string> {
+  for (const host of await candidateHosts()) {
+    if (await hasSession(host)) return host
   }
-  const hosts = await candidateHosts()
-  const host = hosts[0]
-  if (!host) return { ok: false, message: '无法解析 Z-Library 线路，请检查网络' }
-  const target = `https://${host}/login?redirectUrl=${encodeURIComponent(`https://${host}/`)}`
+  return ''
+}
 
+function ensureLoginWindow(visible: boolean): BrowserWindow {
   if (!loginWindow || loginWindow.isDestroyed()) {
     loginWindow = new BrowserWindow({
       width: 1080,
       height: 820,
+      show: visible,
       title: 'Z-Library · 登录',
       backgroundColor: '#ffffff',
       webPreferences: {
@@ -348,32 +537,224 @@ export async function openZlibLogin(): Promise<ZlibLoginResult> {
     loginWindow.on('closed', () => {
       loginWindow = null
     })
+  } else if (visible) {
+    loginWindow.show()
+    loginWindow.focus()
   }
-  const win = loginWindow
-  win.show()
+  return loginWindow
+}
+
+/** 在登录页自动填写账号密码；返回 none / filled / submitted */
+async function fillLoginForm(win: BrowserWindow, creds: ZlibCredentials): Promise<string> {
+  try {
+    const user = JSON.stringify(creds.username)
+    const pass = JSON.stringify(creds.password)
+    const script = `(() => {
+      const q = (s) => document.querySelector(s)
+      const email = q('input[type="email"],input[name="email"],input[name="username"],#email,#username')
+      const password = q('input[type="password"],input[name="password"],#password')
+      if (!email && !password) return 'none'
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+      const fill = (el, v) => {
+        if (!el || el.value === v) return false
+        setter.call(el, v)
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+        el.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      }
+      let changed = false
+      if (email) changed = fill(email, __USER__) || changed
+      if (password) changed = fill(password, __PASS__) || changed
+      const both = !!(email && password && email.value && password.value)
+      if (both) {
+        const form = password.closest('form')
+        const button = (form && form.querySelector('button[type="submit"],input[type="submit"],button')) ||
+          document.querySelector('button[type="submit"],input[type="submit"]')
+        if (button) { button.click(); return 'submitted' }
+        if (form && form.requestSubmit) { form.requestSubmit(); return 'submitted' }
+      }
+      if (changed && email && !password) {
+        const next = [...document.querySelectorAll('button')].find((b) =>
+          /继续|下一步|next|continue/i.test(b.innerText || '')
+        )
+        if (next) { next.click(); return 'submitted' }
+      }
+      return changed ? 'filled' : 'none'
+    })()`
+    const result = (await win.webContents.executeJavaScript(
+      script.replace('__USER__', user).replace('__PASS__', pass)
+    )) as string
+    return result
+  } catch {
+    return 'none'
+  }
+}
+
+/** 页面是否还停在 DiamWall 验证页（用来避免「有 Cookie 但其实过不去验证」） */
+async function stillChallenged(win: BrowserWindow): Promise<boolean> {
+  if (win.isDestroyed()) return false
+  try {
+    const text = (await win.webContents.executeJavaScript(
+      "((document.title||'')+'|'+((document.body&&document.body.innerText)||'').slice(0,300))"
+    )) as string
+    return /diamwall|verifying your browser|just a moment|checking your browser|验证/i.test(text)
+  } catch {
+    return false
+  }
+}
+
+async function attemptLogin(
+  host: string,
+  creds: ZlibCredentials | null,
+  visible: boolean
+): Promise<ZlibLoginResult> {
+  const win = ensureLoginWindow(visible)
+  const target = `https://${host}/login?redirectUrl=${encodeURIComponent(`https://${host}/`)}`
   try {
     await win.loadURL(target)
   } catch {
     // 挑战页导航报错不阻断，下面轮询 Cookie
   }
 
-  const deadline = Date.now() + 5 * 60 * 1000
+  const deadline = Date.now() + (visible ? 5 * 60 * 1000 : 45 * 1000)
+  let submitted = false
   while (Date.now() < deadline) {
-    if (win.isDestroyed()) break
-    for (const item of await candidateHosts()) {
-      if (await hasSession(item)) {
-        if (!win.isDestroyed()) win.close()
-        loginWindow = null
-        // 登录后强制重载页面，保证后续接口用新会话
-        loadedHost = ''
-        if (hidden && !hidden.isDestroyed()) hidden.destroy()
-        hidden = null
-        return { ok: true, message: `已登录（线路 ${item}）`, host: item }
-      }
+    if (win.isDestroyed()) return { ok: false, message: '登录窗口已关闭' }
+    // 每轮都看一次 Cookie：已有有效会话时立即返回，避免「一直提示已登录」卡住窗口
+    const hostWithSession = await sessionHost()
+    const blockedRecently = Date.now() - challengeFailedAt < 10 * 60 * 1000
+    if (hostWithSession && (!blockedRecently || !(await stillChallenged(win)))) {
+      if (!win.isDestroyed()) win.close()
+      loginWindow = null
+      loadedHost = ''
+      challengeFailedAt = 0
+      if (hidden && !hidden.isDestroyed()) hidden.destroy()
+      hidden = null
+      return { ok: true, message: `已登录（线路 ${hostWithSession}）`, host: hostWithSession }
+    }
+    if (creds && !submitted) {
+      const state = await fillLoginForm(win, creds)
+      if (state === 'submitted') submitted = true
     }
     await sleep(1500)
   }
-  return { ok: false, message: '登录未完成（窗口已关闭或超时），可重新打开登录窗口' }
+
+  if (!win.isDestroyed()) {
+    if (visible) {
+      win.show()
+      win.focus()
+      return {
+        ok: false,
+        message: creds
+          ? '自动登录未通过，窗口已预填账号密码，请手动完成一次'
+          : '请在窗口中完成登录，登录成功后会自动生效'
+      }
+    }
+    win.destroy()
+    loginWindow = null
+  }
+  return {
+    ok: false,
+    message: creds
+      ? '自动登录未通过，请到设置里点「登录」重试（窗口会预填账号密码）'
+      : '登录超时，请重试'
+  }
+}
+
+let loginRunning: Promise<ZlibLoginResult> | null = null
+
+async function doLogin(manualFallback: boolean): Promise<ZlibLoginResult> {
+  const hosts = await candidateHosts()
+  if (!hosts.length) return { ok: false, message: '无法解析 Z-Library 线路，请检查网络' }
+  const host = (await preferredHost()) || hosts[0]
+  const creds = await readCredentials()
+
+  if (!manualFallback) {
+    if (await hasSession(host)) return { ok: true, message: `已登录（线路 ${host}）`, host }
+    if (creds) {
+      const auto = await attemptLogin(host, creds, false)
+      if (auto.ok) return auto
+    }
+    return {
+      ok: false,
+      message: creds ? '自动登录未通过，请到设置里重新登录一次' : '未保存账号，请先到设置里填写'
+    }
+  }
+
+  // 手动入口：不管 Cookie 在不在都打开窗口，让用户自己完成登录 / 反爬验证
+  return attemptLogin(host, creds, true)
+}
+
+/** 打开登录窗口（窗口会预填已保存的账号密码；已有有效会话会立即自动关闭） */
+export async function zlibLogin(): Promise<ZlibLoginResult> {
+  if (loginRunning) return loginRunning
+  loginRunning = doLogin(true)
+  try {
+    return await loginRunning
+  } finally {
+    loginRunning = null
+  }
+}
+
+export const openZlibLogin = zlibLogin
+
+/** 退出登录：清掉站点 Cookie / 本地网页存储与已保存账号密码 */
+export async function zlibLogout(): Promise<ZlibStatusResponse> {
+  challengeFailedAt = 0
+  hostsCache = null
+  loadedHost = ''
+  if (hidden && !hidden.isDestroyed()) hidden.destroy()
+  hidden = null
+  if (loginWindow && !loginWindow.isDestroyed()) loginWindow.destroy()
+  loginWindow = null
+  try {
+    await zlibSession().clearStorageData()
+  } catch {
+    // 清理失败时仍继续移除本地账号文件
+  }
+  try {
+    await clearZlibSession()
+  } catch {
+    // 上面已整体清理，这里只是兜底
+  }
+  await rm(credentialsPath(), { force: true }).catch(() => undefined)
+  return {
+    ok: true,
+    loggedIn: false,
+    host: '',
+    username: '',
+    message: '已退出登录，并清除本机保存的账号密码'
+  }
+}
+
+/** 保存账号密码并立即尝试登录（密码用系统 DPAPI 加密，只存本机） */
+export async function zlibSaveCredentials(
+  username: string,
+  password: string
+): Promise<ZlibLoginResult> {
+  const user = username.trim()
+  if (!user || !password) return { ok: false, message: '请输入账号和密码' }
+  await writeCredentials({ username: user, password })
+  await clearZlibSession()
+  if (loginRunning) return loginRunning
+  loginRunning = doLogin(true)
+  try {
+    return await loginRunning
+  } finally {
+    loginRunning = null
+  }
+}
+
+/** 启动时静默自动登录：有保存账密且会话失效才尝试，失败不弹窗 */
+export async function autoZlibLogin(): Promise<boolean> {
+  const creds = await readCredentials()
+  if (!creds) return false
+  const status = await zlibStatus()
+  if (status.loggedIn) return true
+  const host = (await preferredHost()) || (await candidateHosts())[0]
+  if (!host) return false
+  const result = await attemptLogin(host, creds, false)
+  return result.ok
 }
 
 export async function zlibSearch(keyword: string, page: number): Promise<ZlibSearchResponse> {
@@ -499,6 +880,8 @@ export async function zlibDownloadBook(id: string, hash: string, title: string):
             finish({ ok: false, error: `已下载但登记失败：${(err as Error).message}` })
           }
         } else {
+          // 失败 / 取消时清掉写了一半的文件，避免留下打不开的残缺图书
+          await rm(target, { force: true }).catch(() => undefined)
           finish({ ok: false, error: state === 'cancelled' ? '下载已取消' : '下载失败' })
         }
       })

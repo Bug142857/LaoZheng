@@ -42,6 +42,13 @@ export interface BikaCategoriesResponse {
   error?: string
 }
 
+/** 分类标题 → 条目数量；-1 表示暂时取不到 */
+export interface BikaCategoryCountsResponse {
+  ok: boolean
+  counts: Record<string, number>
+  error?: string
+}
+
 export interface BikaDetailResponse {
   ok: boolean
   comic: BikaComic | null

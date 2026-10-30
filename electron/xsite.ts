@@ -56,8 +56,22 @@ function numberOrString(v: unknown): number {
   return Number.isFinite(n) ? n : 0
 }
 
+function normalizeMediaUrl(raw: string): string {
+  let url = raw.trim().replace(/\\\//g, '/')
+  if (url.startsWith('//')) url = `https:${url}`
+  return url
+}
+
 function mapPost(o: Record<string, unknown>): XPost | null {
-  const url = typeof o.url === 'string' ? o.url : ''
+  const url = normalizeMediaUrl(
+    typeof o.url === 'string'
+      ? o.url
+      : typeof o.video_url === 'string'
+        ? o.video_url
+        : typeof o.play_url === 'string'
+          ? o.play_url
+          : ''
+  )
   const urlCd = typeof o.url_cd === 'string' ? o.url_cd : ''
   if (!url.startsWith('http') || !urlCd) return null
   const thumb = typeof o.thumbnail === 'string' && o.thumbnail.startsWith('http') ? o.thumbnail : null

@@ -1,4 +1,6 @@
-/** 音乐模块共用类型（当前音源：无名音乐网，与手机端 MvMp3 一致） */
+/** 音乐模块共用类型（音源：无名音乐网 mvmp3 / 闪闪音乐网 s33ve） */
+
+export type MusicPlatform = 'mvmp3' | 's33ve'
 
 export interface MusicSong {
   id: string
@@ -7,6 +9,8 @@ export interface MusicSong {
   album: string
   cover: string
   durationMs: number
+  /** 音源标识；旧收藏里可能是 joox / netease */
+  platform?: string
 }
 
 export interface MusicSearchResponse {

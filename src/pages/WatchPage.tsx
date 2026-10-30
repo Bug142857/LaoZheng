@@ -1,116 +1,298 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import {
-  ChevronLeft,
-  Download,
-  Heart,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Search,
-  Trash2,
-  Upload
-} from 'lucide-react'
+import { ChevronLeft, Download, Heart } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { EmptyState, ConfirmDialog, Modal } from '../components/ui'
+import { EmptyState, ModuleShortcuts, Pagination } from '../components/ui'
+import { SearchBar } from '../components/SearchBar'
 import { VideoPlayer } from '../components/VideoPlayer'
+import { loadCache, saveCache } from '../utils/cache'
+import { requestDownload } from '../utils/download'
 import {
-  genSourceId,
-  normalizeBaseUrl,
+  h1FixedSource,
   parsePlayGroups,
-  parseSourceImport,
-  vodHost,
+  type VodCategory,
   type VodEpisode,
-  type VodPlayGroup,
-  type VodSearchItem,
-  type VodSourceInput
+  type VodItem,
+  type VodPlayGroup
 } from '../shared/vod'
-import { DEFAULT_VOD_SOURCES } from '../shared/vodDefaults'
 import type { InnerFav, VodSource } from '../shared/types'
 
-type WatchResult = VodSearchItem & { sourceId: string; sourceName: string }
-
-interface Selection {
-  source: VodSource
-  item: VodSearchItem
-  groups: VodPlayGroup[]
-  loading: boolean
-  error?: string
-}
+type WatchResult = VodItem & { sourceId: string; sourceName: string; score: number }
 
 interface Playback {
   source: VodSource
-  item: VodSearchItem
+  item: VodItem
   groups: VodPlayGroup[]
   groupIndex: number
   episodeIndex: number
   url: string
 }
 
-function toInput(source: VodSource): VodSourceInput {
+/** 从收藏进入：带片源信息时直接解析出全部分集 */
+export interface WatchFocus {
+  url?: string
+  title: string
+  sourceId?: string
+  sourceName?: string
+  vodId?: number
+  groupName?: string
+}
+
+function toInput(source: VodSource): { id: string; name: string; baseUrl: string } {
   return { id: source.id, name: source.name, baseUrl: source.baseUrl }
+}
+
+/** 番1~番4 固定片源（与手机端 v0.325 一致，不读片源管理配置） */
+function fixedSource(index: number): VodSource | null {
+  const input = h1FixedSource(index)
+  if (!input) return null
+  return {
+    id: input.id,
+    name: input.name,
+    baseUrl: input.baseUrl,
+    enabled: true,
+    region: 'proxy',
+    regionManual: true,
+    testStatus: null,
+    testMsg: null,
+    testAt: 0
+  }
 }
 
 const CONCURRENCY = 6
 
+interface H1Cache {
+  items: VodItem[]
+  total: number
+  page: number
+  pageCount: number
+  categories: VodCategory[]
+  /** 只缓存默认分类第一页，避免重开应用后停在别的分类 */
+  typeId?: number
+}
+
+const EMPTY_H1: H1Cache = { items: [], total: 0, page: 1, pageCount: 1, categories: [], typeId: 0 }
+
+/** 记录收藏里上次看到哪一集：readProgress 里按片源 + 条目存集名 */
+function episodeProgressKey(sourceId: string, vodId: number): string {
+  return `vodEp|${sourceId}|${vodId}`
+}
+
+/** 采集站偶尔把时长写成 0 / HD / 空，只有真正的时间才展示 */
+function hasDuration(value: string | undefined): boolean {
+  const text = (value ?? '').trim()
+  if (!text) return false
+  if (/^\d{1,3}:\d{2}(:\d{2})?$/.test(text)) return true
+  return /^\d+\s*(分钟|分|min|mins|minutes)$/i.test(text)
+}
+
 export function WatchPage({
   onNotice,
   variant,
-  focusPlay
+  focus,
+  searchTitle,
+  resetSignal,
+  onExit,
+  onOpenFavorites,
+  onOpenDownloads
 }: {
   onNotice: (text: string) => void
-  /** 番1~番4：只搜第 N 个已启用的外网片源，并隐藏片源管理 */
-  variant?: { label: string; proxyIndex: number }
-  /** 从收藏进入：直接播放已保存的分集直链 */
-  focusPlay?: { url: string; title: string }
+  /** 番1~番4：固定绑定第 index 个片源，整站浏览 */
+  variant?: { label: string; index: number }
+  /** 从收藏进入：尽量直接续播并显示集数 */
+  focus?: WatchFocus
+  /** 清单条目「在线观看」：按片名自动搜源 */
+  searchTitle?: string
+  /** 点侧栏进入模块时回到列表（不保留上次播放页） */
+  resetSignal?: number
+  /** 从收藏 / 清单进入时，播放页返回要走全局上一页 */
+  onExit?: () => void
+  onOpenFavorites?: () => void
+  onOpenDownloads?: () => void
 }) {
   const { data, update } = useData()
   const favModule = variant ? 'h1' : 'watch'
-  const [tab, setTab] = useState<'search' | 'sources'>('search')
   const [keyword, setKeyword] = useState('')
   const [searching, setSearching] = useState(false)
   const [searched, setSearched] = useState(false)
   const [progress, setProgress] = useState({ done: 0, total: 0 })
   const [results, setResults] = useState<WatchResult[]>([])
   const [sourceErrors, setSourceErrors] = useState<{ name: string; error: string }[]>([])
-  const [selection, setSelection] = useState<Selection | null>(null)
   const [playback, setPlayback] = useState<Playback | null>(null)
-  const [editing, setEditing] = useState<VodSource | 'new' | null>(null)
-  const [importing, setImporting] = useState(false)
-  const [deleting, setDeleting] = useState<VodSource | null>(null)
-  const [testingId, setTestingId] = useState<string | null>(null)
+  /** 当前播放页是不是从收藏 / 清单外部入口进来的：是则返回走上一页 */
+  const [externalPlayback, setExternalPlayback] = useState(false)
+  const [episodeAsc, setEpisodeAsc] = useState(false)
+  const [loadingName, setLoadingName] = useState<string | null>(null)
+  const [focusLoading, setFocusLoading] = useState(false)
   const seqRef = useRef(0)
-  const [favPlay, setFavPlay] = useState<{ url: string; title: string } | null>(null)
+  const handledFocusRef = useRef('')
+  const handledSearchRef = useRef('')
+  const playbackRef = useRef<HTMLDivElement | null>(null)
+  /** 播放失败时只自动往上一集降一次，避免连续失败一路跳到底 */
+  const downgradedRef = useRef(false)
+
+  // 番号（固定片源）的整站浏览状态（每个番号独立缓存）
+  const h1Source = useMemo(() => (variant ? fixedSource(variant.index) : null), [variant])
+  const h1CacheKey = `h1_${variant?.index ?? 0}`
+  const h1Initial = useMemo(() => {
+    const cached = loadCache<H1Cache>(h1CacheKey, EMPTY_H1)
+    // 只接受「默认分类 + 第一页」的缓存，旧缓存里可能是别的分类
+    if (cached.page !== 1 || (cached.typeId ?? 0) !== 0) return EMPTY_H1
+    return cached
+  }, [h1CacheKey])
+  const [h1Keyword, setH1Keyword] = useState('')
+  const [h1Input, setH1Input] = useState('')
+  const [h1Items, setH1Items] = useState<VodItem[]>(h1Initial.items)
+  const [h1Total, setH1Total] = useState(h1Initial.total)
+  const [h1Page, setH1Page] = useState(h1Initial.page)
+  const [h1PageCount, setH1PageCount] = useState(h1Initial.pageCount)
+  const [h1Categories, setH1Categories] = useState<VodCategory[]>(h1Initial.categories)
+  const [h1Counts, setH1Counts] = useState<Record<number, number>>({})
+  const [h1Type, setH1Type] = useState(0)
+  const [h1Loading, setH1Loading] = useState(!h1Initial.items.length)
+  const [h1Error, setH1Error] = useState<string | null>(null)
+  const h1Seq = useRef(0)
 
   useEffect(() => {
-    if (focusPlay?.url) setFavPlay(focusPlay)
-  }, [focusPlay?.url, focusPlay?.title])
+    if (playback) playbackRef.current?.scrollIntoView({ block: 'start' })
+  }, [playback])
 
-  const sources = data.vodSources
-  const proxySources = useMemo(
-    () => sources.filter((s) => s.enabled && s.region === 'proxy'),
-    [sources]
-  )
-  const scopedSource = variant ? proxySources[variant.proxyIndex] : undefined
-  const enabledSources = useMemo(
-    () =>
-      variant
-        ? scopedSource
-          ? [scopedSource]
-          : []
-        : sources.filter((s) => s.enabled),
-    [variant, scopedSource, sources]
+  // 离开再点侧栏进入时回到列表
+  useEffect(() => {
+    if (resetSignal === undefined) return
+    setPlayback(null)
+    setLoadingName(null)
+    setFocusLoading(false)
+  }, [resetSignal])
+
+  // 收藏 / 在线观看入口清空后允许下次再次触发
+  useEffect(() => {
+    if (!focus) {
+      handledFocusRef.current = ''
+      setFocusLoading(false)
+    }
+  }, [focus])
+  useEffect(() => {
+    if (!searchTitle) handledSearchRef.current = ''
+  }, [searchTitle])
+
+  const loadH1 = async (page: number, kw: string, typeId: number) => {
+    if (!h1Source) return
+    const seq = ++h1Seq.current
+    setH1Loading(true)
+    setH1Error(null)
+    const res = await window.laozheng.listVod(toInput(h1Source), page, typeId, kw)
+    if (seq !== h1Seq.current) return
+    setH1Loading(false)
+    if (!res.ok) {
+      setH1Error(res.error ?? '加载失败')
+      return
+    }
+    setH1Items(res.items ?? [])
+    setH1Total(res.total ?? 0)
+    setH1Page(res.page ?? page)
+    setH1PageCount(res.pageCount ?? 1)
+    if (res.categories?.length) setH1Categories(res.categories)
+    // 只缓存默认视图（全部 + 第一页 + 无关键词）
+    if (page === 1 && typeId === 0 && !kw) {
+      saveCache<H1Cache>(h1CacheKey, {
+        items: res.items ?? [],
+        total: res.total ?? 0,
+        page: 1,
+        pageCount: res.pageCount ?? 1,
+        categories: res.categories?.length ? res.categories : h1Categories,
+        typeId: 0
+      })
+    }
+  }
+
+  /** 分类列表要用 ac=list 才拿得到，数量用每类第一页的 total 探测 */
+  const loadH1Categories = async () => {
+    if (!h1Source) return
+    const res = await window.laozheng.vodCategories(toInput(h1Source))
+    if (!res.ok || !res.categories?.length) return
+    setH1Categories(res.categories)
+    const queue = [...res.categories]
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const category = queue.shift()
+        if (!category) return
+        const list = await window.laozheng.listVod(toInput(h1Source), 1, category.type_id, '')
+        if (list.ok) {
+          setH1Counts((prev) => ({ ...prev, [category.type_id]: list.total ?? 0 }))
+        }
+      }
+    }
+    void Promise.all(Array.from({ length: 4 }, worker))
+  }
+
+  useEffect(() => {
+    if (!h1Source) return
+    void loadH1Categories()
+    if (!h1Initial.items.length) void loadH1(1, '', 0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [h1Source?.id])
+
+  // 列表接口经常不给时长：给缺时长的前 16 条补一次详情（结果有缓存，翻回同一页不再请求）
+  const missingDurationIds = h1Items
+    .filter((item) => !hasDuration(item.vod_duration))
+    .slice(0, 16)
+    .map((item) => item.vod_id)
+    .join(',')
+
+  useEffect(() => {
+    if (!h1Source || !missingDurationIds) return
+    let alive = true
+    const ids = missingDurationIds
+      .split(',')
+      .map((value) => Number.parseInt(value, 10))
+      .filter((id) => Number.isFinite(id) && id > 0)
+    let cursor = 0
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const id = ids[cursor++]
+        if (id === undefined || !alive) return
+        const res = await window.laozheng.fetchVodDetail(toInput(h1Source), id)
+        if (!alive || !res.ok || !res.item) continue
+        const duration = res.item.vod_duration
+        if (!hasDuration(duration)) continue
+        setH1Items((prev) =>
+          prev.map((item) => (item.vod_id === id ? { ...item, vod_duration: duration } : item))
+        )
+      }
+    }
+    void Promise.all(Array.from({ length: 3 }, worker))
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [missingDurationIds, h1Source?.id])
+
+  // 不再区分国内 / 外网目录：观影搜索全部已启用片源
+  const sources = useMemo(() => data.vodSources.filter((s) => s.enabled), [data.vodSources])
+  const sourceById = useMemo(() => new Map(sources.map((s) => [s.id, s])), [sources])
+  const allSourceById = useMemo(
+    () => new Map(data.vodSources.map((s) => [s.id, s])),
+    [data.vodSources]
   )
 
   const favOf = (sourceId: string, vodId: number): InnerFav | undefined =>
     data.innerFavs.find((f) => f.module === favModule && f.id === `${sourceId}|${vodId}`)
 
-  const toggleFav = (source: VodSource, item: VodSearchItem, url?: string) => {
+  const toggleFav = (
+    source: VodSource,
+    item: VodItem,
+    groups?: VodPlayGroup[],
+    groupIndex?: number,
+    episodeIndex?: number
+  ) => {
     const favId = `${source.id}|${item.vod_id}`
     const exists = data.innerFavs.some((f) => f.module === favModule && f.id === favId)
     update((d) => {
       if (exists) {
         return { ...d, innerFavs: d.innerFavs.filter((f) => !(f.module === favModule && f.id === favId)) }
       }
+      const group = groups?.[groupIndex ?? 0]
+      const episode = group?.episodes[episodeIndex ?? 0]
       const fav: InnerFav = {
         module: favModule,
         id: favId,
@@ -118,11 +300,17 @@ export function WatchPage({
         subtitle: [source.name, item.vod_year].filter(Boolean).join(' · '),
         cover: item.vod_pic || null,
         savedAt: Date.now(),
-        videoUrl: url ?? null,
+        videoUrl: episode?.url ?? null,
         mediaId: item.vod_id,
         durationSec: 0,
         tweetUrl: null,
-        payload: null
+        payload: JSON.stringify({
+          sourceId: source.id,
+          sourceName: source.name,
+          vodId: item.vod_id,
+          groupName: group?.name ?? '',
+          episodeName: episode?.name ?? ''
+        })
       }
       return { ...d, innerFavs: [...d.innerFavs, fav] }
     })
@@ -132,19 +320,18 @@ export function WatchPage({
   const runSearch = async (raw: string) => {
     const kw = raw.trim()
     if (!kw || searching) return
-    if (!enabledSources.length) {
-      onNotice('还没有启用的片源，先到「片源管理」添加')
-      setTab('sources')
+    if (!sources.length) {
+      onNotice('还没有可用的片源，请到「配置管理 → 片源管理」添加')
       return
     }
     const seq = ++seqRef.current
     setSearching(true)
-    setSearched(false)
+    setSearched(true)
     setResults([])
     setSourceErrors([])
-    setProgress({ done: 0, total: enabledSources.length })
+    setProgress({ done: 0, total: sources.length })
     const year = kw.match(/\b(19|20)\d{2}\b/)?.[0] ?? ''
-    const queue = [...enabledSources]
+    const queue = [...sources]
     const errors: { name: string; error: string }[] = []
     let done = 0
 
@@ -155,13 +342,14 @@ export function WatchPage({
         const res = await window.laozheng.searchVod(toInput(source), kw, year)
         if (seq !== seqRef.current) return
         done += 1
-        setProgress({ done, total: enabledSources.length })
+        setProgress({ done, total: sources.length })
         if (!res.ok) {
           errors.push({ name: source.name, error: res.error ?? '搜索失败' })
           setSourceErrors([...errors])
           continue
         }
         if (!res.items.length) continue
+        // 每搜到一个源就实时追加，不等全部完成
         setResults((prev) =>
           [
             ...prev,
@@ -178,721 +366,624 @@ export function WatchPage({
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker))
     if (seq !== seqRef.current) return
     setSearching(false)
-    setSearched(true)
   }
 
-  const openDetail = async (sourceId: string, item: VodSearchItem) => {
-    const source = sources.find((s) => s.id === sourceId)
-    if (!source) return
-    setSelection({ source, item, groups: [], loading: true })
-    const immediate = parsePlayGroups(item.vod_play_from, item.vod_play_url)
-    if (immediate.length) {
-      setSelection({ source, item, groups: immediate, loading: false })
-    }
-    const res = await window.laozheng.fetchVodDetail(toInput(source), item.vod_id)
-    if (res.ok && res.item) {
-      setSelection({
-        source,
-        item: { ...item, ...res.item },
-        groups: res.groups ?? [],
-        loading: false
-      })
-    } else if (!immediate.length) {
-      setSelection({ source, item, groups: [], loading: false, error: res.error ?? '没有取到播放地址' })
-    }
+  /** 停止搜索：保留已搜到的结果，丢弃还没返回的源 */
+  const stopSearch = () => {
+    seqRef.current += 1
+    setSearching(false)
+    setProgress((prev) => ({ ...prev, done: prev.total }))
   }
 
-  const startPlayback = (source: VodSource, item: VodSearchItem, groups: VodPlayGroup[], groupIndex: number, episodeIndex: number) => {
+  const startPlayback = (
+    source: VodSource,
+    item: VodItem,
+    groups: VodPlayGroup[],
+    groupIndex = 0,
+    episodeIndex?: number,
+    external = false,
+    autoDowngrade = false
+  ) => {
     const group = groups[groupIndex]
-    const episode: VodEpisode | undefined = group?.episodes[episodeIndex]
-    if (!episode) return
-    setSelection(null)
-    setPlayback({ source, item, groups, groupIndex, episodeIndex, url: episode.url })
-  }
-
-  const saveSource = (input: VodSourceInput, region: 'cn' | 'proxy') => {
-    if (editing === 'new') {
-      update((d) => ({
-        ...d,
-        vodSources: [
-          ...d.vodSources,
-          {
-            id: d.vodSources.some((s) => s.id === input.id) ? genSourceId(input.baseUrl) : input.id,
-            name: input.name,
-            baseUrl: normalizeBaseUrl(input.baseUrl),
-            enabled: true,
-            region,
-            regionManual: true,
-            testStatus: null,
-            testMsg: null,
-            testAt: 0
-          }
-        ]
-      }))
-      onNotice(`已添加片源「${input.name}」`)
-    } else if (editing) {
-      update((d) => ({
-        ...d,
-        vodSources: d.vodSources.map((s) =>
-          s.id === editing.id
-            ? {
-                ...s,
-                name: input.name,
-                baseUrl: normalizeBaseUrl(input.baseUrl),
-                region,
-                regionManual: true
-              }
-            : s
-        )
-      }))
-      onNotice(`已保存「${input.name}」`)
-    }
-    setEditing(null)
-  }
-
-  const importSources = (inputs: VodSourceInput[]) => {
-    const existing = new Set(data.vodSources.map((s) => s.baseUrl))
-    const fresh = inputs.filter((i) => !existing.has(i.baseUrl))
-    if (!fresh.length) {
-      onNotice('这些片源已存在')
-      setImporting(false)
+    if (!group?.episodes.length) {
+      onNotice('该片源没有返回可播放地址，换一个片源试试')
       return
     }
-    update((d) => {
-      const exists = new Set(d.vodSources.map((s) => s.baseUrl))
-      const added: VodSource[] = []
-      for (const input of fresh) {
-        if (exists.has(input.baseUrl)) continue
-        exists.add(input.baseUrl)
-        let id = input.id || genSourceId(input.baseUrl)
-        let n = 2
-        while (d.vodSources.some((s) => s.id === id) || added.some((s) => s.id === id)) {
-          id = `${input.id}_${n++}`
+    const index = Math.min(
+      episodeIndex ?? group.episodes.length - 1,
+      group.episodes.length - 1
+    )
+    const episode: VodEpisode = group.episodes[Math.max(0, index)]
+    if (!autoDowngrade) downgradedRef.current = false
+    setExternalPlayback(external)
+    setPlayback({ source, item, groups, groupIndex, episodeIndex: Math.max(0, index), url: episode.url })
+    // 记住最后看到哪一集：从收藏再次进入时直接续这一集（跨重启保留）
+    if (item.vod_id > 0) {
+      const progressKey = episodeProgressKey(source.id, item.vod_id)
+      const value = `${group.name}|${episode.name}`
+      if (data.readProgress[progressKey] !== value) {
+        update((d) => ({
+          ...d,
+          readProgress: { ...d.readProgress, [progressKey]: value }
+        }))
+      }
+    }
+  }
+
+  /** 点搜索结果直接进播放页：默认播放最新一集，集数默认倒序 */
+  const openDetail = async (source: VodSource, item: VodItem) => {
+    setLoadingName(item.vod_name)
+    setEpisodeAsc(false)
+    const immediate = parsePlayGroups(item.vod_play_from, item.vod_play_url)
+    if (immediate.length) {
+      setLoadingName(null)
+      startPlayback(source, item, immediate)
+      return
+    }
+    const res = await window.laozheng.fetchVodDetail(toInput(source), item.vod_id)
+    setLoadingName(null)
+    if (res.ok && res.item && res.groups?.length) {
+      startPlayback(source, { ...item, ...res.item }, res.groups)
+    } else {
+      onNotice(`获取播放地址失败：${res.error ?? '该片源没有可播放地址'}`)
+    }
+  }
+
+  /** 下载当前播放的这一集（番1~番4 播放页） */
+  const downloadEpisode = (state: Playback) => {
+    const group = state.groups[state.groupIndex]
+    const episode = group?.episodes[state.episodeIndex]
+    if (!episode) return
+    requestDownload({
+      title: `${state.item.vod_name} ${episode.name}`.trim().slice(0, 120),
+      url: episode.url,
+      kind: 'video',
+      coverUrl: state.item.vod_pic || '',
+      sourceName: state.source.name
+    })
+  }
+
+  /** 收藏入口：有片源信息就重新解析分集，没有则按标题搜源 */
+  const resolveFocusSource = (sourceId?: string, sourceName?: string): VodSource | null => {
+    if (sourceId) {
+      if (h1Source && h1Source.id === sourceId) return h1Source
+      if (sourceId.startsWith('h1_fixed_')) {
+        const index = Number.parseInt(sourceId.replace('h1_fixed_', ''), 10) - 1
+        return fixedSource(index)
+      }
+      return allSourceById.get(sourceId) ?? sourceById.get(sourceId) ?? null
+    }
+    // 旧收藏没有 payload：按收藏里保存的片源名回退匹配
+    if (sourceName) {
+      const candidates = [
+        ...[0, 1, 2, 3].map((i) => fixedSource(i)),
+        ...data.vodSources
+      ].filter((s): s is VodSource => !!s)
+      return candidates.find((s) => s.name === sourceName) ?? null
+    }
+    return null
+  }
+
+  const playFocus = async (target: WatchFocus) => {
+    setEpisodeAsc(false)
+    const source = resolveFocusSource(target.sourceId, target.sourceName)
+    if (source && target.vodId) {
+      const res = await window.laozheng.fetchVodDetail(toInput(source), target.vodId)
+      if (res.ok && res.item && res.groups?.length) {
+        const groups = res.groups
+        // 优先续「上次看到的那一集」（收藏后可能又看了别的集），没有再按收藏里保存的地址找
+        const saved = data.readProgress[episodeProgressKey(source.id, target.vodId)] ?? ''
+        const [savedGroup, savedEp] = saved.includes('|') ? saved.split('|') : ['', saved]
+        let gi = savedEp
+          ? groups.findIndex(
+              (g) =>
+                (!savedGroup || g.name === savedGroup) &&
+                g.episodes.some((ep) => ep.name === savedEp)
+            )
+          : -1
+        let index =
+          gi >= 0 ? groups[gi].episodes.findIndex((ep) => ep.name === savedEp) : -1
+        if (index < 0) {
+          gi = Math.max(
+            0,
+            groups.findIndex((g) => g.episodes.some((ep) => ep.url === target.url))
+          )
+          index = groups[gi].episodes.findIndex((ep) => ep.url === target.url)
         }
-        added.push({
-          id,
-          name: input.name || vodHost(input.baseUrl),
-          baseUrl: normalizeBaseUrl(input.baseUrl),
+        startPlayback(
+          source,
+          res.item,
+          groups,
+          Math.max(0, gi),
+          index >= 0 ? index : groups[Math.max(0, gi)].episodes.length - 1,
+          true
+        )
+        return true
+      }
+    }
+    if (target.url) {
+      startPlayback(
+        source ?? {
+          id: 'fav',
+          name: '收藏',
+          baseUrl: '',
           enabled: true,
           region: 'cn',
-          regionManual: false,
+          regionManual: true,
           testStatus: null,
           testMsg: null,
           testAt: 0
-        })
-      }
-      return { ...d, vodSources: [...d.vodSources, ...added] }
-    })
-    onNotice(`已导入 ${fresh.length} 个片源`)
-    setImporting(false)
-  }
-
-  const testSource = async (source: VodSource) => {
-    setTestingId(source.id)
-    const res = await window.laozheng.testVodSource(toInput(source))
-    update((d) => ({
-      ...d,
-      vodSources: d.vodSources.map((s) =>
-        s.id === source.id
-          ? {
-              ...s,
-              testStatus: res.status,
-              testMsg: res.message,
-              testAt: res.testAt,
-              region: s.regionManual ? s.region : res.region
-            }
-          : s
+        },
+        {
+          vod_id: target.vodId ?? 0,
+          vod_name: target.title,
+          vod_pic: '',
+          type_name: '',
+          vod_year: '',
+          vod_area: '',
+          vod_remarks: '',
+          vod_duration: '',
+          vod_douban_id: 0,
+          vod_play_from: '收藏',
+          vod_play_url: ''
+        },
+        [{ name: target.groupName || '收藏', episodes: [{ name: '播放', url: target.url }] }],
+        0,
+        0,
+        true
       )
-    }))
-    setTestingId(null)
-    onNotice(`${source.name}：${res.message}`)
+      return true
+    }
+    return false
   }
 
-  const removeSource = () => {
-    if (!deleting) return
-    update((d) => ({ ...d, vodSources: d.vodSources.filter((s) => s.id !== deleting.id) }))
-    onNotice(`已删除片源「${deleting.name}」`)
-    setDeleting(null)
-  }
+  useEffect(() => {
+    if (!focus) return
+    const key = `${focus.sourceId ?? ''}|${focus.sourceName ?? ''}|${focus.vodId ?? ''}|${focus.url ?? ''}|${focus.title}`
+    if (handledFocusRef.current === key) return
+    handledFocusRef.current = key
+    setPlayback(null)
+    setFocusLoading(true)
+    let alive = true
+    void (async () => {
+      const played = await playFocus(focus)
+      if (!alive) {
+        // 用户在解析途中返回：把可能已经挂上的播放页关掉，避免后台出声
+        setPlayback(null)
+        setExternalPlayback(false)
+        return
+      }
+      setFocusLoading(false)
+      if (played) return
+      setKeyword(focus.title)
+      void runSearch(focus.title)
+    })()
+    return () => {
+      alive = false
+      setPlayback(null)
+      setExternalPlayback(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.sourceId, focus?.sourceName, focus?.vodId, focus?.url, focus?.title])
 
-  const downloadEpisode = async () => {
-    if (!playback) return
-    const group = playback.groups[playback.groupIndex]
-    const episode = group?.episodes[playback.episodeIndex]
-    const res = await window.laozheng.addDownload({
-      title: `${playback.item.vod_name} ${episode?.name ?? ''}`.trim(),
-      url: playback.url,
-      kind: 'video',
-      coverUrl: playback.item.vod_pic,
-      sourceName: playback.source.name
-    })
-    onNotice(res.ok ? '已加入下载队列，可在「下载」页查看进度' : `下载失败：${res.error}`)
-  }
-
-  if (favPlay) {
-    return (
-      <>
-        <header className="page-header">
-          <button className="btn ghost" onClick={() => setFavPlay(null)}>
-            <ChevronLeft size={15} /> 返回
-          </button>
-          <h1 className="page-title">{favPlay.title}</h1>
-          <span className="page-desc">收藏 · 播放已保存的分集直链</span>
-        </header>
-        <VideoPlayer src={favPlay.url} />
-      </>
-    )
-  }
+  // 清单条目「在线观看」：按片名直接搜源
+  useEffect(() => {
+    const title = searchTitle?.trim()
+    if (!title) return
+    if (handledSearchRef.current === title) return
+    handledSearchRef.current = title
+    setKeyword(title)
+    setPlayback(null)
+    void runSearch(title)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTitle])
 
   if (playback) {
     const group = playback.groups[playback.groupIndex]
     const fav = favOf(playback.source.id, playback.item.vod_id)
+    /** 旧收藏没有片源信息时用临时直链播放，不提供收藏/下载，避免写入脏数据 */
+    const virtualSource = playback.source.id === 'fav'
+    const ordered = (group?.episodes ?? []).map((ep, index) => ({ ep, index }))
+    if (!episodeAsc) ordered.reverse()
     return (
-      <>
+      <div ref={playbackRef}>
         <header className="page-header">
-          <button className="btn ghost" onClick={() => setPlayback(null)}>
+          <button
+            className="btn ghost"
+            onClick={() => {
+              // 先清掉播放页自身状态，再走全局上一页；否则从收藏返回后会再看到播放页
+              setPlayback(null)
+              setExternalPlayback(false)
+              if (externalPlayback && onExit) onExit()
+            }}
+          >
             <ChevronLeft size={15} /> 返回
           </button>
           <h1 className="page-title">{playback.item.vod_name}</h1>
-          <span className="page-desc">
-            {playback.source.name} · {group?.name}
-          </span>
           <div className="page-actions">
-            <button className="btn" onClick={() => void downloadEpisode()}>
-              <Download size={15} /> 下载
-            </button>
-            <button className="btn" onClick={() => toggleFav(playback.source, playback.item, playback.url)}>
-              <Heart size={15} fill={fav ? 'currentColor' : 'none'} /> {fav ? '已收藏' : '收藏'}
-            </button>
+            {variant && !virtualSource ? (
+              <button className="btn" onClick={() => downloadEpisode(playback)}>
+                <Download size={15} /> 下载本集
+              </button>
+            ) : null}
+            {virtualSource ? null : (
+              <button
+                className="btn"
+                onClick={() =>
+                  toggleFav(
+                    playback.source,
+                    playback.item,
+                    playback.groups,
+                    playback.groupIndex,
+                    playback.episodeIndex
+                  )
+                }
+              >
+                <Heart size={15} fill={fav ? 'currentColor' : 'none'} /> {fav ? '已收藏' : '收藏'}
+              </button>
+            )}
           </div>
         </header>
 
-        <VideoPlayer src={playback.url} />
+        <VideoPlayer
+          src={playback.url}
+          resumeKey={`vod|${playback.item.vod_name}|${
+            playback.groups[playback.groupIndex]?.episodes[playback.episodeIndex]?.name ?? ''
+          }`}
+          onFail={(msg) => {
+            // 默认最新一集失效时自动退到上一集（只退一次），避免停在黑屏
+            if (!downgradedRef.current && playback.episodeIndex > 0) {
+              downgradedRef.current = true
+              onNotice('当前集播放失败，已自动切到上一集')
+              startPlayback(
+                playback.source,
+                playback.item,
+                playback.groups,
+                playback.groupIndex,
+                playback.episodeIndex - 1,
+                externalPlayback,
+                true
+              )
+              return
+            }
+            onNotice(msg)
+          }}
+        />
 
-        {playback.groups.length > 1 && (
-          <div className="toolbar" style={{ marginTop: 14 }}>
-            {playback.groups.map((g, gi) => (
-              <button
-                key={`${g.name}-${gi}`}
-                className={`chip ${gi === playback.groupIndex ? 'active' : ''}`}
-                onClick={() => startPlayback(playback.source, playback.item, playback.groups, gi, 0)}
-              >
-                {g.name}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="toolbar" style={{ marginTop: 14 }}>
+          {playback.groups.length > 1
+            ? playback.groups.map((g, gi) => (
+                <button
+                  key={`${g.name}-${gi}`}
+                  className={`chip ${gi === playback.groupIndex ? 'active' : ''}`}
+                  onClick={() =>
+                    startPlayback(
+                      playback.source,
+                      playback.item,
+                      playback.groups,
+                      gi,
+                      undefined,
+                      externalPlayback
+                    )
+                  }
+                >
+                  {g.name}
+                </button>
+              ))
+            : null}
+          <button className="btn ghost" onClick={() => setEpisodeAsc((v) => !v)}>
+            集数：{episodeAsc ? '正序' : '倒序'}
+          </button>
+        </div>
 
         <div className="episode-grid">
-          {(group?.episodes ?? []).map((ep, i) => (
+          {ordered.map(({ ep, index }) => (
             <button
-              key={`${ep.url}-${i}`}
-              className={`episode ${i === playback.episodeIndex ? 'active' : ''}`}
+              key={`${ep.url}-${index}`}
+              className={`episode ${index === playback.episodeIndex ? 'active' : ''}`}
               onClick={() =>
-                startPlayback(playback.source, playback.item, playback.groups, playback.groupIndex, i)
+                startPlayback(
+                  playback.source,
+                  playback.item,
+                  playback.groups,
+                  playback.groupIndex,
+                  index,
+                  externalPlayback
+                )
               }
             >
               {ep.name}
             </button>
           ))}
         </div>
+      </div>
+    )
+  }
+
+  if (focusLoading) {
+    return (
+      <>
+        <header className="page-header">
+          {onExit ? (
+            <button className="btn ghost" onClick={onExit}>
+              <ChevronLeft size={15} /> 返回
+            </button>
+          ) : null}
+          <h1 className="page-title">{focus?.title || '正在打开…'}</h1>
+        </header>
+        <EmptyState title="正在打开播放页…" desc="正在解析片源与剧集，请稍等。" />
       </>
     )
+  }
+
+  if (variant && h1Source) {
+    // 数量已探测到 0 的分类不显示（未探测到的先保留，避免闪现）
+    const visibleCats = h1Categories.filter((c) => h1Counts[c.type_id] !== 0)
+    return (
+      <>
+        <header className="page-header">
+          <h1 className="page-title">{variant.label}</h1>
+          <div className="page-actions">
+            <ModuleShortcuts onOpenFavorites={onOpenFavorites} onOpenDownloads={onOpenDownloads} />
+          </div>
+        </header>
+
+        <SearchBar
+          value={h1Input}
+          onChange={(value) => {
+            setH1Input(value)
+            if (!value) {
+              setH1Keyword('')
+              void loadH1(1, '', h1Type)
+            }
+          }}
+          onSubmit={() => {
+            const kw = h1Input.trim()
+            setH1Keyword(kw)
+            void loadH1(1, kw, h1Type)
+          }}
+          onCancel={() => {
+            h1Seq.current += 1
+            setH1Loading(false)
+          }}
+          onClear={() => {
+            setH1Keyword('')
+            void loadH1(1, '', h1Type)
+          }}
+          searching={h1Loading}
+          placeholder={`在 ${h1Source.name} 里搜索`}
+        />
+
+        {!h1Keyword && visibleCats.length > 0 && (
+          <div className="toolbar">
+            <button
+              className={`chip ${h1Type === 0 ? 'active' : ''}`}
+              onClick={() => {
+                setH1Type(0)
+                void loadH1(1, h1Keyword, 0)
+              }}
+            >
+              全部
+              {h1Total > 0 ? <span className="chip-count">{h1Total}</span> : null}
+            </button>
+            {visibleCats.map((c) => (
+              <button
+                key={c.type_id}
+                className={`chip ${h1Type === c.type_id ? 'active' : ''}`}
+                onClick={() => {
+                  setH1Type(c.type_id)
+                  void loadH1(1, h1Keyword, c.type_id)
+                }}
+              >
+                {c.type_name}
+                {h1Counts[c.type_id] > 0 ? (
+                  <span className="chip-count">{h1Counts[c.type_id]}</span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {loadingName ? (
+          <div className="result-hint" style={{ marginBottom: 10 }}>
+            正在获取「{loadingName}」的播放地址…
+          </div>
+        ) : null}
+
+        {h1Loading && h1Items.length > 0 ? (
+          <div className="loading-block">
+            <span className="spinner" />
+            <span>正在切换，请稍等…</span>
+          </div>
+        ) : null}
+
+        {h1Loading && h1Items.length === 0 ? (
+          <EmptyState title="正在加载…" desc="外网片源首次加载可能稍慢。" />
+        ) : h1Error ? (
+          <EmptyState
+            title="加载失败"
+            desc={h1Error}
+            action={
+              <button className="btn" onClick={() => void loadH1(h1Page, h1Keyword, h1Type)}>
+                重试
+              </button>
+            }
+          />
+        ) : h1Items.length === 0 ? (
+          <EmptyState
+            title={h1Keyword ? `没有找到「${h1Keyword}」` : '该片源暂无内容'}
+            desc="换个关键词或分类再试。"
+          />
+        ) : (
+          <>
+            <div className="comic-grid">
+              {h1Items.map((item) => {
+                const fav = favOf(h1Source.id, item.vod_id)
+                return (
+                  <div key={item.vod_id} className="comic-card">
+                    <button className="comic-cover" onClick={() => void openDetail(h1Source, item)}>
+                      {item.vod_pic ? <img src={item.vod_pic} alt="" loading="lazy" /> : null}
+                      {item.vod_remarks ? <span className="comic-badge">{item.vod_remarks}</span> : null}
+                      {hasDuration(item.vod_duration) ? (
+                        <span className="media-duration">{item.vod_duration}</span>
+                      ) : null}
+                      <span
+                        className={`fav-heart ${fav ? 'on' : ''}`}
+                        role="button"
+                        title={fav ? '取消收藏' : '收藏'}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          toggleFav(h1Source, item)
+                        }}
+                      >
+                        <Heart size={15} fill={fav ? 'currentColor' : 'none'} />
+                      </span>
+                    </button>
+                    <div className="comic-title">{item.vod_name}</div>
+                    <div className="comic-sub">
+                      {[
+                        item.type_name,
+                        item.vod_year,
+                        hasDuration(item.vod_duration) ? item.vod_duration : ''
+                      ]
+                        .filter(Boolean)
+                        .join(' · ') || '—'}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <Pagination
+              page={h1Page}
+              lastPage={h1PageCount}
+              disabled={h1Loading}
+              onChange={(next) => void loadH1(next, h1Keyword, h1Type)}
+            />
+          </>
+        )}
+      </>
+    )
+  }
+
+  if (variant) {
+    return <EmptyState title={`${variant.label} 暂无对应片源`} desc="番1~番4 固定对应四个片源站点。" />
   }
 
   return (
     <>
       <header className="page-header">
-        <h1 className="page-title">{variant ? variant.label : '观影'}</h1>
-        <span className="page-desc">
-          {variant
-            ? scopedSource
-              ? `外网片源：${scopedSource.name}`
-              : '没有可用的外网片源'
-            : `${sources.length} 个片源 · 已启用 ${enabledSources.length} 个 · 跨源搜索后直接播放`}
-        </span>
-        {!variant && (
-          <div className="page-actions">
-            <button className="btn" onClick={() => setTab('sources')}>
-              片源管理
-            </button>
-          </div>
-        )}
+        {(searchTitle || focus) && onExit ? (
+          <button className="btn ghost" onClick={onExit}>
+            <ChevronLeft size={15} /> 返回
+          </button>
+        ) : null}
+        <h1 className="page-title">观影</h1>
+        <div className="page-actions">
+          <ModuleShortcuts onOpenFavorites={onOpenFavorites} onOpenDownloads={onOpenDownloads} />
+        </div>
       </header>
 
-      {!variant && (
-        <div className="toolbar">
-          <button className={`chip ${tab === 'search' ? 'active' : ''}`} onClick={() => setTab('search')}>
-            搜索
-          </button>
-          <button className={`chip ${tab === 'sources' ? 'active' : ''}`} onClick={() => setTab('sources')}>
-            片源管理
-          </button>
+      <SearchBar
+        value={keyword}
+        onChange={setKeyword}
+        onSubmit={() => void runSearch(keyword)}
+        onCancel={stopSearch}
+        onClear={() => {
+          setKeyword('')
+          setSearched(false)
+          setResults([])
+          setSourceErrors([])
+        }}
+        searching={searching}
+        placeholder="输入片名（可带年份，如 沙丘 2021）"
+      />
+
+      {loadingName ? (
+        <div className="result-hint" style={{ marginBottom: 10 }}>
+          正在获取「{loadingName}」的播放地址…
         </div>
-      )}
-
-      {variant || tab === 'search' ? (
-        <>
-          <form
-            className="toolbar"
-            onSubmit={(e) => {
-              e.preventDefault()
-              void runSearch(keyword)
-            }}
-          >
-            <label className="search">
-              <Search size={16} />
-              <input
-                value={keyword}
-                onChange={(e) => setKeyword(e.target.value)}
-                placeholder="输入片名（可带年份，如 沙丘 2021）"
-              />
-            </label>
-            <button className="btn primary" type="submit" disabled={!keyword.trim() || searching}>
-              {searching ? `搜索中 ${progress.done}/${progress.total}` : '搜索'}
-            </button>
-          </form>
-
-          {variant && !scopedSource ? (
-            <EmptyState
-              title="没有可用的外网片源"
-              desc="请先在「观影 → 片源管理」添加片源，并把网络目录设为「需要外网」；番1~番4 会依次使用第 1~4 个已启用的外网片源。"
-            />
-          ) : sources.length === 0 ? (
-            <EmptyState
-              title="还没有片源"
-              desc="先导入内置片源，或手动添加苹果CMS接口地址（形如 https://xxx/api.php/provide/vod）。"
-              action={
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn primary" onClick={() => setImporting(true)}>
-                    导入内置片源
-                  </button>
-                  <button className="btn" onClick={() => setEditing('new')}>
-                    手动添加
-                  </button>
-                </div>
-              }
-            />
-          ) : searching && results.length === 0 ? (
-            <EmptyState
-              title={`正在搜索 ${progress.done}/${progress.total} 个片源…`}
-              desc="结果会随着片源返回实时追加。"
-            />
-          ) : !searched ? (
-            <EmptyState
-              title="输入片名开始跨源搜索"
-              desc="会并行查询所有已启用片源，只保留片名匹配的结果；点击结果选择线路即可播放。"
-            />
-          ) : results.length === 0 ? (
-            <EmptyState
-              title="没有找到可播放的结果"
-              desc={
-                sourceErrors.length
-                  ? `有 ${sourceErrors.length} 个片源请求失败，可到片源管理里测试线路状态。`
-                  : '换个片名或年份再试；片源质量参差，建议多启用几个。'
-              }
-            />
-          ) : (
-            <>
-              <div className="page-desc" style={{ marginBottom: 10 }}>
-                找到 {results.length} 条{searching ? `（搜索中 ${progress.done}/${progress.total}）` : ''}
-              </div>
-              <div className="rows">
-                {results.map((item) => {
-                  const fav = favOf(item.sourceId, item.vod_id)
-                  return (
-                    <div
-                      key={`${item.sourceId}-${item.vod_id}`}
-                      className="row clickable"
-                      onClick={() => void openDetail(item.sourceId, item)}
-                    >
-                      <div className="row-cover">
-                        {item.vod_pic ? <img src={item.vod_pic} alt="" loading="lazy" /> : '影片'}
-                      </div>
-                      <div className="row-main">
-                        <div className="row-title">{item.vod_name}</div>
-                        <div className="row-meta">
-                          {[item.type_name, item.vod_year, item.vod_area, item.vod_remarks]
-                            .filter(Boolean)
-                            .join(' · ') || '—'}
-                        </div>
-                        <div className="row-meta">来自 {item.sourceName}</div>
-                      </div>
-                      <button
-                        className="icon-btn"
-                        title={fav ? '取消收藏' : '收藏'}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          toggleFav(sources.find((s) => s.id === item.sourceId)!, item)
-                        }}
-                      >
-                        <Heart size={15} fill={fav ? 'currentColor' : 'none'} />
-                      </button>
-                      <span className="badge brand">播放</span>
-                    </div>
-                  )
-                })}
-              </div>
-              {sourceErrors.length > 0 && (
-                <div className="result-hint" style={{ marginTop: 10 }}>
-                  {sourceErrors.length} 个片源请求失败：
-                  {sourceErrors.slice(0, 4).map((e) => `${e.name}（${e.error}）`).join('、')}
-                  {sourceErrors.length > 4 ? ' 等' : ''}
-                </div>
-              )}
-            </>
-          )}
-        </>
-      ) : (
-        <SourceManager
-          sources={sources}
-          testingId={testingId}
-          onAdd={() => setEditing('new')}
-          onImport={() => setImporting(true)}
-          onEdit={setEditing}
-          onTest={(s) => void testSource(s)}
-          onToggle={(s) =>
-            update((d) => ({
-              ...d,
-              vodSources: d.vodSources.map((x) => (x.id === s.id ? { ...x, enabled: !x.enabled } : x))
-            }))
-          }
-          onDelete={setDeleting}
-        />
-      )}
-
-      {selection && (
-        <DetailModal
-          selection={selection}
-          isFav={!!favOf(selection.source.id, selection.item.vod_id)}
-          onClose={() => setSelection(null)}
-          onToggleFav={() => toggleFav(selection.source, selection.item)}
-          onPlay={(gi, ei) =>
-            startPlayback(selection.source, selection.item, selection.groups, gi, ei)
-          }
-        />
-      )}
-
-      {editing && (
-        <SourceEditModal
-          source={editing === 'new' ? null : editing}
-          onClose={() => setEditing(null)}
-          onSave={saveSource}
-        />
-      )}
-
-      {importing && (
-        <ImportModal
-          onClose={() => setImporting(false)}
-          onImport={importSources}
-          onBuiltin={() => importSources(DEFAULT_VOD_SOURCES.map(toInput))}
-        />
-      )}
-
-      {deleting && (
-        <ConfirmDialog
-          title="删除片源"
-          message={`确定删除「${deleting.name}」吗？只影响本机片源配置，不影响清单数据。`}
-          confirmText="删除"
-          danger
-          onConfirm={removeSource}
-          onCancel={() => setDeleting(null)}
-        />
-      )}
-    </>
-  )
-}
-
-function SourceManager({
-  sources,
-  testingId,
-  onAdd,
-  onImport,
-  onEdit,
-  onTest,
-  onToggle,
-  onDelete
-}: {
-  sources: VodSource[]
-  testingId: string | null
-  onAdd: () => void
-  onImport: () => void
-  onEdit: (source: VodSource) => void
-  onTest: (source: VodSource) => void
-  onToggle: (source: VodSource) => void
-  onDelete: (source: VodSource) => void
-}) {
-  const [onlyEnabled, setOnlyEnabled] = useState(false)
-  const list = onlyEnabled ? sources.filter((s) => s.enabled) : sources
-
-  return (
-    <>
-      <div className="toolbar">
-        <button className="btn primary" onClick={onAdd}>
-          <Plus size={15} /> 添加片源
-        </button>
-        <button className="btn" onClick={onImport}>
-          <Upload size={15} /> 批量导入
-        </button>
-        <button
-          className={`chip ${onlyEnabled ? 'active' : ''}`}
-          onClick={() => setOnlyEnabled((v) => !v)}
-        >
-          只看已启用
-        </button>
-        <span className="page-desc">{sources.length} 个片源</span>
-      </div>
+      ) : null}
 
       {sources.length === 0 ? (
         <EmptyState
-          title="还没有片源"
-          desc="可以导入内置片源，或粘贴自己的苹果CMS采集接口。"
-          action={
-            <button className="btn" onClick={onImport}>
-              批量导入
-            </button>
+          title="还没有可用的片源"
+          desc="到「配置管理 → 片源管理」导入内置片源或添加苹果CMS接口地址，番1~番4 不受影响。"
+        />
+      ) : !searched ? (
+        <EmptyState
+          title="输入片名开始跨源搜索"
+          desc="会并行查询所有已启用的片源，结果随片源返回实时追加；点结果直接进入播放页。"
+        />
+      ) : results.length === 0 && searching ? (
+        <EmptyState
+          title={`正在搜索 ${progress.done}/${progress.total} 个片源…`}
+          desc="结果会随着片源返回实时追加。"
+        />
+      ) : results.length === 0 ? (
+        <EmptyState
+          title="没有找到可播放的结果"
+          desc={
+            sourceErrors.length
+              ? `有 ${sourceErrors.length} 个片源请求失败，可到片源管理里测试线路状态。`
+              : '换个片名或年份再试；片源质量参差，建议多启用几个。'
           }
         />
       ) : (
-        <div className="rows">
-          {list.map((s) => (
-            <div key={s.id} className="row">
-              <span
-                className={`status-dot ${s.enabled ? (s.testStatus === 'ok' ? 'ok' : s.testStatus ? 'warn' : '') : 'off'}`}
-              />
-              <div className="row-main">
-                <div className="row-title">
-                  {s.name}
-                  <span className={`badge ${s.region === 'proxy' ? 'warn' : ''}`} style={{ marginLeft: 8 }}>
-                    {s.region === 'proxy' ? '需外网' : '国内'}
-                  </span>
-                </div>
-                <div className="row-meta">{vodHost(s.baseUrl)}</div>
-                <div className="row-meta">{s.testMsg ?? '未测试'}</div>
-              </div>
-              <button className="btn" disabled={testingId === s.id} onClick={() => onTest(s)}>
-                <RefreshCw size={14} /> {testingId === s.id ? '测试中…' : '测试'}
-              </button>
-              <button className="btn" onClick={() => onToggle(s)}>
-                {s.enabled ? '停用' : '启用'}
-              </button>
-              <button className="icon-btn" title="编辑" onClick={() => onEdit(s)}>
-                <Pencil size={14} />
-              </button>
-              <button className="icon-btn danger" title="删除" onClick={() => onDelete(s)}>
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </>
-  )
-}
-
-function DetailModal({
-  selection,
-  isFav,
-  onClose,
-  onToggleFav,
-  onPlay
-}: {
-  selection: Selection
-  isFav: boolean
-  onClose: () => void
-  onToggleFav: () => void
-  onPlay: (groupIndex: number, episodeIndex: number) => void
-}) {
-  const [groupIndex, setGroupIndex] = useState(0)
-  const { item, source, groups, loading, error } = selection
-  const group = groups[groupIndex]
-
-  return (
-    <Modal
-      title={item.vod_name}
-      onClose={onClose}
-      footer={
         <>
-          <button className="btn" onClick={onToggleFav}>
-            <Heart size={14} fill={isFav ? 'currentColor' : 'none'} /> {isFav ? '已收藏' : '收藏'}
-          </button>
-          <button className="btn ghost" onClick={onClose}>
-            关闭
-          </button>
-        </>
-      }
-    >
-      <div className="detail-head">
-        <div className="detail-cover">
-          {item.vod_pic ? <img src={item.vod_pic} alt="" /> : null}
-        </div>
-        <div className="detail-meta">
-          <div>
-            {[item.type_name, item.vod_year, item.vod_area].filter(Boolean).join(' · ') || '—'}
+          <div className="page-desc" style={{ marginBottom: 10 }}>
+            {searching
+              ? `共 ${results.length} 条结果 · 搜索中 ${progress.done}/${progress.total} 个源`
+              : `共 ${results.length} 条结果（${progress.total || sources.length} 个片源）`}
           </div>
-          <div>{item.vod_remarks || '暂无备注'}</div>
-          <div className="detail-source">片源：{source.name}</div>
-        </div>
-      </div>
-
-      {loading ? (
-        <p>正在获取播放地址…</p>
-      ) : error ? (
-        <p>{error}</p>
-      ) : groups.length === 0 ? (
-        <p>该片源没有返回可播放地址，换一个片源试试。</p>
-      ) : (
-        <>
-          {groups.length > 1 && (
-            <div className="toolbar">
-              {groups.map((g, gi) => (
-                <button
-                  key={`${g.name}-${gi}`}
-                  className={`chip ${gi === groupIndex ? 'active' : ''}`}
-                  onClick={() => setGroupIndex(gi)}
+          <div className="rows">
+            {results.map((item) => {
+              const fav = favOf(item.sourceId, item.vod_id)
+              const source = sourceById.get(item.sourceId)
+              return (
+                <div
+                  key={`${item.sourceId}-${item.vod_id}`}
+                  className="row clickable"
+                  onClick={() => {
+                    if (source) void openDetail(source, item)
+                  }}
                 >
-                  {g.name}
-                </button>
-              ))}
+                  <div className="row-cover">
+                    {item.vod_pic ? <img src={item.vod_pic} alt="" loading="lazy" /> : '影片'}
+                  </div>
+                  <div className="row-main">
+                    <div className="row-title">{item.vod_name}</div>
+                    <div className="row-meta">
+                      {[item.type_name, item.vod_year, item.vod_area, item.vod_duration, item.vod_remarks]
+                        .filter(Boolean)
+                        .join(' · ') || '—'}
+                    </div>
+                    <div className="row-meta">来自 {item.sourceName}</div>
+                  </div>
+                  <button
+                    className="icon-btn"
+                    title={fav ? '取消收藏' : '收藏'}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (source) toggleFav(source, item)
+                    }}
+                  >
+                    <Heart size={15} fill={fav ? 'currentColor' : 'none'} />
+                  </button>
+                  <span className="badge brand">播放</span>
+                </div>
+              )
+            })}
+          </div>
+          {sourceErrors.length > 0 && (
+            <div className="result-hint" style={{ marginTop: 10 }}>
+              {sourceErrors.length} 个片源请求失败：
+              {sourceErrors.slice(0, 4).map((e) => `${e.name}（${e.error}）`).join('、')}
+              {sourceErrors.length > 4 ? ' 等' : ''}
             </div>
           )}
-          <div className="episode-grid modal-scroll">
-            {(group?.episodes ?? []).map((ep, ei) => (
-              <button
-                key={`${ep.url}-${ei}`}
-                className="episode"
-                onClick={() => onPlay(groupIndex, ei)}
-              >
-                {ep.name}
-              </button>
-            ))}
-          </div>
         </>
       )}
-    </Modal>
-  )
-}
-
-function SourceEditModal({
-  source,
-  onClose,
-  onSave
-}: {
-  source: VodSource | null
-  onClose: () => void
-  onSave: (input: VodSourceInput, region: 'cn' | 'proxy') => void
-}) {
-  const [name, setName] = useState(source?.name ?? '')
-  const [baseUrl, setBaseUrl] = useState(source?.baseUrl ?? '')
-  const [region, setRegion] = useState<'cn' | 'proxy'>(source?.region === 'proxy' ? 'proxy' : 'cn')
-  const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
-
-  return (
-    <Modal
-      title={source ? '编辑片源' : '添加片源'}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button
-            className="btn primary"
-            disabled={!valid}
-            onClick={() =>
-              onSave(
-                {
-                  id: source?.id ?? genSourceId(baseUrl.trim()),
-                  name: name.trim(),
-                  baseUrl: baseUrl.trim()
-                },
-                region
-              )
-            }
-          >
-            保存
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <label>
-          名称
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：非凡资源" />
-        </label>
-        <label>
-          接口地址
-          <input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://example.com/api.php/provide/vod"
-          />
-        </label>
-        <label>
-          网络目录
-          <select value={region} onChange={(e) => setRegion(e.target.value as 'cn' | 'proxy')}>
-            <option value="cn">国内可访问</option>
-            <option value="proxy">需要外网</option>
-          </select>
-        </label>
-      </div>
-    </Modal>
-  )
-}
-
-function ImportModal({
-  onClose,
-  onImport,
-  onBuiltin
-}: {
-  onClose: () => void
-  onImport: (inputs: VodSourceInput[]) => void
-  onBuiltin: () => void
-}) {
-  const [text, setText] = useState('')
-  const [error, setError] = useState<string | null>(null)
-
-  const doImport = () => {
-    const res = parseSourceImport(text)
-    if (res.error) {
-      setError(res.error)
-      return
-    }
-    onImport(res.sources)
-  }
-
-  return (
-    <Modal
-      title="批量导入片源"
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button className="btn" onClick={onBuiltin}>
-            导入内置片源
-          </button>
-          <button className="btn primary" disabled={!text.trim()} onClick={doImport}>
-            导入
-          </button>
-        </>
-      }
-    >
-      <p>
-        支持 KVideo 订阅 JSON（数组或单对象），或每行一个「名称|接口地址」。接口地址形如
-        https://example.com/api.php/provide/vod。
-      </p>
-      <textarea
-        className="textarea"
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value)
-          setError(null)
-        }}
-        placeholder={'非凡资源|https://example.com/api.php/provide/vod\nhttps://another.com/api.php/provide/vod'}
-      />
-      {error ? <div className="result-hint">{error}</div> : null}
-    </Modal>
+    </>
   )
 }

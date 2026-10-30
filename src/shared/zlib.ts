@@ -37,6 +37,11 @@ export interface ZlibStatusResponse {
   loggedIn: boolean
   host: string
   message: string
+  /** 已保存的登录账号（密码不会返回渲染进程） */
+  username: string
+  /** 今日已下载数量 / 每日额度（拿不到时为 null） */
+  downloadsToday?: number | null
+  downloadsLimit?: number | null
 }
 
 export interface ZlibLoginResult {

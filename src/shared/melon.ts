@@ -63,3 +63,10 @@ export interface MelonDetailResponse {
   detail?: MelonDetail
   error?: string
 }
+
+/** 分类 path → 条目数量；-1 表示暂时取不到 */
+export interface MelonCategoryCountsResponse {
+  ok: boolean
+  counts: Record<string, number>
+  error?: string
+}

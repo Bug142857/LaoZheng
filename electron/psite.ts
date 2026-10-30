@@ -1,5 +1,10 @@
 import { parse } from 'node-html-parser'
-import type { PListResponse, PMediaResponse, PVideo } from '../src/shared/psite'
+import type {
+  PCategoryCountResponse,
+  PListResponse,
+  PMediaResponse,
+  PVideo
+} from '../src/shared/psite'
 
 /** P站（pornhub.com）客户端：网页解析，与手机端 PsiteClient.kt 同口径 */
 
@@ -7,6 +12,14 @@ const BASE = 'https://www.pornhub.com'
 const UA =
   'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
 const COOKIE = 'accessAgeDisclaimerPH=1; age_verified=1; accessPH=1'
+
+/** 媒体请求（m3u8 / 分片 / 直链）统一带站内 Referer 与年龄 Cookie，部分节点会校验 */
+const MEDIA_HEADERS: Record<string, string> = {
+  'User-Agent': UA,
+  Accept: '*/*',
+  Referer: `${BASE}/`,
+  Cookie: COOKIE
+}
 
 async function getHtml(url: string): Promise<string> {
   const res = await fetch(url, {
@@ -92,8 +105,11 @@ export async function pList(
     let url: string
     if (kw) {
       url = `${BASE}/video/search?search=${encodeURIComponent(kw)}&page=${p}`
+    } else if (catId > 0) {
+      // 推荐页带 c 参数不会真正过滤分类，分类统一走 /video?c=
+      url = `${BASE}/video?c=${catId}&page=${p}`
     } else if (sortCode === 'recommended') {
-      url = `${BASE}/recommended?${catId > 0 ? `c=${catId}&` : ''}page=${p}`
+      url = `${BASE}/recommended?page=${p}`
     } else {
       const q: string[] = []
       if (sortCode) q.push(`o=${sortCode}`)
@@ -103,12 +119,17 @@ export async function pList(
     }
     const html = await getHtml(url)
     const items = parseList(html)
-    return { ok: true, items, lastPage: lastPageOf(html) }
+    const lastPage = lastPageOf(html)
+    // 站点分页条只渲染当前页附近几页（常见只到 5），不能据此判断到底：
+    // 本页有足够条目就认为还有下一页，翻到空页才停。
+    const hasMore = items.length >= 16 || (lastPage > 0 && p < lastPage)
+    return { ok: true, items, lastPage, hasMore }
   } catch (err) {
     return {
       ok: false,
       items: [],
       lastPage: 0,
+      hasMore: false,
       error:
         err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
           ? '请求超时（需外网，可换节点重试）'
@@ -162,20 +183,109 @@ interface RawDef {
   url: string
 }
 
-function selectMedia(defs: RawDef[]): PMediaResponse | null {
-  const hls = defs
-    .filter((d) => d.format.toLowerCase() === 'hls')
-    .sort((a, b) => (Number.parseInt(b.quality, 10) || -1) - (Number.parseInt(a.quality, 10) || -1))
-  if (hls.length) return { ok: true, url: hls[0].url, quality: hls[0].quality, isHls: true }
-  const other = defs.find((d) => d.format.toLowerCase() !== 'hls')
-  if (other) return { ok: true, url: other.url, quality: '直链', isHls: false }
-  return null
+/** 媒体地址可能是 //host/path、相对路径或带转义斜杠，统一补全为 https 直链 */
+function normalizeMediaUrl(raw: string): string {
+  let url = raw.trim().replace(/\\\//g, '/')
+  if (url.startsWith('//')) url = `https:${url}`
+  if (url.startsWith('/')) url = `${BASE}${url}`
+  return url
 }
 
-export async function pResolve(vkey: string): Promise<PMediaResponse> {
+function byQuality(a: RawDef, b: RawDef): number {
+  return (Number.parseInt(b.quality, 10) || -1) - (Number.parseInt(a.quality, 10) || -1)
+}
+
+/** 站点返回的 format=mp4 里混着 /video/get_media（JSON 接口），不能直接当视频地址 */
+function isPlayableDirect(url: string): boolean {
+  if (/\/video\/get_media/i.test(url)) return false
+  return /\.(mp4|m4v|webm|flv|mov)(\?|$)/i.test(url)
+}
+
+/** 真正请求一次 m3u8：部分节点的签名地址会返回 403/410，必须挑一个能用的 */
+async function probeHls(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, {
+      headers: MEDIA_HEADERS,
+      redirect: 'follow',
+      signal: AbortSignal.timeout(8_000)
+    })
+    if (!res.ok) return false
+    const text = (await res.text()).trimStart()
+    return text.startsWith('#EXTM3U')
+  } catch {
+    return false
+  }
+}
+
+/** 按清晰度从高到低探测 HLS，最多保留两条可用线路（第二条用于播放失败回退） */
+async function pickWorkingHls(defs: RawDef[]): Promise<RawDef[]> {
+  const hls = defs.filter((d) => d.format.toLowerCase() === 'hls').sort(byQuality)
+  if (!hls.length) return []
+  const results = await Promise.all(
+    hls.map(async (def) => ({ def, ok: await probeHls(def.url) }))
+  )
+  return results.filter((r) => r.ok).map((r) => r.def)
+}
+
+const DESKTOP_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+
+const categoryCountCache = new Map<number, { count: number; at: number }>()
+
+/**
+ * 分类数量：站点没有数字接口，桌面版列表页会输出
+ * 「Showing 1-32 of 20000」，移动版没有这段，所以这里单独用桌面 UA 抓。
+ */
+export async function pCategoryCount(catId: number): Promise<PCategoryCountResponse> {
+  const cached = categoryCountCache.get(catId)
+  if (cached && Date.now() - cached.at < 30 * 60 * 1000) {
+    return { ok: true, count: cached.count }
+  }
+  try {
+    const res = await fetch(`${BASE}/video?c=${catId}`, {
+      headers: {
+        'User-Agent': DESKTOP_UA,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        Cookie: COOKIE
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(25_000)
+    })
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+    const html = await res.text()
+    const showing = html.match(/Showing\s+[\d,]+\s*-\s*[\d,]+\s+of\s+([\d,]+)/i)
+    const numeric = showing ? Number.parseInt(showing[1].replace(/,/g, ''), 10) : 0
+    if (numeric > 0) {
+      categoryCountCache.set(catId, { count: numeric, at: Date.now() })
+      return { ok: true, count: numeric }
+    }
+    // 兜底：末页 × 每页条数（站点有分页链接时可用）
+    const pages = lastPageOf(html)
+    const perPage = parseList(html).length
+    const estimate = pages > 0 && perPage > 0 ? pages * perPage : 0
+    if (estimate > 0) {
+      categoryCountCache.set(catId, { count: estimate, at: Date.now() })
+      return { ok: true, count: estimate }
+    }
+    return { ok: false, error: '站点没有给出数量' }
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
+          ? '请求超时'
+          : '请求失败'
+    }
+  }
+}
+
+export async function pResolve(vkey: string, retried = false): Promise<PMediaResponse> {
   try {
     const html = await getHtml(`${BASE}/view_video.php?viewkey=${encodeURIComponent(vkey)}`)
     const title = html.match(/<title>([\s\S]*?)<\/title>/)?.[1]?.split('<')[0]?.trim() ?? ''
+    let sawMedia = false
+    let allHls: RawDef[] = []
 
     const json = extractArrayAfter(html, 'mediaDefinitions')
     if (json) {
@@ -185,26 +295,62 @@ export async function pResolve(vkey: string): Promise<PMediaResponse> {
         for (const item of arr) {
           if (!item || typeof item !== 'object') continue
           const o = item as Record<string, unknown>
-          const url = typeof o.videoUrl === 'string' ? o.videoUrl : ''
-          if (!url.startsWith('http')) continue
+          const rawUrl =
+            typeof o.videoUrl === 'string'
+              ? o.videoUrl
+              : typeof o.url === 'string'
+                ? o.url
+                : typeof o.src === 'string'
+                  ? o.src
+                  : ''
+          if (!rawUrl.trim()) continue
+          const url = normalizeMediaUrl(rawUrl)
+          if (!/^https?:\/\//i.test(url)) continue
           defs.push({
             format: typeof o.format === 'string' ? o.format : '',
-            quality: typeof o.quality === 'string' ? o.quality : '',
+            quality:
+              typeof o.quality === 'string'
+                ? o.quality
+                : typeof o.quality === 'number'
+                  ? String(o.quality)
+                  : '',
             url
           })
         }
-        const chosen = selectMedia(defs)
-        if (chosen) return chosen
+        // 站点按清晰度给出多条 HLS，但部分签名地址会 403/410：
+        // 逐个实测，取最高且可用的线路；第二条作为播放失败时的回退。
+        allHls = defs.filter((d) => d.format.toLowerCase() === 'hls').sort(byQuality)
+        const working = await pickWorkingHls(defs)
+        sawMedia = sawMedia || defs.length > 0
+        const direct = defs
+          .filter((d) => d.format.toLowerCase() !== 'hls' && isPlayableDirect(d.url))
+          .sort(byQuality)[0]
+        if (working.length) {
+          return {
+            ok: true,
+            url: working[0].url,
+            quality: working[0].quality,
+            isHls: true,
+            // HLS 优先，备用线路优先另一条 HLS，再退 mp4 直链
+            fallbackUrl: working[1]?.url ?? direct?.url
+          }
+        }
+        if (direct) {
+          return { ok: true, url: direct.url, quality: direct.quality || '直链', isHls: false }
+        }
       } catch {
         // 继续走正则兜底
       }
     }
 
     const unescaped = html.replace(/\\\//g, '/')
-    const m3u8 = unescaped.match(
-      /https:\/\/[a-z0-9-]+\.phncdn\.com\/[^"'\s<>]+?master\.m3u8[^"'\s<>]*/
-    )?.[0]
-    if (m3u8) return { ok: true, url: m3u8, quality: '720', isHls: true }
+    const m3u8 =
+      unescaped.match(/https:\/\/[a-z0-9.-]*phncdn\.com\/[^"'\s<>]+?\.m3u8[^"'\s<>]*/)?.[0] ??
+      unescaped.match(/"https:\/\/[^"]+?\.m3u8[^"]*"/)?.[0]?.replace(/^"|"$/g, '')
+    if (m3u8) {
+      const url = normalizeMediaUrl(m3u8)
+      if (await probeHls(url)) return { ok: true, url, quality: '720', isHls: true }
+    }
 
     if (title.toLowerCase().includes('age verification')) {
       return { ok: false, error: '该地区需年龄验证，换个节点重试' }
@@ -214,6 +360,24 @@ export async function pResolve(vkey: string): Promise<PMediaResponse> {
     }
     if (title.toLowerCase().includes('unavailable') || /unavailable in your country/i.test(html)) {
       return { ok: false, error: '视频在当前节点地区被屏蔽，换个节点重试' }
+    }
+    if (sawMedia) {
+      // 首次全部探测失败时重新打开一次视频页（签名/加速节点偶尔会瞬时 410）
+      if (!retried) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 600))
+        return pResolve(vkey, true)
+      }
+      // 重试后仍探测失败：把最高清晰度交给播放器再试一次，总比直接报错强
+      if (allHls.length) {
+        return {
+          ok: true,
+          url: allHls[0].url,
+          quality: allHls[0].quality,
+          isHls: true,
+          fallbackUrl: allHls[1]?.url
+        }
+      }
+      return { ok: false, error: '播放线路签名已失效或当前节点被拦截，请重试或换个视频' }
     }
     return { ok: false, error: `页面没有播放数据（可能被地区屏蔽，title=${title}）` }
   } catch (err) {

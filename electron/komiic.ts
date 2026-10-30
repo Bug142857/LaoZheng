@@ -66,7 +66,7 @@ const Q_RECENT = `query recentUpdate($pagination: Pagination!) { recentUpdate(pa
 const Q_HOT = `query hotComics($pagination: Pagination!) { hotComics(pagination: $pagination) { ${FIELDS} } }`
 const Q_BY_CATEGORY = `query comicByCategories($categoryId: [ID!]!, $pagination: Pagination!) { comicByCategories(categoryId: $categoryId, pagination: $pagination) { ${FIELDS} } }`
 const Q_SEARCH = `query searchComics($keyword: String!, $pagination: Pagination!) { searchComics(keyword: $keyword, pagination: $pagination) { ${FIELDS} } }`
-const Q_ALL_CATEGORY = 'query allCategory { allCategory { id name } }'
+const Q_ALL_CATEGORY = 'query allCategory { allCategory { id name comicCount } }'
 const Q_COMIC_BY_ID = `query comicById($comicId: ID!) { comicById(comicId: $comicId) { ${FIELDS} } }`
 const Q_CHAPTERS =
   'query chapterByComicId($comicId: ID!) { chaptersByComicId(comicId: $comicId) { id serial type size } }'
@@ -247,7 +247,7 @@ function parseComic(value: unknown): KomiicComic | null {
     categories: asArr(o.categories)
       .map((c) => asObj(c))
       .filter((c): c is Json => !!c)
-      .map((c) => ({ id: str(c.id), name: str(c.name) })),
+      .map((c) => ({ id: str(c.id), name: str(c.name), count: num(c.comicCount) })),
     dateUpdated: str(o.dateUpdated),
     lastChapterUpdate: str(o.lastChapterUpdate),
     monthViews: num(o.monthViews),
@@ -265,9 +265,9 @@ function listResult(fn: () => Promise<KomiicListResponse>): Promise<KomiicListRe
   return fn().catch((err) => ({ ok: false, items: [], error: komiicErrorMessage(err) }))
 }
 
-export function komiicRecent(offset: number): Promise<KomiicListResponse> {
+export function komiicRecent(offset: number, status = ''): Promise<KomiicListResponse> {
   return listResult(async () => {
-    const data = await post('recentUpdate', Q_RECENT, paginationVars(offset, 'DATE_UPDATED'))
+    const data = await post('recentUpdate', Q_RECENT, paginationVars(offset, 'DATE_UPDATED', status))
     return parseComicList(data, 'recentUpdate')
   })
 }
@@ -305,7 +305,7 @@ export async function komiicCategories(): Promise<KomiicCategoriesResponse> {
     const items: KomiicCategory[] = asArr(data.allCategory)
       .map((c) => asObj(c))
       .filter((c): c is Json => !!c)
-      .map((c) => ({ id: str(c.id), name: str(c.name) }))
+      .map((c) => ({ id: str(c.id), name: str(c.name), count: num(c.comicCount) }))
       .filter((c) => !!c.id && !!c.name)
     return { ok: true, items }
   } catch (err) {

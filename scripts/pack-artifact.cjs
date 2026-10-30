@@ -35,4 +35,11 @@ for (const name of fs.readdirSync(release)) {
   }
 }
 
+// 打包中间产物（解包目录）对用户无用，发版后直接删掉
+const unpacked = path.join(release, 'win-unpacked')
+if (fs.existsSync(unpacked)) {
+  fs.rmSync(unpacked, { recursive: true, force: true })
+  console.log('[pack] removed win-unpacked')
+}
+
 console.log(`[pack] installer: ${target}`)

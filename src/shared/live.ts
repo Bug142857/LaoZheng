@@ -30,6 +30,13 @@ export interface LiveImportResult {
   error?: string
 }
 
+/** 电视源测试结果（有效 = 能解析出频道） */
+export interface LiveTestResult {
+  ok: boolean
+  channels: number
+  message: string
+}
+
 export function isLocalLiveSource(source: LiveSource): boolean {
   return source.url.startsWith('local://')
 }

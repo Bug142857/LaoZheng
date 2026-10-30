@@ -1,6 +1,12 @@
+import { createDecipheriv, createHash } from 'node:crypto'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { HTMLElement, parse } from 'node-html-parser'
+import { MELON_CATEGORIES } from '../src/shared/melon'
+import { imageCacheDir, sniffImageMime } from './imageCache'
 import type {
   MelonBlock,
+  MelonCategoryCountsResponse,
   MelonDetail,
   MelonDetailResponse,
   MelonListResponse,
@@ -29,6 +35,30 @@ const UA =
   'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
 
 let cachedBase: string | null = null
+
+/** 解析过程中出现过的图床域名：请求层据此补移动 UA 与镜像 Referer（站点有防盗链） */
+const imageHosts = new Set<string>()
+
+function trackImage(url: string): string {
+  try {
+    const u = new URL(url)
+    if (u.protocol === 'http:' || u.protocol === 'https:') imageHosts.add(u.hostname)
+  } catch {
+    // 非法地址忽略
+  }
+  return url
+}
+
+/** 渲染进程用缓存列表直接渲染封面时，把这些图床域名补登记一次 */
+export function trackMelonImages(urls: string[]): void {
+  for (const url of urls.slice(0, 200)) trackImage(url)
+}
+
+/** 吃瓜图片需要与站点一致的移动 UA + 镜像 Referer，否则图床返回 403 */
+export function melonImageAuth(url: URL): { referer: string; ua: string } | null {
+  if (!imageHosts.has(url.hostname)) return null
+  return { referer: `${cachedBase ?? originOf(url.href) ?? LANDING}/`, ua: UA }
+}
 
 async function httpGet(url: string): Promise<{ html: string; finalUrl: string }> {
   const res = await fetch(url, {
@@ -117,6 +147,11 @@ async function currentBase(): Promise<string> {
   return cachedBase
 }
 
+/** 吃瓜镜像的 Referer（下载 / 修复旧切片时补防盗链头用） */
+export function melonReferer(): string {
+  return `${cachedBase ?? LANDING}/`
+}
+
 async function getPage(rawPath: string): Promise<{ html: string; finalUrl: string }> {
   let lastError: unknown
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -160,7 +195,7 @@ function parseList(html: string, finalUrl: string): MelonPage {
     const title = (card.querySelector('h2.post-card-title')?.text ?? '').trim()
     if (!id || !title) continue
     const banner = card.innerHTML.match(/loadBannerDirect\('([^']+)'/)
-    const cover = banner && banner[1].startsWith('http') ? banner[1] : null
+    const cover = banner && banner[1].startsWith('http') ? trackImage(banner[1]) : null
     const info = card.querySelector('.post-card-info')
     const author = (info?.querySelector('span[itemprop=author]')?.text ?? '')
       .trim()
@@ -242,10 +277,24 @@ function realImage(img: HTMLElement): string | null {
       /\.(jpe?g|png|gif|webp)([?#].*)?$/i.test(v) &&
       !v.includes('/usr/plugins/')
     ) {
-      return v
+      return trackImage(v)
     }
   }
   return null
+}
+
+/** 正文尾部的站点文案（关键词 / 猜你喜欢 / 原文简介 / 版权声明等）不展示 */
+const MELON_NOISE_PREFIX =
+  /^(关键词|关键字|猜你喜欢|相关推荐|原文简介|版权声明|免责声明|免责|声明|上一篇|下一篇|返回列表|热门推荐|更多精彩|更多内容|最新域名|永久域名|可能你会感兴趣|热门吃瓜|AI\s*成人短剧|AI\s*短剧)/i
+
+function isMelonNoise(text: string): boolean {
+  const t = text.trim()
+  if (!t) return true
+  if (MELON_NOISE_PREFIX.test(t)) return true
+  // 站点常把版权声明 / 原文简介 / 猜你喜欢 / 域名等塞进正文最后一段，整段丢弃
+  return /版权声明|免责声明|原文简介|猜你喜欢|相关推荐|关键词[:：]|关键字[:：]|本站仅提供|如有侵权|域名[:：]|可能你会感兴趣|热门吃瓜/.test(
+    t
+  )
 }
 
 function parseVideoConfig(el: HTMLElement): MelonBlock | null {
@@ -259,6 +308,8 @@ function parseVideoConfig(el: HTMLElement): MelonBlock | null {
       (typeof video?.url === 'string' && video.url.startsWith('http') ? video.url : '') ||
       (typeof h265?.url === 'string' && h265.url.startsWith('http') ? h265.url : '')
     if (!url) return null
+    // 视频 CDN 与图床一样有防盗链：登记域名，播放 / 下载请求补镜像 Referer
+    trackImage(url)
     return {
       type: 'video',
       title: (el.getAttribute('data-video_title') ?? '').trim() || '视频',
@@ -277,8 +328,9 @@ export async function melonDetail(rawId: string): Promise<MelonDetailResponse> {
     const doc = parse(html)
     const title = (doc.querySelector('h1.post-title')?.text ?? '').trim()
     if (!title) return { ok: false, error: '帖子不存在或已被删除' }
-    const cover =
-      doc.querySelector('meta[itemprop=image]')?.getAttribute('content')?.trim() || null
+    const rawCover =
+      doc.querySelector('meta[itemprop=image]')?.getAttribute('content')?.trim() || ''
+    const cover = rawCover.startsWith('http') ? trackImage(rawCover) : null
     const meta = doc.querySelector('ul.post-meta')
     const links = meta ? meta.querySelectorAll('li a') : []
     const author = (links[0]?.text ?? '').trim()
@@ -313,12 +365,12 @@ export async function melonDetail(rawId: string): Promise<MelonDetailResponse> {
           if (url) blocks.push({ type: 'image', url })
         }
         const text = child.text.trim()
-        if (text) blocks.push({ type: 'text', text })
+        if (text && !isMelonNoise(text)) blocks.push({ type: 'text', text })
         continue
       }
       if (['h1', 'h2', 'h3', 'h4', 'h5'].includes(tag)) {
         const text = child.text.trim()
-        if (text) blocks.push({ type: 'heading', text })
+        if (text && !isMelonNoise(text)) blocks.push({ type: 'heading', text })
       }
     }
 
@@ -355,5 +407,255 @@ export async function melonDetail(rawId: string): Promise<MelonDetailResponse> {
     return { ok: true, detail }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : '加载失败' }
+  }
+}
+
+/* ---------------- 图片解密 + 取图 ----------------
+ * 站点图床返回的是 AES-128-CBC 密文（不是 JPEG），站点前端用 zzz.js 里的
+ * decryptImage 解密：key/iv 是两串「数字_数字…」按 charCode 还原出来的 16 位字符。
+ * 这里内置一份实测值，同时从 zzz.js 动态提取一遍；两种 key/iv 顺序都会试。
+ */
+
+const IMAGE_KEY_FALLBACK = 'f5d965df75336270'
+const IMAGE_IV_FALLBACK = '97b60394abc2fbe1'
+
+interface ImageCrypt {
+  key: string
+  iv: string
+}
+
+let imageCrypt: ImageCrypt = { key: IMAGE_KEY_FALLBACK, iv: IMAGE_IV_FALLBACK }
+let imageCryptTried = false
+
+function codeStringToText(raw: string): string {
+  return raw
+    .split('_')
+    .map((n) => String.fromCharCode(Number.parseInt(n, 10)))
+    .join('')
+}
+
+async function discoverImageCrypt(): Promise<void> {
+  if (imageCryptTried) return
+  imageCryptTried = true
+  try {
+    const base = await currentBase()
+    const { html } = await httpGet(`${base}/usr/plugins/tbxw/js/zzz.js`)
+    const seqs = [...html.matchAll(/\d+(?:_\d+){15}/g)]
+      .map((m) => codeStringToText(m[0]))
+      .filter((s) => s.length === 16)
+    if (seqs.length >= 2) {
+      // 站点 decryptImage 里第二个字符串作 key、第一个作 iv（实测）
+      imageCrypt = { key: seqs[1], iv: seqs[0] }
+    }
+  } catch {
+    // 提取失败时保留内置 key
+  }
+}
+
+function imageMime(buf: Buffer): string | null {
+  if (buf.length < 12) return null
+  if (buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg'
+  if (buf.slice(0, 8).toString('hex') === '89504e470d0a1a0a') return 'image/png'
+  if (buf.slice(0, 4).toString('ascii') === 'GIF8') return 'image/gif'
+  if (buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP') {
+    return 'image/webp'
+  }
+  return null
+}
+
+function tryDecrypt(buf: Buffer, key: string, iv: string): Buffer | null {
+  try {
+    const decipher = createDecipheriv('aes-128-cbc', Buffer.from(key, 'utf8'), Buffer.from(iv, 'utf8'))
+    const out = Buffer.concat([decipher.update(buf), decipher.final()])
+    return imageMime(out) ? out : null
+  } catch {
+    return null
+  }
+}
+
+async function decodeImageBuffer(buf: Buffer): Promise<Buffer> {
+  if (imageMime(buf)) return buf
+  await discoverImageCrypt()
+  const candidates: ImageCrypt[] = [
+    imageCrypt,
+    { key: IMAGE_KEY_FALLBACK, iv: IMAGE_IV_FALLBACK },
+    { key: IMAGE_IV_FALLBACK, iv: IMAGE_KEY_FALLBACK }
+  ]
+  for (const candidate of candidates) {
+    const out = tryDecrypt(buf, candidate.key, candidate.iv)
+    if (out) {
+      imageCrypt = candidate
+      return out
+    }
+  }
+  return buf
+}
+
+export interface MelonImageResponse {
+  ok: boolean
+  dataUrl?: string
+  error?: string
+}
+
+/** 取吃瓜图片并解密成 data URL（渲染进程直接给 <img> 用）；解密结果落盘，重开应用不再重新取图 */
+export async function melonFetchImage(url: string): Promise<MelonImageResponse> {
+  if (!/^https?:\/\//i.test(url)) return { ok: false, error: '图片地址无效' }
+  const file = join(
+    imageCacheDir(),
+    `melon-${createHash('sha1').update(url).digest('hex')}`
+  )
+  try {
+    const cached = await readFile(file)
+    if (cached.length) {
+      return {
+        ok: true,
+        dataUrl: `data:${sniffImageMime(cached) ?? 'image/jpeg'};base64,${cached.toString('base64')}`
+      }
+    }
+  } catch {
+    // 未缓存，走网络
+  }
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': UA,
+        Referer: `${cachedBase ?? LANDING}/`,
+        Accept: 'image/avif,image/webp,image/png,image/jpeg,image/*,*/*;q=0.8'
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20_000)
+    })
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+    const raw = Buffer.from(await res.arrayBuffer())
+    const decoded = await decodeImageBuffer(raw)
+    const mime = imageMime(decoded) ?? 'image/jpeg'
+    void mkdir(imageCacheDir(), { recursive: true })
+      .then(() => writeFile(file, decoded))
+      .catch(() => undefined)
+    return { ok: true, dataUrl: `data:${mime};base64,${decoded.toString('base64')}` }
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
+          ? '图片请求超时'
+          : '图片加载失败'
+    }
+  }
+}
+
+/* ---------------- 正文视频时长 ----------------
+ * 站点不返回时长：HLS 直接读播放列表里的 #EXTINF 累加；直链 mp4 由渲染进程用 video 元数据补。
+ */
+
+export interface MelonDurationResponse {
+  ok: boolean
+  seconds?: number
+  error?: string
+}
+
+function sumExtinf(text: string): number {
+  let total = 0
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith('#EXTINF:')) continue
+    const value = Number.parseFloat(line.slice(8))
+    if (Number.isFinite(value)) total += value
+  }
+  return total
+}
+
+/** master 播放列表里第一条清晰度地址 */
+function firstVariant(text: string): string {
+  const lines = text.split(/\r?\n/).map((line) => line.trim())
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith('#EXT-X-STREAM-INF')) continue
+    const next = lines.slice(i + 1).find((line) => line && !line.startsWith('#'))
+    if (next) return next
+  }
+  return ''
+}
+
+export async function melonVideoDuration(rawUrl: string): Promise<MelonDurationResponse> {
+  if (!/^https?:\/\//i.test(rawUrl)) return { ok: false, error: '地址无效' }
+  const headers = { 'User-Agent': UA, Referer: melonReferer(), Accept: '*/*' }
+  try {
+    let url = rawUrl
+    let res = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) })
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+    let text = await res.text()
+    if (text.includes('#EXT-X-STREAM-INF')) {
+      const variant = firstVariant(text)
+      if (!variant) return { ok: false, error: '播放列表为空' }
+      url = new URL(variant, url).toString()
+      res = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) })
+      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+      text = await res.text()
+    }
+    const seconds = Math.round(sumExtinf(text))
+    if (seconds > 0) return { ok: true, seconds }
+    return { ok: false, error: '没有解析到时长' }
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
+          ? '请求超时'
+          : '解析失败'
+    }
+  }
+}
+
+/* ---------------- 分类数量 ---------------- */
+interface CountCacheEntry {
+  counts: Record<string, number>
+  at: number
+}
+
+let countsCache: CountCacheEntry | null = null
+
+/** 分类页翻页形如 /page/1337/ 或 /category/xsxy/107/，据此拼末页地址 */
+function lastPagePath(path: string, lastPage: number): string {
+  const clean = path.replace(/^\/+/, '').replace(/\/+$/, '')
+  return clean ? `/${clean}/${lastPage}/` : `/page/${lastPage}/`
+}
+
+async function countForCategory(path: string): Promise<number> {
+  const { html, finalUrl } = await getPage(path || '/')
+  const first = parseList(html, finalUrl)
+  const perPage = first.items.length
+  if (!perPage) return 0
+  const lastPage = first.lastPage ?? 1
+  if (lastPage <= 1) return perPage
+  const { html: lastHtml, finalUrl: lastUrl } = await getPage(lastPagePath(path, lastPage))
+  const last = parseList(lastHtml, lastUrl)
+  return Math.max(0, (lastPage - 1) * perPage + (last.items.length || perPage))
+}
+
+/** 各分类条目数量（按分页末页推算，10 分钟内缓存） */
+export async function melonCategoryCounts(): Promise<MelonCategoryCountsResponse> {
+  if (countsCache && Date.now() - countsCache.at < 10 * 60 * 1000) {
+    return { ok: true, counts: countsCache.counts }
+  }
+  const counts: Record<string, number> = {}
+  const queue = [...MELON_CATEGORIES]
+  let failed = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const category = queue.shift()
+      if (!category) return
+      try {
+        counts[category.path] = await countForCategory(category.path)
+      } catch {
+        failed += 1
+        counts[category.path] = -1
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: 3 }, worker))
+  if (Object.keys(counts).length) countsCache = { counts, at: Date.now() }
+  return {
+    ok: true,
+    counts,
+    error: failed ? `${failed} 个分类暂时取不到数量` : undefined
   }
 }

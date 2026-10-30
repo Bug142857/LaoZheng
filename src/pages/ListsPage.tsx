@@ -1,21 +1,41 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Pencil, Plus, Trash2 } from 'lucide-react'
 import type { ItemList } from '../shared/types'
 import { useData } from '../state/DataContext'
-import { countItems, descendantIds, nextId, rootLists, tileGradient } from '../utils/data'
-import { ConfirmDialog, EmptyState, PromptDialog } from '../components/ui'
+import {
+  countItems,
+  descendantIds,
+  listCovers,
+  nextId,
+  rootLists
+} from '../utils/data'
+import { ConfirmDialog, EmptyState, ListCoverMosaic, PromptDialog } from '../components/ui'
+import { SearchPage } from './SearchPage'
 
 export function ListsPage({
   onOpenList,
-  onNotice
+  onNotice,
+  resetSignal
 }: {
   onOpenList: (id: number) => void
   onNotice: (text: string) => void
+  /** 点侧栏进入清单时回到清单首页 */
+  resetSignal?: number
 }) {
   const { data, update } = useData()
   const [creating, setCreating] = useState(false)
   const [renaming, setRenaming] = useState<ItemList | null>(null)
   const [deleting, setDeleting] = useState<ItemList | null>(null)
+  /** 搜索结果打开了详情 / 人物页：隐藏「我的清单」，让详情独占整页 */
+  const [detailOpen, setDetailOpen] = useState(false)
+
+  useEffect(() => {
+    if (resetSignal === undefined) return
+    setDetailOpen(false)
+    setCreating(false)
+    setRenaming(null)
+    setDeleting(null)
+  }, [resetSignal])
 
   const lists = useMemo(() => rootLists(data), [data])
 
@@ -65,22 +85,34 @@ export function ListsPage({
 
   return (
     <>
-      <header className="page-header">
-        <h1 className="page-title">清单</h1>
-        <span className="page-desc">
-          共 {lists.length} 个根清单 · 与手机端共用 items / lists / listItems 数据结构
-        </span>
-        <div className="page-actions">
-          <button className="btn primary" onClick={() => setCreating(true)}>
-            <Plus size={15} /> 新建清单
-          </button>
-        </div>
-      </header>
+      {detailOpen ? null : (
+        <header className="page-header">
+          <h1 className="page-title">清单</h1>
+          <div className="page-actions">
+            <button className="btn primary" onClick={() => setCreating(true)}>
+              <Plus size={15} /> 新建清单
+            </button>
+          </div>
+        </header>
+      )}
+
+      <SearchPage
+        embedded
+        onNotice={onNotice}
+        onImmersiveChange={setDetailOpen}
+        resetSignal={resetSignal}
+      />
+
+      {detailOpen ? null : (
+        <>
+      <div className="page-desc" style={{ marginBottom: 10 }}>
+        我的清单 · {lists.length} 个
+      </div>
 
       {lists.length === 0 ? (
         <EmptyState
           title="还没有清单"
-          desc="在手机端搜索收藏内容，或直接新建一个空清单；导入备份后这里会自动显示。"
+          desc="先新建一个清单，再用上面的搜索把条目加进来；导入备份后这里会自动显示。"
           action={
             <button className="btn" onClick={() => setCreating(true)}>
               新建清单
@@ -89,40 +121,47 @@ export function ListsPage({
         />
       ) : (
         <div className="tile-grid">
-          {lists.map((list) => (
-            <div key={list.id} className="tile" onClick={() => onOpenList(list.id)}>
-              <span className="tile-cover" style={{ background: tileGradient(list.name) }}>
-                {list.name.slice(0, 4)}
-              </span>
-              <span style={{ minWidth: 0 }}>
-                <div className="tile-name">{list.name}</div>
-                <div className="tile-meta">{countItems(data, list.id)} 件</div>
-              </span>
-              <span className="tile-actions">
-                <button
-                  className="icon-btn"
-                  title="重命名"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setRenaming(list)
-                  }}
-                >
-                  <Pencil size={14} />
-                </button>
-                <button
-                  className="icon-btn danger"
-                  title="删除"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setDeleting(list)
-                  }}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </span>
-            </div>
-          ))}
+          {lists.map((list) => {
+            const covers = listCovers(data, list.id)
+            const subCount = data.lists.filter((l) => l.parentId === list.id).length
+            return (
+              <div key={list.id} className="tile" onClick={() => onOpenList(list.id)}>
+                <ListCoverMosaic covers={covers} name={list.name} />
+                <span style={{ minWidth: 0 }}>
+                  <div className="tile-name">{list.name}</div>
+                  <div className="tile-meta">
+                    {countItems(data, list.id)} 件
+                    {subCount > 0 ? ` · ${subCount} 个子清单` : ''}
+                  </div>
+                </span>
+                <span className="tile-actions">
+                  <button
+                    className="icon-btn"
+                    title="重命名"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setRenaming(list)
+                    }}
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    className="icon-btn danger"
+                    title="删除"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setDeleting(list)
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </span>
+              </div>
+            )
+          })}
         </div>
+      )}
+        </>
       )}
 
       {creating && (

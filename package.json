@@ -1,6 +1,6 @@
 {
   "name": "laozheng-pc",
-  "version": "0.5.0",
+  "version": "0.51.0",
   "private": true,
   "description": "老郑分享 PC 端（Electron + React）",
   "author": "老郑",
@@ -14,6 +14,8 @@
     "dist": "npm run build && electron-builder --win --publish never && node scripts/pack-artifact.cjs"
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "adm-zip": "^0.6.1",
     "hls.js": "^1.7.3",
     "lucide-react": "^0.469.0",
     "node-html-parser": "^6.1.13",
@@ -21,6 +23,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
@@ -44,6 +47,14 @@
       {
         "from": ".secrets/accounts.json",
         "to": "accounts.seed.json"
+      },
+      {
+        "from": "resources/default-seed.json",
+        "to": "default-seed.json"
+      },
+      {
+        "from": "resources/tray.png",
+        "to": "tray.png"
       }
     ],
     "win": {

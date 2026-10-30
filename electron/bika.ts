@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto'
 import type {
   BikaCategoriesResponse,
   BikaCategory,
+  BikaCategoryCountsResponse,
   BikaChapter,
   BikaChaptersResponse,
   BikaComic,
@@ -278,6 +279,37 @@ export async function bikaCategories(): Promise<BikaCategoriesResponse> {
   } catch (err) {
     return { ok: false, items: [], error: bikaErrorMessage(err) }
   }
+}
+
+let categoryCountsCache: { counts: Record<string, number>; at: number } | null = null
+
+/** 各分类条目数量：用列表接口第一页的 total（分类接口本身不带数量），10 分钟内缓存 */
+export async function bikaCategoryCounts(): Promise<BikaCategoryCountsResponse> {
+  if (categoryCountsCache && Date.now() - categoryCountsCache.at < 10 * 60 * 1000) {
+    return { ok: true, counts: categoryCountsCache.counts }
+  }
+  const categories = await bikaCategories()
+  if (!categories.ok) return { ok: false, counts: {}, error: categories.error }
+  const counts: Record<string, number> = {}
+  const queue = [...categories.items]
+  let failed = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const category = queue.shift()
+      if (!category) return
+      try {
+        const res = await bikaList(1, category.title, 'dd')
+        counts[category.title] = res.ok ? res.total : -1
+        if (!res.ok) failed += 1
+      } catch {
+        failed += 1
+        counts[category.title] = -1
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: 4 }, worker))
+  categoryCountsCache = { counts, at: Date.now() }
+  return { ok: true, counts, error: failed ? `${failed} 个分类暂时取不到数量` : undefined }
 }
 
 export async function bikaList(

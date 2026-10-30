@@ -19,6 +19,15 @@ export interface PListResponse {
   ok: boolean
   items: PVideo[]
   lastPage: number
+  /** 站点分页只显示附近几页，不能只看 lastPage 判断是否到底 */
+  hasMore: boolean
+  error?: string
+}
+
+export interface PCategoryCountResponse {
+  ok: boolean
+  /** 站点展示的数量；取不到时为空 */
+  count?: number
   error?: string
 }
 
@@ -27,6 +36,8 @@ export interface PMediaResponse {
   url?: string
   quality?: string
   isHls?: boolean
+  /** HLS 播放失败时回退的直链（站点同时给出 mp4 时） */
+  fallbackUrl?: string
   error?: string
 }
 

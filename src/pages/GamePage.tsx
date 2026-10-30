@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
-import { ChevronLeft, Copy, Download, Heart, Search } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronLeft, Copy, Download, Heart } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { EmptyState, Modal } from '../components/ui'
-import { CollectionPage } from './CollectionPage'
+import { EmptyState, LoadingBlock, Modal, ModuleShortcuts, Pagination } from '../components/ui'
+import { SearchBar } from '../components/SearchBar'
+import { loadCache, saveCache } from '../utils/cache'
 import type { GameCategory, GameDetail, GameItem } from '../shared/wygamer'
 
 interface ListCache {
@@ -15,7 +16,7 @@ interface ListCache {
   loaded: boolean
 }
 
-const cache: ListCache = {
+const EMPTY_GAME_CACHE: ListCache = {
   mode: 'home',
   categoryUrl: '',
   query: '',
@@ -25,7 +26,16 @@ const cache: ListCache = {
   loaded: false
 }
 
-let categoryCache: GameCategory[] = []
+const cache: ListCache = (() => {
+  const cached = loadCache<ListCache>('game', EMPTY_GAME_CACHE)
+  // 每次打开应用回到首页；默认列表缓存仍直接显示
+  if (cached.mode !== 'home' || cached.query || cached.page !== 1) {
+    return { ...EMPTY_GAME_CACHE }
+  }
+  return cached
+})()
+
+let categoryCache: GameCategory[] = loadCache<GameCategory[]>('game.categories', [])
 
 interface DetailState {
   game: GameDetail | null
@@ -36,14 +46,20 @@ interface DetailState {
 export function GamePage({
   onNotice,
   focusId,
-  onGoSearch
+  resetSignal,
+  onExit,
+  onOpenFavorites,
+  onOpenDownloads
 }: {
   onNotice: (text: string) => void
   focusId?: string
-  onGoSearch: () => void
+  resetSignal?: number
+  /** 从收藏进入时，详情页返回走全局上一页 */
+  onExit?: () => void
+  onOpenFavorites?: () => void
+  onOpenDownloads?: () => void
 }) {
   const { data, update } = useData()
-  const [showCollection, setShowCollection] = useState(false)
   const [categories, setCategories] = useState<GameCategory[]>(categoryCache)
   const [mode, setMode] = useState(cache.mode)
   const [categoryUrl, setCategoryUrl] = useState(cache.categoryUrl)
@@ -56,8 +72,21 @@ export function GamePage({
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<DetailState | null>(null)
   const [netdisk, setNetdisk] = useState<{ label: string; url: string } | null>(null)
+  const [showAllShots, setShowAllShots] = useState(false)
+  /** 点了分类但列表还没回来：先高亮分类并显示「请稍等」 */
+  const [pending, setPending] = useState<{ mode: ListCache['mode']; categoryUrl: string } | null>(
+    null
+  )
+  const requestSeq = useRef(0)
+
+  useEffect(() => {
+    if (resetSignal === undefined) return
+    setDetail(null)
+  }, [resetSignal])
 
   const load = async (nextMode: ListCache['mode'], nextCategory: string, nextQuery: string, nextPage: number) => {
+    const seq = ++requestSeq.current
+    setPending({ mode: nextMode, categoryUrl: nextCategory })
     setLoading(true)
     setError(null)
     const res =
@@ -66,6 +95,8 @@ export function GamePage({
         : nextMode === 'category'
           ? await window.laozheng.wygamerByCategory(nextCategory, nextPage)
           : await window.laozheng.wygamerSearch(nextQuery, nextPage)
+    if (seq !== requestSeq.current) return
+    setPending(null)
     setLoading(false)
     if (!res.ok) {
       setError(res.error ?? '加载失败')
@@ -86,6 +117,10 @@ export function GamePage({
       items: res.items,
       loaded: true
     })
+    // 只缓存首页第一页，重开应用才能立刻显示
+    if (nextMode === 'home' && !nextQuery && res.page === 1) {
+      saveCache<ListCache>('game', { ...cache })
+    }
   }
 
   useEffect(() => {
@@ -94,20 +129,29 @@ export function GamePage({
       void window.laozheng.wygamerCategories().then((res) => {
         if (!res.ok) return
         categoryCache = res.items
+        saveCache<GameCategory[]>('game.categories', res.items)
         setCategories(res.items)
       })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const loadDetail = async (id: string) => {
+  const loadDetail = async (id: string, alive?: () => boolean) => {
+    setShowAllShots(false)
     setDetail({ game: null, loading: true, error: null })
     const res = await window.laozheng.wygamerDetail(id)
+    if (alive && !alive()) return
     setDetail({ game: res.ok ? res.game : null, loading: false, error: res.ok ? null : res.error ?? '详情加载失败' })
   }
 
   useEffect(() => {
-    if (focusId) void loadDetail(focusId)
+    if (!focusId) return
+    let alive = true
+    void loadDetail(focusId, () => alive)
+    return () => {
+      alive = false
+      setDetail(null)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusId])
 
@@ -159,30 +203,6 @@ export function GamePage({
     }
   }
 
-  if (showCollection) {
-    return (
-      <>
-        <header className="page-header">
-          <h1 className="page-title">游戏</h1>
-          <span className="page-desc">已收藏的游戏（豆瓣条目）</span>
-          <div className="page-actions">
-            <button className="btn" onClick={() => setShowCollection(false)}>
-              无忧游戏库
-            </button>
-          </div>
-        </header>
-        <CollectionPage
-          category="游戏"
-          title="游戏"
-          desc="已收藏的游戏"
-          embedded
-          onNotice={onNotice}
-          onGoSearch={onGoSearch}
-        />
-      </>
-    )
-  }
-
   if (detail) {
     const game = detail.game
     const favItem: GameItem | null = game
@@ -198,7 +218,14 @@ export function GamePage({
     return (
       <>
         <header className="page-header">
-          <button className="btn ghost" onClick={() => setDetail(null)}>
+          <button
+            className="btn ghost"
+            onClick={() => {
+              // 先清掉详情再返回，避免从收藏返回后又落回详情页
+              setDetail(null)
+              if (focusId && onExit) onExit()
+            }}
+          >
             <ChevronLeft size={15} /> 返回列表
           </button>
           <h1 className="page-title">{game?.title ?? '游戏详情'}</h1>
@@ -288,10 +315,20 @@ export function GamePage({
               <section style={{ marginTop: 18 }}>
                 <h3 className="melon-heading">游戏截图</h3>
                 <div className="game-shots">
-                  {game.screenshots.map((src) => (
+                  {(showAllShots ? game.screenshots : game.screenshots.slice(0, 6)).map((src) => (
                     <img key={src} src={src} alt="" loading="lazy" />
                   ))}
                 </div>
+                {game.screenshots.length > 6 ? (
+                  <div className="detail-collapse-line">
+                    <button
+                      className="btn section-more"
+                      onClick={() => setShowAllShots((v) => !v)}
+                    >
+                      {showAllShots ? '收起' : `查看全部（${game.screenshots.length} 张）`}
+                    </button>
+                  </div>
+                ) : null}
               </section>
             ) : null}
 
@@ -347,63 +384,65 @@ export function GamePage({
   return (
     <>
       <header className="page-header">
-        <h1 className="page-title">游戏</h1>
-        <span className="page-desc">无忧游戏库 · 内置账号自动登录 · 网盘分享链接</span>
-        <div className="page-actions">
-          <button className="btn" onClick={() => setShowCollection(true)}>
-            豆瓣收藏
+        {focusId && onExit ? (
+          <button className="btn ghost" onClick={onExit}>
+            <ChevronLeft size={15} /> 返回
           </button>
+        ) : null}
+        <h1 className="page-title">游戏</h1>
+        <div className="page-actions">
+          <ModuleShortcuts onOpenFavorites={onOpenFavorites} onOpenDownloads={onOpenDownloads} />
         </div>
       </header>
 
-      <form
-        className="toolbar"
-        onSubmit={(e) => {
-          e.preventDefault()
+      <SearchBar
+        value={input}
+        onChange={setInput}
+        onSubmit={() => {
           const keyword = input.trim()
           if (keyword) void load('search', '', keyword, 1)
         }}
-      >
-        <label className="search">
-          <Search size={16} />
-          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="搜索游戏关键词…" />
-        </label>
-        <button className="btn primary" type="submit" disabled={loading}>
-          搜索
-        </button>
-        {query ? (
-          <button
-            className="btn ghost"
-            onClick={() => {
-              setInput('')
-              void load('home', '', '', 1)
-            }}
-          >
-            清除搜索
-          </button>
-        ) : null}
-      </form>
+        onCancel={() => {
+          requestSeq.current += 1
+          setLoading(false)
+        }}
+        onClear={() => {
+          setInput('')
+          void load('home', '', '', 1)
+        }}
+        searching={loading && mode === 'search'}
+        placeholder="搜索游戏关键词…"
+      />
 
       {!query && (
         <div className="toolbar">
           <button
-            className={`chip ${mode === 'home' ? 'active' : ''}`}
+            className={`chip ${
+              pending ? (pending.mode === 'home' ? 'active' : '') : mode === 'home' ? 'active' : ''
+            }`}
             onClick={() => void load('home', '', '', 1)}
           >
             最新
           </button>
-          {categories.map((c) => (
-            <button
-              key={c.url}
-              className={`chip ${mode === 'category' && categoryUrl === c.url ? 'active' : ''}`}
-              onClick={() => void load('category', c.url, '', 1)}
-            >
-              {c.name}
-              {c.count ? <span className="chip-count">{c.count}</span> : null}
-            </button>
-          ))}
+          {categories.map((c) => {
+            const active = pending
+              ? pending.mode === 'category' && pending.categoryUrl === c.url
+              : mode === 'category' && categoryUrl === c.url
+            return (
+              <button
+                key={c.url}
+                className={`chip ${active ? 'active' : ''}`}
+                onClick={() => void load('category', c.url, '', 1)}
+              >
+                {c.name}
+                {c.count ? <span className="chip-count">{c.count}</span> : null}
+              </button>
+            )
+          })}
         </div>
       )}
+
+      {loading && items.length > 0 ? <LoadingBlock text="正在切换，请稍等…" /> : null}
 
       {loading && items.length === 0 ? (
         <EmptyState title="正在加载游戏列表…" />
@@ -451,21 +490,12 @@ export function GamePage({
             ))}
           </div>
 
-          <div className="toolbar" style={{ marginTop: 14 }}>
-            <button className="btn" disabled={loading || page <= 1} onClick={() => void load(mode, categoryUrl, query, page - 1)}>
-              上一页
-            </button>
-            <span className="page-desc">
-              第 {page} 页{lastPage ? ` / 共 ${lastPage} 页` : ''}
-            </span>
-            <button
-              className="btn"
-              disabled={loading || (lastPage > 0 && page >= lastPage)}
-              onClick={() => void load(mode, categoryUrl, query, page + 1)}
-            >
-              下一页
-            </button>
-          </div>
+          <Pagination
+            page={page}
+            lastPage={lastPage}
+            disabled={loading}
+            onChange={(next) => void load(mode, categoryUrl, query, next)}
+          />
         </>
       )}
     </>

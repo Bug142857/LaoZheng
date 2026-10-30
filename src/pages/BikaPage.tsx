@@ -1,13 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Download, Heart, RefreshCw, Search } from 'lucide-react'
+import { ChevronLeft, Download, Heart } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { EmptyState } from '../components/ui'
-import {
-  BIKA_SORTS,
-  type BikaCategory,
-  type BikaChapter,
-  type BikaComic
-} from '../shared/bika'
+import { EmptyState, LoadingBlock, ConfirmDialog, ModuleShortcuts, Pagination } from '../components/ui'
+import { SearchBar } from '../components/SearchBar'
+import { ComicReader } from '../components/ComicReader'
+import { loadCache, saveCache } from '../utils/cache'
+import type { BikaCategory, BikaChapter, BikaComic } from '../shared/bika'
 
 interface ListCache {
   category: string
@@ -20,7 +18,7 @@ interface ListCache {
   loaded: boolean
 }
 
-const cache: ListCache = {
+const EMPTY_BIKA_CACHE: ListCache = {
   category: '',
   sort: 'dd',
   query: '',
@@ -30,6 +28,18 @@ const cache: ListCache = {
   categories: [],
   loaded: false
 }
+
+const cache: ListCache = (() => {
+  const cached = loadCache<ListCache>('bika', EMPTY_BIKA_CACHE)
+  // 每次打开应用回到默认分类 / 默认排序；默认列表缓存仍直接显示
+  if (cached.category || cached.query || cached.sort !== 'dd' || cached.page !== 1) {
+    return { ...EMPTY_BIKA_CACHE }
+  }
+  return cached
+})()
+
+let bikaCounts: Record<string, number> = {}
+let bikaCountsRequested = false
 
 interface DetailState {
   comic: BikaComic
@@ -46,17 +56,32 @@ interface ReaderState {
   error: string | null
 }
 
+/** 章节统一按 order 升序存放，展示时默认倒序 */
+function sortChapters(items: BikaChapter[]): BikaChapter[] {
+  return [...items].sort((a, b) => a.order - b.order)
+}
+
 export function BikaPage({
   onNotice,
-  focusId
+  focusId,
+  resetSignal,
+  onExit,
+  onOpenFavorites,
+  onOpenDownloads
 }: {
   onNotice: (text: string) => void
   focusId?: string
+  resetSignal?: number
+  /** 从收藏进入时，详情 / 阅读返回走全局上一页 */
+  onExit?: () => void
+  onOpenFavorites?: () => void
+  onOpenDownloads?: () => void
 }) {
   const { data, update } = useData()
   const [categories, setCategories] = useState<BikaCategory[]>(cache.categories)
+  const [counts, setCounts] = useState<Record<string, number>>(bikaCounts)
   const [category, setCategory] = useState(cache.category)
-  const [sort, setSort] = useState(cache.sort)
+  const [sort, setSort] = useState(cache.sort === 'vd' ? 'vd' : 'dd')
   const [query, setQuery] = useState(cache.query)
   const [input, setInput] = useState(cache.query)
   const [page, setPage] = useState(cache.page)
@@ -66,7 +91,18 @@ export function BikaPage({
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<DetailState | null>(null)
   const [reader, setReader] = useState<ReaderState | null>(null)
+  const [batch, setBatch] = useState<{ done: number; total: number } | null>(null)
+  const [confirmBatch, setConfirmBatch] = useState<BikaChapter[] | null>(null)
+  const [chapterDesc, setChapterDesc] = useState(true)
+  const [pending, setPending] = useState<{ category: string; sort: string } | null>(null)
   const readerRef = useRef<HTMLDivElement | null>(null)
+  const requestSeq = useRef(0)
+
+  useEffect(() => {
+    if (resetSignal === undefined) return
+    setDetail(null)
+    setReader(null)
+  }, [resetSignal])
 
   const load = async (
     nextCategory: string,
@@ -74,11 +110,15 @@ export function BikaPage({
     nextQuery: string,
     nextPage: number
   ) => {
+    const seq = ++requestSeq.current
+    setPending({ category: nextCategory, sort: nextSort })
     setLoading(true)
     setError(null)
     const res = nextQuery
       ? await window.laozheng.bikaSearch(nextQuery, nextPage, nextSort)
       : await window.laozheng.bikaList(nextPage, nextCategory, nextSort)
+    if (seq !== requestSeq.current) return
+    setPending(null)
     setLoading(false)
     if (!res.ok) {
       setError(res.error ?? '加载失败')
@@ -99,15 +139,28 @@ export function BikaPage({
       items: res.items,
       loaded: true
     })
+    // 只缓存默认分类 / 默认排序的第一页，重开应用才能立刻显示
+    if (!nextQuery && !nextCategory && nextSort === 'dd' && nextPage === 1) {
+      saveCache<ListCache>('bika', { ...cache })
+    }
   }
 
   useEffect(() => {
-    if (!cache.loaded) void load(cache.category, cache.sort, cache.query, 1)
+    if (!cache.loaded) void load(cache.category, sort, cache.query, 1)
     if (!cache.categories.length) {
       void window.laozheng.bikaCategories().then((res) => {
         if (!res.ok) return
         cache.categories = res.items
+        saveCache<ListCache>('bika', { ...cache })
         setCategories(res.items)
+      })
+    }
+    if (!bikaCountsRequested) {
+      bikaCountsRequested = true
+      void window.laozheng.bikaCategoryCounts().then((res) => {
+        if (!res.ok) return
+        bikaCounts = res.counts
+        setCounts(res.counts)
       })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -149,6 +202,7 @@ export function BikaPage({
   }
 
   const openDetail = async (comic: BikaComic) => {
+    setChapterDesc(true)
     setDetail({ comic, chapters: [], loading: true, error: null })
     const [detailRes, chapterRes] = await Promise.all([
       window.laozheng.bikaDetail(comic.id),
@@ -157,7 +211,7 @@ export function BikaPage({
     const merged = detailRes.ok && detailRes.comic ? detailRes.comic : comic
     setDetail({
       comic: merged,
-      chapters: chapterRes.ok ? chapterRes.items : [],
+      chapters: chapterRes.ok ? sortChapters(chapterRes.items) : [],
       loading: false,
       error: detailRes.ok
         ? chapterRes.ok
@@ -167,7 +221,8 @@ export function BikaPage({
     })
   }
 
-  const openDetailById = async (id: string) => {
+  const openDetailById = async (id: string, alive?: () => boolean) => {
+    setChapterDesc(true)
     const placeholder: BikaComic = {
       id,
       title: '本子',
@@ -189,9 +244,10 @@ export function BikaPage({
       window.laozheng.bikaDetail(id),
       window.laozheng.bikaChapters(id)
     ])
+    if (alive && !alive()) return
     setDetail({
       comic: detailRes.ok && detailRes.comic ? detailRes.comic : placeholder,
-      chapters: chapterRes.ok ? chapterRes.items : [],
+      chapters: chapterRes.ok ? sortChapters(chapterRes.items) : [],
       loading: false,
       error: detailRes.ok
         ? chapterRes.ok
@@ -202,7 +258,14 @@ export function BikaPage({
   }
 
   useEffect(() => {
-    if (focusId) void openDetailById(focusId)
+    if (!focusId) return
+    let alive = true
+    void openDetailById(focusId, () => alive)
+    return () => {
+      alive = false
+      setDetail(null)
+      setReader(null)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusId])
 
@@ -230,16 +293,50 @@ export function BikaPage({
     }
   }
 
-  const downloadChapter = async () => {
-    if (!reader || !reader.urls.length) return
-    const res = await window.laozheng.addImageDownload({
-      title: `${reader.comic.title} ${reader.chapter.title}`.slice(0, 120),
-      urls: reader.urls,
-      referer: 'https://picaapi.picacomic.com/',
-      coverUrl: reader.comic.thumb,
-      sourceName: '本子'
-    })
-    onNotice(res.ok ? '已加入下载队列，可在「下载」页查看进度' : `下载失败：${res.error}`)
+  const downloadChapters = async (chapters: BikaChapter[]) => {
+    const comic = detail?.comic
+    if (!comic || !chapters.length || batch) return
+    setBatch({ done: 0, total: chapters.length })
+    const payload: { key: string; name: string; urls: string[] }[] = []
+    try {
+      for (let i = 0; i < chapters.length; i++) {
+        const chapter = chapters[i]
+        const res = await window.laozheng.bikaImages(comic.id, chapter.order)
+        if (res.ok && res.urls.length) {
+          payload.push({ key: String(chapter.order), name: chapter.title, urls: res.urls })
+        } else {
+          onNotice(`${chapter.title} 取图失败，已跳过`)
+        }
+        setBatch({ done: i + 1, total: chapters.length })
+      }
+      if (!payload.length) {
+        onNotice('没有可下载的章节')
+        return
+      }
+      const res = await window.laozheng.addComicBatchDownload({
+        comic: {
+          source: 'bika',
+          id: comic.id,
+          title: comic.title,
+          cover: comic.thumb
+        },
+        chapters: payload,
+        referer: 'https://picaapi.picacomic.com/',
+        sourceName: '本子'
+      })
+      onNotice(
+        res.ok
+          ? `已加入下载队列（${payload.length} 话），可在「下载」页查看进度`
+          : `下载失败：${res.error}`
+      )
+    } finally {
+      setBatch(null)
+    }
+  }
+
+  const downloadChapter = () => {
+    if (!reader) return
+    setConfirmBatch([reader.chapter])
   }
 
   const stepChapter = (delta: number) => {
@@ -287,10 +384,8 @@ export function BikaPage({
             }
           />
         ) : (
-          <div className="reader">
-            {reader.urls.map((url, i) => (
-              <img key={`${url}-${i}`} src={url} alt={`第 ${i + 1} 页`} loading="lazy" />
-            ))}
+          <>
+            <ComicReader images={reader.urls} />
             <div className="reader-footer">
               <button className="btn" disabled={!hasPrev} onClick={() => stepChapter(-1)}>
                 上一话
@@ -299,26 +394,59 @@ export function BikaPage({
                 下一话
               </button>
             </div>
-          </div>
+          </>
         )}
+        {confirmBatch ? (
+          <ConfirmDialog
+            title="下载章节"
+            message={`将下载 ${confirmBatch.length} 话的图片到本地，是否继续？`}
+            confirmText="开始下载"
+            onConfirm={() => {
+              const list = confirmBatch
+              setConfirmBatch(null)
+              if (list) void downloadChapters(list)
+            }}
+            onCancel={() => setConfirmBatch(null)}
+          />
+        ) : null}
       </div>
     )
   }
 
   if (detail) {
+    const chapterList = chapterDesc ? [...detail.chapters].reverse() : detail.chapters
     return (
       <>
         <header className="page-header">
-          <button className="btn ghost" onClick={() => setDetail(null)}>
+          <button
+            className="btn ghost"
+            onClick={() => {
+              // 先清掉详情再返回，避免从收藏返回后又落回详情页
+              setDetail(null)
+              setReader(null)
+              if (focusId && onExit) onExit()
+            }}
+          >
             <ChevronLeft size={15} /> 返回列表
           </button>
           <h1 className="page-title">{detail.comic.title}</h1>
           <div className="page-actions">
+            <button className="btn ghost" onClick={() => setChapterDesc((v) => !v)}>
+              章节：{chapterDesc ? '倒序' : '正序'}
+            </button>
             {resumeChapter ? (
               <button className="btn primary" onClick={() => void openChapter(resumeChapter)}>
                 继续阅读 · {resumeChapter.title}
               </button>
             ) : null}
+            <button
+              className="btn"
+              disabled={!!batch || detail.chapters.length === 0}
+              onClick={() => setConfirmBatch(detail.chapters)}
+            >
+              <Download size={14} />{' '}
+              {batch ? `准备中 ${batch.done}/${batch.total}` : '下载整本'}
+            </button>
             <button className="btn" onClick={() => toggleFav(detail.comic)}>
               <Heart size={15} fill={favOf(detail.comic.id) ? 'currentColor' : 'none'} />{' '}
               {favOf(detail.comic.id) ? '已收藏' : '收藏'}
@@ -375,7 +503,7 @@ export function BikaPage({
           <EmptyState title="没有章节" desc="该漫画暂无可用章节。" />
         ) : (
           <div className="chapter-grid">
-            {detail.chapters.map((chapter) => (
+            {chapterList.map((chapter) => (
               <button
                 key={chapter.id}
                 className={`chapter-chip ${String(chapter.order) === progress ? 'active' : ''}`}
@@ -387,6 +515,19 @@ export function BikaPage({
             ))}
           </div>
         )}
+        {confirmBatch ? (
+          <ConfirmDialog
+            title="下载整本"
+            message={`将下载「${detail.comic.title}」共 ${confirmBatch.length} 话到本地，是否继续？`}
+            confirmText="开始下载"
+            onConfirm={() => {
+              const list = confirmBatch
+              setConfirmBatch(null)
+              if (list) void downloadChapters(list)
+            }}
+            onCancel={() => setConfirmBatch(null)}
+          />
+        ) : null}
       </>
     )
   }
@@ -394,55 +535,55 @@ export function BikaPage({
   return (
     <>
       <header className="page-header">
-        <h1 className="page-title">本子</h1>
-        <span className="page-desc">哔咔 · 内置账号自动登录 · 需要外网环境</span>
-      </header>
-
-      <form
-        className="toolbar"
-        onSubmit={(e) => {
-          e.preventDefault()
-          void load(category, sort, input.trim(), 1)
-        }}
-      >
-        <label className="search">
-          <Search size={16} />
-          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="搜索漫画关键词…" />
-        </label>
-        <button className="btn primary" type="submit" disabled={loading}>
-          搜索
-        </button>
-        {query ? (
-          <button
-            className="btn ghost"
-            onClick={() => {
-              setInput('')
-              void load(category, sort, '', 1)
-            }}
-          >
-            清除搜索
+        {focusId && onExit ? (
+          <button className="btn ghost" onClick={onExit}>
+            <ChevronLeft size={15} /> 返回
           </button>
         ) : null}
-        <button
-          className="btn ghost"
-          disabled={loading}
-          onClick={() => void load(category, sort, query, page)}
-        >
-          <RefreshCw size={14} /> 刷新
-        </button>
-      </form>
+        <h1 className="page-title">本子</h1>
+        <div className="page-actions">
+          <ModuleShortcuts onOpenFavorites={onOpenFavorites} onOpenDownloads={onOpenDownloads} />
+        </div>
+      </header>
+
+      <SearchBar
+        value={input}
+        onChange={setInput}
+        onSubmit={() => void load(category, sort, input.trim(), 1)}
+        onCancel={() => {
+          requestSeq.current += 1
+          setLoading(false)
+        }}
+        onClear={() => {
+          setInput('')
+          void load(category, sort, '', 1)
+        }}
+        searching={loading && !!query}
+        placeholder="搜索漫画关键词…"
+      />
 
       {!query && (
         <div className="toolbar">
-          <select className="select-inline" value={sort} onChange={(e) => void load(category, e.target.value, '', 1)}>
-            {BIKA_SORTS.map((s) => (
-              <option key={s.code} value={s.code}>
-                {s.label}
-              </option>
-            ))}
-          </select>
           <button
-            className={`chip ${!category ? 'active' : ''}`}
+            className={`chip ${
+              (pending ? pending.sort : sort) === 'dd' ? 'active' : ''
+            }`}
+            onClick={() => void load(category, 'dd', '', 1)}
+          >
+            最新
+          </button>
+          <button
+            className={`chip ${
+              (pending ? pending.sort : sort) === 'vd' ? 'active' : ''
+            }`}
+            onClick={() => void load(category, 'vd', '', 1)}
+          >
+            热门
+          </button>
+          <button
+            className={`chip ${
+              (pending ? pending.category : category) === '' ? 'active' : ''
+            }`}
             onClick={() => void load('', sort, '', 1)}
           >
             全部
@@ -450,16 +591,21 @@ export function BikaPage({
           {categories.map((c) => (
             <button
               key={c.id}
-              className={`chip ${category === c.title ? 'active' : ''}`}
+              className={`chip ${
+                (pending ? pending.category : category) === c.title ? 'active' : ''
+              }`}
               onClick={() => void load(c.title, sort, '', 1)}
             >
               {c.title}
+              {counts[c.title] > 0 ? <span className="chip-count">{counts[c.title]}</span> : null}
             </button>
           ))}
         </div>
       )}
 
-      {loading ? (
+      {loading && items.length > 0 ? <LoadingBlock text="正在切换，请稍等…" /> : null}
+
+      {loading && items.length === 0 ? (
         <EmptyState title="正在加载漫画列表…" desc="哔咔需要外网环境，首次加载可能稍慢。" />
       ) : error ? (
         <EmptyState
@@ -481,6 +627,17 @@ export function BikaPage({
                 <span className="comic-cover">
                   {comic.thumb ? <img src={comic.thumb} alt="" loading="lazy" /> : null}
                   {comic.finished ? <span className="comic-badge">完结</span> : null}
+                  <span
+                    className={`fav-heart ${favOf(comic.id) ? 'on' : ''}`}
+                    role="button"
+                    title={favOf(comic.id) ? '取消收藏' : '收藏'}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      toggleFav(comic)
+                    }}
+                  >
+                    <Heart size={15} fill={favOf(comic.id) ? 'currentColor' : 'none'} />
+                  </span>
                 </span>
                 <span className="comic-title">{comic.title}</span>
                 <span className="comic-sub">
@@ -490,21 +647,12 @@ export function BikaPage({
             ))}
           </div>
 
-          <div className="toolbar" style={{ marginTop: 14 }}>
-            <button className="btn" disabled={page <= 1} onClick={() => void load(category, sort, query, page - 1)}>
-              <ChevronLeft size={14} /> 上一页
-            </button>
-            <span className="page-desc">
-              第 {page} 页 / 共 {pages} 页
-            </span>
-            <button
-              className="btn"
-              disabled={page >= pages}
-              onClick={() => void load(category, sort, query, page + 1)}
-            >
-              下一页 <ChevronRight size={14} />
-            </button>
-          </div>
+          <Pagination
+            page={page}
+            lastPage={pages}
+            disabled={loading}
+            onChange={(next) => void load(category, sort, query, next)}
+          />
         </>
       )}
     </>

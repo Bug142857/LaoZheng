@@ -1,7 +1,12 @@
 import { app } from 'electron'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { parseM3u, type LiveChannelResult, type LiveSource } from '../src/shared/live'
+import {
+  parseM3u,
+  type LiveChannelResult,
+  type LiveSource,
+  type LiveTestResult
+} from '../src/shared/live'
 
 /** 电视源单独落盘（手机端也存在本地设置里，不进备份 JSON） */
 export function liveSourcesPath(): string {
@@ -98,6 +103,15 @@ export async function loadLiveChannels(source: LiveSource): Promise<LiveChannelR
         : '网络加载失败，可点重试'
     return { sourceId: source.id, sourceName: source.name, channels: [], error: message }
   }
+}
+
+/** 测试电视源：能解析出频道即有效 */
+export async function testLiveSource(source: LiveSource): Promise<LiveTestResult> {
+  const res = await loadLiveChannels(source)
+  if (res.channels.length) {
+    return { ok: true, channels: res.channels.length, message: `可用 · ${res.channels.length} 个频道` }
+  }
+  return { ok: false, channels: 0, message: res.error ?? '该源没有解析到频道' }
 }
 
 export function makeLocalSource(name: string, content: string): LiveSource {

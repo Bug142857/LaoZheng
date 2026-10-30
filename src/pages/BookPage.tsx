@@ -1,44 +1,46 @@
-import { useEffect, useState } from 'react'
-import { ChevronLeft, ChevronRight, Download, ExternalLink, Heart, LogIn, Search } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronLeft, Download, Heart } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { ConfirmDialog, EmptyState } from '../components/ui'
-import { CollectionPage } from './CollectionPage'
+import { ConfirmDialog, EmptyState, ModuleShortcuts, Pagination } from '../components/ui'
+import { SearchBar } from '../components/SearchBar'
 import { zlibBookKey, type ZlibBook, type ZlibStatusResponse } from '../shared/zlib'
-
-interface SearchCache {
-  keyword: string
-  page: number
-  totalPages: number
-  books: ZlibBook[]
-  searched: boolean
-}
-
-const cache: SearchCache = { keyword: '', page: 1, totalPages: 1, books: [], searched: false }
 
 export function BookPage({
   onNotice,
   focusId,
-  onGoSearch
+  resetSignal,
+  onExit,
+  onOpenFavorites,
+  onOpenDownloads
 }: {
   onNotice: (text: string) => void
   focusId?: string
-  onGoSearch: () => void
+  resetSignal?: number
+  /** 从收藏进入时，详情页返回走全局上一页 */
+  onExit?: () => void
+  onOpenFavorites?: () => void
+  onOpenDownloads?: () => void
 }) {
   const { data, update } = useData()
-  const [showCollection, setShowCollection] = useState(false)
   const [status, setStatus] = useState<ZlibStatusResponse | null>(null)
-  const [keyword, setKeyword] = useState(cache.keyword)
-  const [input, setInput] = useState(cache.keyword)
-  const [page, setPage] = useState(cache.page)
-  const [totalPages, setTotalPages] = useState(cache.totalPages)
-  const [books, setBooks] = useState<ZlibBook[]>(cache.books)
-  const [searched, setSearched] = useState(cache.searched)
+  // 每次打开应用都是空白搜索页；搜过的内容由主进程缓存，重复搜索会很快
+  const [keyword, setKeyword] = useState('')
+  const [input, setInput] = useState('')
+  const [page, setPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
+  const [books, setBooks] = useState<ZlibBook[]>([])
+  const [searched, setSearched] = useState(false)
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<{ book: ZlibBook | null; loading: boolean; error: string | null } | null>(null)
   const [downloading, setDownloading] = useState(false)
   const [pending, setPending] = useState<ZlibBook | null>(null)
-  const [loggingIn, setLoggingIn] = useState(false)
+  const seqRef = useRef(0)
+
+  useEffect(() => {
+    if (resetSignal === undefined) return
+    setDetail(null)
+  }, [resetSignal])
 
   const refreshStatus = async () => {
     const next = await window.laozheng.zlibStatus()
@@ -47,31 +49,32 @@ export function BookPage({
 
   useEffect(() => {
     void refreshStatus()
+    // 在设置里登录 / 退出后，图书页即使一直挂载也要同步最新登录态
+    return window.laozheng.onAccountsChanged(() => void refreshStatus())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
-    if (focusId) {
-      const [id, hash] = focusId.split('|')
-      if (id) void loadDetail(id, hash || '-')
+    if (!focusId) return
+    const [id, hash] = focusId.split('|')
+    if (!id) return
+    let alive = true
+    void loadDetail(id, hash || '-', () => alive)
+    return () => {
+      alive = false
+      setDetail(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusId])
 
-  const login = async () => {
-    setLoggingIn(true)
-    const res = await window.laozheng.zlibLogin()
-    setLoggingIn(false)
-    onNotice(res.message)
-    void refreshStatus()
-  }
-
   const doSearch = async (raw: string, nextPage: number) => {
     const kw = raw.trim()
     if (!kw || searching) return
+    const seq = ++seqRef.current
     setSearching(true)
     setError(null)
     const res = await window.laozheng.zlibSearch(kw, nextPage)
+    if (seq !== seqRef.current) return
     setSearching(false)
     setSearched(true)
     if (!res.ok) {
@@ -82,18 +85,12 @@ export function BookPage({
     setPage(res.page)
     setTotalPages(res.totalPages || 1)
     setKeyword(kw)
-    Object.assign(cache, {
-      keyword: kw,
-      page: res.page,
-      totalPages: res.totalPages || 1,
-      books: res.books,
-      searched: true
-    })
   }
 
-  const loadDetail = async (id: string, hash: string) => {
+  const loadDetail = async (id: string, hash: string, alive?: () => boolean) => {
     setDetail({ book: null, loading: true, error: null })
     const res = await window.laozheng.zlibDetail(id, hash)
+    if (alive && !alive()) return
     setDetail({
       book: res.ok ? res.book : null,
       loading: false,
@@ -149,36 +146,29 @@ export function BookPage({
     void refreshStatus()
   }
 
-  if (showCollection) {
-    return (
-      <>
-        <header className="page-header">
-          <h1 className="page-title">图书</h1>
-          <span className="page-desc">已收藏的图书（豆瓣条目）</span>
-          <div className="page-actions">
-            <button className="btn" onClick={() => setShowCollection(false)}>
-              Z-Library
-            </button>
-          </div>
-        </header>
-        <CollectionPage
-          category="图书"
-          title="图书"
-          desc="已收藏的图书"
-          embedded
-          onNotice={onNotice}
-          onGoSearch={onGoSearch}
-        />
-      </>
-    )
-  }
+  const quotaText = (() => {
+    const today = status?.downloadsToday
+    const limit = status?.downloadsLimit
+    if (today != null && limit != null) {
+      return `今日剩余额度：${Math.max(0, limit - today)} 次（已用 ${today} / ${limit}）`
+    }
+    if (today != null) return `今日已下载 ${today} 次（具体额度以站点为准）`
+    return '今日剩余额度：站点暂未返回，可到 Z-Library 账号页查看'
+  })()
 
   if (detail) {
     const book = detail.book
     return (
       <>
         <header className="page-header">
-          <button className="btn ghost" onClick={() => setDetail(null)}>
+          <button
+            className="btn ghost"
+            onClick={() => {
+              // 先清掉详情再返回，避免从收藏返回后又落回详情页
+              setDetail(null)
+              if (focusId && onExit) onExit()
+            }}
+          >
             <ChevronLeft size={15} /> 返回列表
           </button>
           <h1 className="page-title">{book?.title ?? '图书详情'}</h1>
@@ -187,11 +177,6 @@ export function BookPage({
               <button className="btn" onClick={() => toggleFav(book)}>
                 <Heart size={15} fill={favOf(book) ? 'currentColor' : 'none'} /> {favOf(book) ? '已收藏' : '收藏'}
               </button>
-              {book.readOnlineUrl ? (
-                <button className="btn" onClick={() => void window.laozheng.openExternal(book.readOnlineUrl ?? '')}>
-                  <ExternalLink size={14} /> 在线阅读
-                </button>
-              ) : null}
               <button
                 className="btn primary"
                 disabled={downloading}
@@ -239,7 +224,7 @@ export function BookPage({
         {pending ? (
           <ConfirmDialog
             title="下载图书"
-            message={`将下载《${pending.title}》到「老郑分享/图书」目录。\n下载会消耗 Z-Library 当日额度，是否继续？`}
+            message={`将下载《${pending.title}》到「老郑分享/图书」目录。\n${quotaText}。\n下载会消耗 Z-Library 当日额度，是否继续？`}
             confirmText="开始下载"
             onConfirm={() => void download()}
             onCancel={() => setPending(null)}
@@ -252,49 +237,40 @@ export function BookPage({
   return (
     <>
       <header className="page-header">
+        {focusId && onExit ? (
+          <button className="btn ghost" onClick={onExit}>
+            <ChevronLeft size={15} /> 返回
+          </button>
+        ) : null}
         <h1 className="page-title">图书</h1>
-        <span className="page-desc">
-          Z-Library · {status?.loggedIn ? `已登录（${status.host}）` : '需要登录后才能搜索与下载'}
-        </span>
         <div className="page-actions">
-          <button className="btn" onClick={() => setShowCollection(true)}>
-            豆瓣收藏
-          </button>
-          <button className="btn" disabled={loggingIn} onClick={() => void login()}>
-            <LogIn size={14} /> {loggingIn ? '请在弹出的窗口登录…' : status?.loggedIn ? '重新登录' : '登录 Z-Library'}
-          </button>
+          <ModuleShortcuts onOpenFavorites={onOpenFavorites} onOpenDownloads={onOpenDownloads} />
         </div>
       </header>
 
-      <form
-        className="toolbar"
-        onSubmit={(e) => {
-          e.preventDefault()
-          void doSearch(input, 1)
+      <SearchBar
+        value={input}
+        onChange={setInput}
+        onSubmit={() => void doSearch(input, 1)}
+        onCancel={() => {
+          seqRef.current += 1
+          setSearching(false)
         }}
-      >
-        <label className="search">
-          <Search size={16} />
-          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="搜索书名 / 作者 / ISBN…" />
-        </label>
-        <button className="btn primary" type="submit" disabled={searching || !input.trim()}>
-          {searching ? '搜索中…' : '搜索'}
-        </button>
-        {searched ? (
-          <button
-            className="btn ghost"
-            onClick={() => {
-              setInput('')
-              setSearched(false)
-              setBooks([])
-              setError(null)
-              setKeyword('')
-            }}
-          >
-            清除搜索
-          </button>
-        ) : null}
-      </form>
+        onClear={() => {
+          setInput('')
+          setSearched(false)
+          setBooks([])
+          setError(null)
+          setKeyword('')
+        }}
+        searching={searching}
+        placeholder="搜索书名 / 作者 / ISBN…"
+        extra={
+          <span className="book-quota" title={quotaText}>
+            {quotaText}
+          </span>
+        }
+      />
 
       {searching ? (
         <EmptyState title="正在搜索…" desc="首次搜索需要等站点反爬验证完成，通常几秒。" />
@@ -309,7 +285,14 @@ export function BookPage({
           }
         />
       ) : !searched ? (
-        <EmptyState title="搜索图书" desc="登录后可按书名、作者或 ISBN 搜索，并可下载到本地。" />
+        <EmptyState
+          title="搜索图书"
+          desc={
+            status?.loggedIn
+              ? '可按书名、作者或 ISBN 搜索，并可下载到本地。'
+              : '未登录时请到 配置管理 → 账号管理 → Z-Library 保存账号并打开登录窗口完成一次验证。'
+          }
+        />
       ) : books.length === 0 ? (
         <EmptyState title="没有找到图书" desc="换个关键词再试。" />
       ) : (
@@ -341,21 +324,12 @@ export function BookPage({
             ))}
           </div>
 
-          <div className="toolbar" style={{ marginTop: 14 }}>
-            <button className="btn" disabled={searching || page <= 1} onClick={() => void doSearch(keyword, page - 1)}>
-              <ChevronLeft size={14} /> 上一页
-            </button>
-            <span className="page-desc">
-              第 {page} 页{totalPages ? ` / 共 ${totalPages} 页` : ''}
-            </span>
-            <button
-              className="btn"
-              disabled={searching || (totalPages > 0 && page >= totalPages)}
-              onClick={() => void doSearch(keyword, page + 1)}
-            >
-              下一页 <ChevronRight size={14} />
-            </button>
-          </div>
+          <Pagination
+            page={page}
+            lastPage={totalPages}
+            disabled={searching}
+            onChange={(next) => void doSearch(keyword, next)}
+          />
         </>
       )}
     </>

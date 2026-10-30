@@ -49,6 +49,49 @@ export function nextId(rows: { id: number }[]): number {
   return rows.reduce((max, r) => Math.max(max, r.id), 0) + 1
 }
 
+/**
+ * 清单封面拼图：优先清单自己的 coverUrl，然后按「本清单条目 → 子清单封面 →
+ * 子清单条目 → 更深层子清单」的顺序收集，最多 4 张（与手机端内部封面拼图一致）。
+ */
+export function listCovers(data: AppData, listId: number, limit = 4): string[] {
+  const out: string[] = []
+  const push = (url: string | null | undefined): void => {
+    if (url && !out.includes(url) && out.length < limit) out.push(url)
+  }
+
+  /** 条目按新加入的排在前面（orderIndex 越大越新） */
+  const newestItems = (id: number): CollectionItem[] => {
+    const byId = new Map(data.items.map((i) => [i.id, i]))
+    return data.listItems
+      .filter((r) => r.listId === id)
+      .sort((a, b) => b.orderIndex - a.orderIndex)
+      .map((r) => byId.get(r.itemId))
+      .filter((i): i is CollectionItem => !!i)
+  }
+
+  const list = data.lists.find((l) => l.id === listId)
+  push(list?.coverUrl)
+  for (const item of newestItems(listId)) push(item.coverUrl)
+
+  const walk = (parentId: number): void => {
+    const children = childrenOf(data, parentId).sort((a, b) => b.createdAt - a.createdAt)
+    for (const child of children) {
+      push(child.coverUrl)
+      for (const item of newestItems(child.id)) push(item.coverUrl)
+      if (out.length >= limit) return
+      walk(child.id)
+      if (out.length >= limit) return
+    }
+  }
+  walk(listId)
+  return out
+}
+
+/** 兼容旧调用：取拼图的第一张 */
+export function listCover(data: AppData, listId: number): string | null {
+  return listCovers(data, listId, 1)[0] ?? null
+}
+
 /** 条目所在清单名（去重）；不在任何清单时返回空数组 */
 export function listNamesOfItem(data: AppData, itemId: number): string[] {
   const nameById = new Map(data.lists.map((l) => [l.id, l.name]))

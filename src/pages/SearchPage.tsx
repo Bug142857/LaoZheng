@@ -1,18 +1,81 @@
-import { useMemo, useState } from 'react'
-import { Plus, Search } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Plus, Trash2 } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import { listNamesOfItem, nextId } from '../utils/data'
-import { EmptyState, Modal } from '../components/ui'
+import { ConfirmDialog, EmptyState, Modal } from '../components/ui'
+import { SearchBar } from '../components/SearchBar'
+import { ItemDetail } from '../components/ItemDetail'
+import { PersonDetail, personWorkToItem } from '../components/PersonDetail'
 import {
   KIND_LABELS,
   SEARCH_CATEGORIES,
+  type PersonWork,
   type SearchCategory,
   type SubjectDetail,
   type SubjectSearchItem
 } from '../shared/douban'
 import type { CollectionItem, ItemList } from '../shared/types'
 
-export function SearchPage({ onNotice }: { onNotice: (text: string) => void }) {
+/** 已落库条目转回搜索结果结构，详情页里也能复用「加入清单」选择器 */
+function toSearchItem(item: CollectionItem): SubjectSearchItem {
+  return {
+    kind: item.category.includes('书')
+      ? 'book'
+      : item.category.includes('游戏')
+        ? 'game'
+        : item.category.includes('电影')
+          ? 'movie'
+          : 'tv',
+    id: item.doubanId,
+    title: item.title,
+    subTitle: item.subTitle,
+    year: item.year,
+    coverUrl: item.coverUrl,
+    rating: item.doubanRating,
+    intro: item.summary,
+    url: item.doubanUrl ?? ''
+  }
+}
+
+/** 搜索结果还没落库，先按条目结构转一份给详情页展示 */
+function toCollectionItem(item: SubjectSearchItem): CollectionItem {
+  return {
+    id: 0,
+    category: KIND_LABELS[item.kind],
+    doubanId: item.id,
+    title: item.title,
+    subTitle: item.subTitle,
+    year: item.year,
+    doubanRating: item.rating,
+    coverUrl: item.coverUrl,
+    summary: item.intro,
+    info: '',
+    directors: '',
+    casts: '',
+    genres: '',
+    doubanUrl: item.url,
+    status: '',
+    myRating: 0,
+    note: '',
+    createdAt: 0,
+    updatedAt: 0
+  }
+}
+
+export function SearchPage({
+  onNotice,
+  embedded = false,
+  onImmersiveChange,
+  resetSignal
+}: {
+  onNotice: (text: string) => void
+  /** 嵌在「清单」页里时不再重复页面标题 */
+  embedded?: boolean
+  /** 详情 / 人物页打开时通知外层隐藏「我的清单」等列表内容 */
+  onImmersiveChange?: (open: boolean) => void
+  /** 点侧栏重新进入清单时关闭详情页 */
+  resetSignal?: number
+}) {
   const { data, update } = useData()
   const [category, setCategory] = useState<SearchCategory>('video')
   const [query, setQuery] = useState('')
@@ -24,6 +87,33 @@ export function SearchPage({ onNotice }: { onNotice: (text: string) => void }) {
   const [searched, setSearched] = useState(false)
   const [pending, setPending] = useState<SubjectSearchItem | null>(null)
   const [busyKey, setBusyKey] = useState<string | null>(null)
+  const [detail, setDetail] = useState<CollectionItem | null>(null)
+  /** 详情从哪条搜索结果打开：加入清单时复用原结果 */
+  const [detailSource, setDetailSource] = useState<SubjectSearchItem | null>(null)
+  const [removingDetail, setRemovingDetail] = useState<CollectionItem | null>(null)
+  const [personDetail, setPersonDetail] = useState<{
+    id: string
+    name: string
+    avatar: string | null
+  } | null>(null)
+  /** 人物页里点开的作品详情 */
+  const [personWork, setPersonWork] = useState<PersonWork | null>(null)
+  const seqRef = useRef(0)
+
+  const immersive = !!detail || !!personDetail || !!personWork
+  useEffect(() => {
+    onImmersiveChange?.(immersive)
+  }, [immersive, onImmersiveChange])
+  useEffect(() => () => onImmersiveChange?.(false), [onImmersiveChange])
+
+  useEffect(() => {
+    if (resetSignal === undefined) return
+    setDetail(null)
+    setDetailSource(null)
+    setPersonDetail(null)
+    setPersonWork(null)
+    setRemovingDetail(null)
+  }, [resetSignal])
 
   /** (category|doubanId) → 所在清单名；存在但空数组表示已收藏但不在清单里 */
   const savedMap = useMemo(() => {
@@ -64,6 +154,7 @@ export function SearchPage({ onNotice }: { onNotice: (text: string) => void }) {
   const runSearch = async () => {
     const q = query.trim()
     if (!q || loading) return
+    const seq = ++seqRef.current
     setLoading(true)
     setSearched(true)
     setError(null)
@@ -71,6 +162,7 @@ export function SearchPage({ onNotice }: { onNotice: (text: string) => void }) {
     setItems([])
     try {
       const res = await window.laozheng.searchSubjects(category, q)
+      if (seq !== seqRef.current) return
       if (!res.ok) {
         setError(res.error ?? '搜索失败，请稍后重试')
         return
@@ -79,9 +171,10 @@ export function SearchPage({ onNotice }: { onNotice: (text: string) => void }) {
       setWarning(res.warning ?? null)
       setSubmitted(q)
     } catch (err) {
+      if (seq !== seqRef.current) return
       setError((err as Error).message)
     } finally {
-      setLoading(false)
+      if (seq === seqRef.current) setLoading(false)
     }
   }
 
@@ -179,14 +272,164 @@ export function SearchPage({ onNotice }: { onNotice: (text: string) => void }) {
     return names.length > 0 ? `已收藏在「${names.join('、')}」` : '已收藏'
   }
 
+  /** 详情里的条目是否已经落库（收藏过） */
+  const savedItemOf = (item: CollectionItem): CollectionItem | undefined =>
+    data.items.find((row) => row.category === item.category && row.doubanId === item.doubanId)
+
+  /** 取消收藏：从所有清单移除，并删掉条目本身 */
+  const removeCollected = () => {
+    const target = removingDetail
+    if (!target) return
+    update((d) => ({
+      ...d,
+      listItems: d.listItems.filter((r) => r.itemId !== target.id),
+      items: d.items.filter((i) => i.id !== target.id)
+    }))
+    setRemovingDetail(null)
+    onNotice(`已从清单移除「${target.title}」`)
+  }
+
+  const listPicker = pending ? (
+    <Modal
+      title={`加入清单 · ${pending.title}`}
+      onClose={() => setPending(null)}
+      footer={
+        <button className="btn ghost" onClick={() => setPending(null)}>
+          取消
+        </button>
+      }
+    >
+      {listOptions.length === 0 ? (
+        <p>还没有清单，先到「清单」页新建一个再回来。</p>
+      ) : (
+        <div className="list-picker">
+          {listOptions.map(({ list, depth }) => (
+            <button
+              key={list.id}
+              className="list-option"
+              style={{ paddingLeft: 10 + depth * 18 }}
+              onClick={() => void addToList(list.id, list.name)}
+            >
+              <span>{list.name}</span>
+              {depth > 0 ? <span className="sub">子清单</span> : null}
+            </button>
+          ))}
+        </div>
+      )}
+    </Modal>
+  ) : null
+
+  const removeConfirm = removingDetail ? (
+    <ConfirmDialog
+      title="从清单移除"
+      message={`确定把「${removingDetail.title}」从所有清单中移除吗？会同时删除这条收藏（片源与清单本身不受影响）。`}
+      confirmText="移除"
+      danger
+      onConfirm={removeCollected}
+      onCancel={() => setRemovingDetail(null)}
+    />
+  ) : null
+
+  if (personWork) {
+    const workItem = personWorkToItem(personWork)
+    const collected = savedItemOf(workItem)
+    return (
+      <>
+        <ItemDetail
+          item={workItem}
+          onBack={() => setPersonWork(null)}
+          onNotice={onNotice}
+          actions={
+            collected ? (
+              <button className="btn danger" onClick={() => setRemovingDetail(collected)}>
+                <Trash2 size={14} /> 从清单移除
+              </button>
+            ) : (
+              <button
+                className="btn primary"
+                onClick={() => setPending(toSearchItem(workItem))}
+              >
+                <Plus size={14} /> 加入清单
+              </button>
+            )
+          }
+        />
+        {listPicker}
+        {removeConfirm}
+      </>
+    )
+  }
+
+  if (personDetail) {
+    return (
+      <PersonDetail
+        personId={personDetail.id}
+        fallbackName={personDetail.name}
+        fallbackAvatar={personDetail.avatar}
+        onBack={() => {
+          setPersonDetail(null)
+          setPersonWork(null)
+        }}
+        onOpenWork={(work) => setPersonWork(work)}
+      />
+    )
+  }
+
+  if (detail) {
+    const collected = savedItemOf(detail)
+    const names = collected ? listNamesOfItem(data, collected.id) : []
+    return (
+      <>
+        <ItemDetail
+          item={detail}
+          onBack={() => {
+            setDetail(null)
+            setDetailSource(null)
+          }}
+          onNotice={onNotice}
+          actions={
+            collected ? (
+              <>
+                <span className="page-desc">
+                  {names.length ? `已收藏在「${names.join('、')}」` : '已收藏'}
+                </span>
+                <button className="btn danger" onClick={() => setRemovingDetail(collected)}>
+                  <Trash2 size={14} /> 从清单移除
+                </button>
+              </>
+            ) : (
+              <button
+                className="btn primary"
+                onClick={() => setPending(detailSource ?? toSearchItem(detail))}
+              >
+                <Plus size={14} /> 加入清单
+              </button>
+            )
+          }
+        />
+        {listPicker}
+        {removeConfirm}
+      </>
+    )
+  }
+
+  const openResult = (item: SubjectSearchItem) => {
+    if (item.kind === 'person') {
+      setPersonWork(null)
+      setPersonDetail({ id: item.id, name: item.title, avatar: item.coverUrl })
+      return
+    }
+    setDetailSource(item)
+    setDetail(toCollectionItem(item))
+  }
+
   return (
     <>
-      <header className="page-header">
-        <h1 className="page-title">搜索</h1>
-        <span className="page-desc">
-          影视 / 图书 / 游戏 / 人物 · 搜索结果可加入清单，条目与手机端互通
-        </span>
-      </header>
+      {embedded ? null : (
+        <header className="page-header">
+          <h1 className="page-title">搜索</h1>
+        </header>
+      )}
 
       <div className="toolbar">
         {SEARCH_CATEGORIES.map((c) => (
@@ -200,25 +443,24 @@ export function SearchPage({ onNotice }: { onNotice: (text: string) => void }) {
         ))}
       </div>
 
-      <form
-        className="toolbar"
-        onSubmit={(e) => {
-          e.preventDefault()
-          void runSearch()
+      <SearchBar
+        value={query}
+        onChange={setQuery}
+        onSubmit={() => void runSearch()}
+        onCancel={() => {
+          seqRef.current += 1
+          setLoading(false)
         }}
-      >
-        <label className="search">
-          <Search size={16} />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={`在「${SEARCH_CATEGORIES.find((c) => c.key === category)?.label}」分类下搜索…`}
-          />
-        </label>
-        <button className="btn primary" type="submit" disabled={!query.trim() || loading}>
-          {loading ? '搜索中…' : '搜索'}
-        </button>
-      </form>
+        onClear={() => {
+          setQuery('')
+          setItems([])
+          setSearched(false)
+          setError(null)
+          setWarning(null)
+        }}
+        searching={loading}
+        placeholder={`在「${SEARCH_CATEGORIES.find((c) => c.key === category)?.label}」分类下搜索…`}
+      />
 
       {warning ? <div className="result-hint">{warning}</div> : null}
 
@@ -252,7 +494,7 @@ export function SearchPage({ onNotice }: { onNotice: (text: string) => void }) {
               const saved = savedLabel(item)
               const isPerson = item.kind === 'person'
               return (
-                <div key={key} className="row">
+                <div key={key} className="row clickable" onClick={() => openResult(item)}>
                   <div className="row-cover">
                     {item.coverUrl ? (
                       <img src={item.coverUrl} alt="" loading="lazy" />
@@ -279,7 +521,10 @@ export function SearchPage({ onNotice }: { onNotice: (text: string) => void }) {
                     <button
                       className="btn"
                       disabled={busyKey !== null}
-                      onClick={() => setPending(item)}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setPending(item)
+                      }}
                     >
                       <Plus size={14} />
                       {busyKey === key ? '加入中…' : '加入清单'}
@@ -292,35 +537,8 @@ export function SearchPage({ onNotice }: { onNotice: (text: string) => void }) {
         </>
       )}
 
-      {pending && (
-        <Modal
-          title={`加入清单 · ${pending.title}`}
-          onClose={() => setPending(null)}
-          footer={
-            <button className="btn ghost" onClick={() => setPending(null)}>
-              取消
-            </button>
-          }
-        >
-          {listOptions.length === 0 ? (
-            <p>还没有清单，先到「清单」页新建一个再回来。</p>
-          ) : (
-            <div className="list-picker">
-              {listOptions.map(({ list, depth }) => (
-                <button
-                  key={list.id}
-                  className="list-option"
-                  style={{ paddingLeft: 10 + depth * 18 }}
-                  onClick={() => void addToList(list.id, list.name)}
-                >
-                  <span>{list.name}</span>
-                  {depth > 0 ? <span className="sub">子清单</span> : null}
-                </button>
-              ))}
-            </div>
-          )}
-        </Modal>
-      )}
+      {listPicker}
+      {removeConfirm}
     </>
   )
 }

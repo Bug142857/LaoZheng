@@ -6,6 +6,8 @@ export interface KomiicAuthor {
 export interface KomiicCategory {
   id: string
   name: string
+  /** 该分类下的漫画数量（站点 allCategory 直接返回） */
+  count: number
 }
 
 export interface KomiicComic {

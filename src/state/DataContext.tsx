@@ -9,6 +9,7 @@ import {
 } from 'react'
 import type { AppData } from '../shared/types'
 import { EMPTY_DATA } from '../shared/types'
+import { applyUiSettings } from '../utils/theme'
 
 type SaveState = 'idle' | 'saving' | 'saved'
 
@@ -28,6 +29,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const dataRef = useRef<AppData>(EMPTY_DATA)
   const timerRef = useRef<number | null>(null)
+  /** 有改动还没写进 data.json（退出前需要同步落盘） */
+  const dirtyRef = useRef(false)
+  /** 串行保存：避免慢的先发后到，把新数据覆盖成旧数据 */
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve())
 
   useEffect(() => {
     let alive = true
@@ -44,9 +49,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const flush = useCallback((next: AppData) => {
     setSaveState('saving')
-    window.laozheng
-      .saveData(next)
-      .then(() => setSaveState('saved'))
+    saveChainRef.current = saveChainRef.current
+      .catch(() => undefined)
+      .then(() => window.laozheng.saveData(next))
+      .then(() => {
+        if (dataRef.current === next) dirtyRef.current = false
+        setSaveState('saved')
+      })
       .catch((err) => {
         console.error('[data] 保存失败', err)
         setSaveState('idle')
@@ -69,6 +78,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     (fn: (data: AppData) => AppData) => {
       const next = fn(dataRef.current)
       dataRef.current = next
+      dirtyRef.current = true
       setData(next)
       scheduleSave(next)
     },
@@ -78,11 +88,37 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const replaceData = useCallback(
     (next: AppData) => {
       dataRef.current = next
+      dirtyRef.current = true
       setData(next)
       flush(next)
+      // 导入 / 云恢复：把电视源、下载记录、本机设置一起写回，并立即应用新主题
+      void window.laozheng
+        .applyBackupExtras(next)
+        .then(() => window.laozheng.getUiSettings())
+        .then((settings) => applyUiSettings(settings))
+        .catch((err) => console.error('[data] 恢复扩展数据失败', err))
     },
     [flush]
   )
+
+  // 关闭窗口前同步落盘，避免防抖队列里的最后一次修改丢失
+  useEffect(() => {
+    const flushSync = (): void => {
+      if (timerRef.current != null) {
+        window.clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
+      if (!dirtyRef.current) return
+      try {
+        window.laozheng.saveDataSync(dataRef.current)
+        dirtyRef.current = false
+      } catch (err) {
+        console.error('[data] 退出前同步保存失败', err)
+      }
+    }
+    window.addEventListener('beforeunload', flushSync)
+    return () => window.removeEventListener('beforeunload', flushSync)
+  }, [])
 
   return (
     <DataContext.Provider value={{ data, ready, saveState, update, replaceData }}>

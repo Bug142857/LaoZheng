@@ -1,37 +1,61 @@
 import { useMemo, useState } from 'react'
-import { ChevronLeft, Pencil, Plus, Trash2 } from 'lucide-react'
-import type { ItemList } from '../shared/types'
+import { ChevronLeft, Grid2X2, List, Pencil, Plus, Search, Star, Trash2, X } from 'lucide-react'
+import type { CollectionItem, ItemList } from '../shared/types'
 import { useData } from '../state/DataContext'
 import {
   childrenOf,
   countItems,
   descendantIds,
   itemsOf,
-  nextId,
-  tileGradient
+  listCovers,
+  nextId
 } from '../utils/data'
-import { ConfirmDialog, EmptyState, PromptDialog } from '../components/ui'
+import { ConfirmDialog, EmptyState, ListCoverMosaic, PromptDialog } from '../components/ui'
+import { ItemDetail } from '../components/ItemDetail'
+
+type ViewMode = 'grid' | 'list'
 
 export function ListDetailPage({
   listId,
   onBack,
   onOpenList,
-  onNotice
+  onNotice,
+  onWatch
 }: {
   listId: number
   onBack: () => void
   onOpenList: (id: number) => void
   onNotice: (text: string) => void
+  onWatch?: (title: string) => void
 }) {
   const { data, update } = useData()
   const [renaming, setRenaming] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [creatingChild, setCreatingChild] = useState(false)
   const [removing, setRemoving] = useState<number | null>(null)
+  const [view, setView] = useState<ViewMode>('grid')
+  const [detail, setDetail] = useState<CollectionItem | null>(null)
+  const [query, setQuery] = useState('')
 
   const list = data.lists.find((l) => l.id === listId)
   const children = useMemo(() => childrenOf(data, listId), [data, listId])
   const items = useMemo(() => itemsOf(data, listId), [data, listId])
+  const keyword = query.trim().toLowerCase()
+  const visibleChildren = useMemo(
+    () => (keyword ? children.filter((c) => c.name.toLowerCase().includes(keyword)) : children),
+    [children, keyword]
+  )
+  const visibleItems = useMemo(
+    () =>
+      keyword
+        ? items.filter((item) =>
+            [item.title, item.subTitle, item.category, item.year]
+              .filter(Boolean)
+              .some((text) => text!.toLowerCase().includes(keyword))
+          )
+        : items,
+    [items, keyword]
+  )
 
   if (!list) {
     return (
@@ -94,84 +118,12 @@ export function ListDetailPage({
       listItems: d.listItems.filter((r) => !(r.listId === listId && r.itemId === itemId))
     }))
     setRemoving(null)
+    setDetail(null)
   }
 
-  return (
+  /** 弹窗放在两个分支外面，否则详情页里点「从清单移除」要等返回后才弹出 */
+  const dialogs = (
     <>
-      <header className="page-header">
-        <button className="btn ghost" onClick={onBack}>
-          <ChevronLeft size={15} /> 清单
-        </button>
-        <h1 className="page-title">{list.name}</h1>
-        <span className="page-desc">
-          {countItems(data, list.id)} 件 · 含子清单
-        </span>
-        <div className="page-actions">
-          <button className="btn" onClick={() => setCreatingChild(true)}>
-            <Plus size={15} /> 子清单
-          </button>
-          <button className="btn" onClick={() => setRenaming(true)}>
-            <Pencil size={15} /> 重命名
-          </button>
-          <button className="btn danger" onClick={() => setDeleting(true)}>
-            <Trash2 size={15} /> 删除
-          </button>
-        </div>
-      </header>
-
-      {children.length > 0 && (
-        <div className="tile-grid" style={{ marginBottom: 16 }}>
-          {children.map((child: ItemList) => (
-            <div key={child.id} className="tile" onClick={() => onOpenList(child.id)}>
-              <span className="tile-cover" style={{ background: tileGradient(child.name) }}>
-                {child.name.slice(0, 4)}
-              </span>
-              <span style={{ minWidth: 0 }}>
-                <div className="tile-name">{child.name}</div>
-                <div className="tile-meta">{countItems(data, child.id)} 件</div>
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {items.length === 0 ? (
-        <EmptyState
-          title="这个清单还没有条目"
-          desc="条目来自手机端的搜索收藏；PC 端搜索模块接入后会支持在这里直接添加。"
-        />
-      ) : (
-        <div className="rows">
-          {items.map((item) => (
-            <div key={item.id} className="row">
-              <div className="row-cover">
-                {item.coverUrl ? (
-                  <img src={item.coverUrl} alt="" loading="lazy" />
-                ) : (
-                  (item.category || '条目').slice(0, 2)
-                )}
-              </div>
-              <div className="row-main">
-                <div className="row-title">{item.title || '未命名条目'}</div>
-                <div className="row-meta">
-                  {[item.subTitle, item.year, item.doubanRating ? `评分 ${item.doubanRating}` : '']
-                    .filter(Boolean)
-                    .join(' · ') || item.category || '—'}
-                </div>
-              </div>
-              {item.status ? <span className="badge">{item.status}</span> : null}
-              <button
-                className="icon-btn danger"
-                title="从清单移除"
-                onClick={() => setRemoving(item.id)}
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
       {renaming && (
         <PromptDialog
           title="重命名清单"
@@ -213,6 +165,205 @@ export function ListDetailPage({
           onCancel={() => setRemoving(null)}
         />
       )}
+    </>
+  )
+
+  if (detail) {
+    return (
+      <>
+        <ItemDetail
+          item={detail}
+          onBack={() => setDetail(null)}
+          onNotice={onNotice}
+          onWatch={onWatch}
+          actions={
+            <button className="btn danger" onClick={() => setRemoving(detail.id)}>
+              <Trash2 size={14} /> 从清单移除
+            </button>
+          }
+        />
+        {dialogs}
+      </>
+    )
+  }
+
+  const childCard = (child: ItemList) => {
+    const covers = listCovers(data, child.id)
+    return (
+      <div
+        key={`child-${child.id}`}
+        className="item-card"
+        role="button"
+        tabIndex={0}
+        onClick={() => onOpenList(child.id)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') onOpenList(child.id)
+        }}
+      >
+        <ListCoverMosaic covers={covers} name={child.name} className="item-card-cover" />
+        <span className="item-card-main">
+          <span className="item-card-title">{child.name}</span>
+          <span className="item-card-meta">子清单 · {countItems(data, child.id)} 件</span>
+        </span>
+      </div>
+    )
+  }
+
+  const itemCard = (item: CollectionItem) => (
+    <div
+      key={`item-${item.id}`}
+      className="item-card"
+      role="button"
+      tabIndex={0}
+      onClick={() => setDetail(item)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') setDetail(item)
+      }}
+    >
+      <span className="item-card-cover">
+        {item.coverUrl ? (
+          <img src={item.coverUrl} alt="" loading="lazy" />
+        ) : (
+          (item.category || '条目').slice(0, 2)
+        )}
+      </span>
+      <span className="item-card-main">
+        <span className="item-card-title">{item.title || '未命名条目'}</span>
+        <span className="item-card-meta">
+          {[item.category, item.year].filter(Boolean).join(' · ') || item.subTitle || '—'}
+        </span>
+        {item.doubanRating ? (
+          <span className="item-card-rating">
+            <Star size={11} fill="#f5c518" stroke="#f5c518" /> {item.doubanRating.toFixed(1)}
+          </span>
+        ) : null}
+      </span>
+      <button
+        className="icon-btn danger item-card-remove"
+        title="从清单移除"
+        onClick={(e) => {
+          e.stopPropagation()
+          setRemoving(item.id)
+        }}
+      >
+        <Trash2 size={13} />
+      </button>
+    </div>
+  )
+
+  return (
+    <>
+      <header className="page-header">
+        <button className="btn ghost" onClick={onBack}>
+          <ChevronLeft size={15} /> 清单
+        </button>
+        <h1 className="page-title">{list.name}</h1>
+        <div className="page-actions">
+          <div className="view-toggle">
+            <button
+              className={`icon-btn ${view === 'grid' ? 'active' : ''}`}
+              title="网格显示"
+              onClick={() => setView('grid')}
+            >
+              <Grid2X2 size={15} />
+            </button>
+            <button
+              className={`icon-btn ${view === 'list' ? 'active' : ''}`}
+              title="列表显示"
+              onClick={() => setView('list')}
+            >
+              <List size={15} />
+            </button>
+          </div>
+          <button className="btn" onClick={() => setCreatingChild(true)}>
+            <Plus size={15} /> 子清单
+          </button>
+          <button className="btn" onClick={() => setRenaming(true)}>
+            <Pencil size={15} /> 重命名
+          </button>
+          <button className="btn danger" onClick={() => setDeleting(true)}>
+            <Trash2 size={15} /> 删除
+          </button>
+        </div>
+      </header>
+
+      <div className="toolbar">
+        <label className="search">
+          <Search size={16} />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={`在「${list.name}」里搜索条目或子清单…`}
+          />
+          {query ? (
+            <button type="button" className="search-clear" title="清空搜索" onClick={() => setQuery('')}>
+              <X size={14} />
+            </button>
+          ) : null}
+        </label>
+      </div>
+
+      {children.length === 0 && items.length === 0 ? null : keyword &&
+        visibleChildren.length === 0 &&
+        visibleItems.length === 0 ? (
+        <EmptyState title="没有找到匹配的条目" desc="换个关键词再试。" />
+      ) : view === 'grid' ? (
+        <div className="item-grid">
+          {visibleChildren.map(childCard)}
+          {visibleItems.map(itemCard)}
+        </div>
+      ) : (
+        <div className="rows">
+          {visibleChildren.map((child) => (
+            <div key={`child-${child.id}`} className="row clickable" onClick={() => onOpenList(child.id)}>
+              <ListCoverMosaic
+                covers={listCovers(data, child.id)}
+                name={child.name}
+                className="row-cover"
+              />
+              <div className="row-main">
+                <div className="row-title">{child.name}</div>
+                <div className="row-meta">子清单 · {countItems(data, child.id)} 件</div>
+              </div>
+            </div>
+          ))}
+          {visibleItems.map((item) => (
+            <div
+              key={`item-${item.id}`}
+              className="row clickable"
+              onClick={() => setDetail(item)}
+            >
+              <div className="row-cover">
+                {item.coverUrl ? (
+                  <img src={item.coverUrl} alt="" loading="lazy" />
+                ) : (
+                  (item.category || '条目').slice(0, 2)
+                )}
+              </div>
+              <div className="row-main">
+                <div className="row-title">{item.title || '未命名条目'}</div>
+                <div className="row-meta">
+                  {[item.subTitle, item.year, item.doubanRating ? `评分 ${item.doubanRating}` : '']
+                    .filter(Boolean)
+                    .join(' · ') || item.category || '—'}
+                </div>
+              </div>
+              <button
+                className="icon-btn danger"
+                title="从清单移除"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setRemoving(item.id)
+                }}
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {dialogs}
     </>
   )
 }
