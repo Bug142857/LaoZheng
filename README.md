@@ -70,7 +70,7 @@ npm run dist
 
 - 触发：推送 `v*` tag，或手动 `workflow_dispatch`（可填 tag 补传）。
 - 产物：`LaoZheng-<版本>-Setup.exe`，同时作为 Actions artifact 保留一份。
-- 内置账号种子不进仓库：首次需要在 **Settings → Secrets and variables → Actions → New repository secret** 添加 `ACCOUNTS_SEED`，值为本机 `.secrets/accounts.json` 的完整 JSON；未配置时也能构建，但安装包不会内置哔咔 / Komiic / 无忧账号（日志会给出警告）。
+- 内置账号种子不进仓库：本仓库已配置 Actions Secret `ACCOUNTS_SEED`（值为本机 `.secrets/accounts.json` 的完整 JSON）；换仓库或重新初始化时需要到 **Settings → Secrets and variables → Actions → New repository secret** 重新添加。未配置时也能构建，但安装包不会内置哔咔 / Komiic / 无忧账号（日志会给出警告）。
 - 本地仍可 `npm run dist` 生成 `release/老郑分享 Setup <版本>.exe` 用于测试。
 
 ## 开发
