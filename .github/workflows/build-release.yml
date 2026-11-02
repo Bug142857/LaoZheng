@@ -1,0 +1,93 @@
+name: Build Windows installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要补传安装包的 tag（例如 v0.51；留空只生成 Actions artifact）'
+        required: false
+        type: string
+
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # 内置账号种子不进仓库：从 Actions Secret 写入 .secrets/accounts.json
+      - name: Prepare built-in accounts seed
+        shell: pwsh
+        env:
+          ACCOUNTS_SEED: ${{ secrets.ACCOUNTS_SEED }}
+        run: |
+          New-Item -ItemType Directory -Force .secrets | Out-Null
+          $seed = $env:ACCOUNTS_SEED
+          if ([string]::IsNullOrWhiteSpace($seed)) {
+            Write-Host "::warning title=ACCOUNTS_SEED 未配置::安装包不会内置哔咔 / Komiic / 无忧账号"
+            $seed = '{}'
+          }
+          $path = Join-Path $PWD.Path '.secrets/accounts.json'
+          [System.IO.File]::WriteAllText($path, $seed, (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: Build installer
+        run: npm run dist
+
+      - name: Prepare release asset
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $version = $pkg.version -replace '\.0$', ''
+          $source = "release/老郑分享 Setup $version.exe"
+          if (!(Test-Path $source)) { throw "installer not found: $source" }
+          $target = "release/LaoZheng-$version-Setup.exe"
+          Copy-Item $source $target -Force
+          $hash = (Get-FileHash $target -Algorithm SHA256).Hash
+          "ASSET=$target" >> $env:GITHUB_ENV
+          "VERSION=$version" >> $env:GITHUB_ENV
+          "SHA256=$hash" >> $env:GITHUB_ENV
+          Write-Host "asset: $target"
+          Write-Host "sha256: $hash"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Laozheng-Windows-${{ env.VERSION }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+      # 推 v* tag 时自动建 Release 并上传；也可手动 dispatch 补传已存在的 Release
+      - name: Upload to GitHub Release
+        if: ${{ github.ref_type == 'tag' || inputs.tag != '' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+        run: |
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:TAG --title $env:TAG --notes "自动构建：$env:TAG"
+          }
+          gh release upload $env:TAG $env:ASSET --clobber
+          Write-Host "uploaded $env:ASSET to $env:TAG"

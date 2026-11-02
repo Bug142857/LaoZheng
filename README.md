@@ -60,8 +60,18 @@ npm run dist
 
 - 当前版本 **v0.51**。以后每次修改版本号 **+1**：`0.51 → 0.52 → 0.53 …`，即使不上传 GitHub 也照样递增。
 - `package.json` 内部使用三段式（`0.51.0 / 0.52.0 / …`）；应用内显示、安装包文件名、tag 与 Release 一律去掉末尾 `.0`（`v0.51 / v0.52`），由 `main.ts` 的 `displayVersion()` 统一转换。
-- 发版流程：`npm run dist` 生成 `release/老郑分享 Setup <版本>.exe` → 提交代码 → 打 tag → 推送 → 创建 GitHub Release 并上传安装包。
+- 发版流程：改好代码与版本号 → 提交推送 → 打 `v*` tag 并推送。**GitHub Actions 会自动构建 Windows 安装包并上传到对应 Release**，不需要本地打包或手动传 100MB 文件。
+- 也可以在 Actions 页面手动运行 `Build Windows installer`，填写要补传的 tag（例如 `v0.51`）即可补传安装包。
 - GitHub Release 说明必须用 UTF-8 写入，避免中文乱码。
+
+### 自动构建（GitHub Actions）
+
+工作流：[`.github/workflows/build-release.yml`](.github/workflows/build-release.yml)
+
+- 触发：推送 `v*` tag，或手动 `workflow_dispatch`（可填 tag 补传）。
+- 产物：`LaoZheng-<版本>-Setup.exe`，同时作为 Actions artifact 保留一份。
+- 内置账号种子不进仓库：首次需要在 **Settings → Secrets and variables → Actions → New repository secret** 添加 `ACCOUNTS_SEED`，值为本机 `.secrets/accounts.json` 的完整 JSON；未配置时也能构建，但安装包不会内置哔咔 / Komiic / 无忧账号（日志会给出警告）。
+- 本地仍可 `npm run dist` 生成 `release/老郑分享 Setup <版本>.exe` 用于测试。
 
 ## 开发
 
