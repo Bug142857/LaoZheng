@@ -157,12 +157,6 @@ liveSources / downloads / magnetSources / magnetSearch / dramaSources / settings
 
 `.secrets/` 已加入 `.gitignore`，请勿提交。
 
-## 路线图
-
-1. 安装包代码签名（需证书）与自动更新清单补 `exe` 直链；
-2. 音乐更多音源（当前 mvmp3 主源 + 33ve 兜底）；
-3. 已下载漫画在模块内离线阅读。
-
 ## 项目记忆
 
 `docs/AI_PROJECT_MEMORY.md` 是本仓库的上下文入口：上半部分为 PC 端工程约定，下半部分原样保留手机端历史记忆，便于在新环境中继续开发。
