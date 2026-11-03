@@ -97,9 +97,12 @@ export function BikaPage({
   const [pending, setPending] = useState<{ category: string; sort: string } | null>(null)
   const readerRef = useRef<HTMLDivElement | null>(null)
   const requestSeq = useRef(0)
+  /** 只应用最后一次章节取图结果，避免返回后旧请求又把阅读器打开 */
+  const chapterSeq = useRef(0)
 
   useEffect(() => {
     if (resetSignal === undefined) return
+    chapterSeq.current += 1
     setDetail(null)
     setReader(null)
   }, [resetSignal])
@@ -263,6 +266,7 @@ export function BikaPage({
     void openDetailById(focusId, () => alive)
     return () => {
       alive = false
+      chapterSeq.current += 1
       setDetail(null)
       setReader(null)
     }
@@ -276,8 +280,10 @@ export function BikaPage({
   const openChapter = async (chapter: BikaChapter) => {
     const comic = detail?.comic
     if (!comic) return
+    const seq = ++chapterSeq.current
     setReader({ comic, chapter, urls: [], loading: true, error: null })
     const res = await window.laozheng.bikaImages(comic.id, chapter.order)
+    if (seq !== chapterSeq.current) return
     setReader({
       comic,
       chapter,
@@ -291,6 +297,11 @@ export function BikaPage({
         readProgress: { ...d.readProgress, [progressKey(comic.id)]: String(chapter.order) }
       }))
     }
+  }
+
+  const closeReader = () => {
+    chapterSeq.current += 1
+    setReader(null)
   }
 
   const downloadChapters = async (chapters: BikaChapter[]) => {
@@ -353,7 +364,7 @@ export function BikaPage({
     return (
       <div ref={readerRef}>
         <header className="page-header">
-          <button className="btn ghost" onClick={() => setReader(null)}>
+          <button className="btn ghost" onClick={closeReader}>
             <ChevronLeft size={15} /> 返回章节
           </button>
           <h1 className="page-title">{reader.comic.title}</h1>
@@ -422,6 +433,7 @@ export function BikaPage({
             className="btn ghost"
             onClick={() => {
               // 先清掉详情再返回，避免从收藏返回后又落回详情页
+              chapterSeq.current += 1
               setDetail(null)
               setReader(null)
               if (focusId && onExit) onExit()

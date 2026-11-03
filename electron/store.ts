@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { readFile, writeFile, rename, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { AppData, EMPTY_DATA, normalizeData } from '../src/shared/types'
+import { AppData, EMPTY_DATA, normalizeData, stripNullFields } from '../src/shared/types'
 
 /** 数据文件固定放在 app.getPath('userData') 下，便于备份与排查 */
 export function dataFilePath(): string {
@@ -57,22 +57,28 @@ export function saveDataSync(data: AppData): void {
 
 /** 从手机端导出的 JSON 读取（格式 version 1，必须有 items / lists / listItems） */
 export async function importFromFile(file: string): Promise<AppData> {
-  const text = await readFile(file, 'utf8')
+  // 有些编辑器保存 UTF-8 JSON 时会带 BOM，先去掉再解析
+  const text = (await readFile(file, 'utf8')).replace(/^\uFEFF/, '')
   const raw = JSON.parse(text) as Record<string, unknown>
-  if (!('items' in raw) || !('lists' in raw) || !('listItems' in raw)) {
-    throw new Error('不是有效的备份文件（缺少 items / lists / listItems）')
+  // 必须是数组而不是仅存在同名字段，避免误选普通 JSON 后把数据清空
+  if (!Array.isArray(raw.items) || !Array.isArray(raw.lists) || !Array.isArray(raw.listItems)) {
+    throw new Error('不是有效的备份文件（items / lists / listItems 必须是数组）')
   }
   return normalizeData(raw)
 }
 
 /** 导出为手机端可识别的 JSON（字段与 Android ExportJson.kt 一致） */
 export async function exportToFile(file: string, data: AppData): Promise<void> {
-  const out: AppData = {
+  // 手机端 org.json 的 optString 会把 null 读成 "null"，导出前统一去掉 null 字段
+  const out: AppData = stripNullFields({
     ...data,
     version: 1,
     exportAt: formatNow()
-  }
-  await writeFile(file, JSON.stringify(out, null, 2), 'utf8')
+  })
+  // 先写临时文件再替换，避免覆盖旧备份时中途失败留下半个文件
+  const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
+  await writeFile(tmp, JSON.stringify(out, null, 2), 'utf8')
+  await rename(tmp, file)
 }
 
 function formatNow(): string {

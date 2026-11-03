@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from 'react'
 import {
   BookHeart,
   BookOpen,
+  Clapperboard,
   Film,
   Gamepad2,
   Globe,
-  Home,
   Images,
   ListChecks,
+  Magnet,
   MonitorPlay,
   Music,
   PlayCircle,
@@ -17,8 +18,8 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import { DataProvider, useData } from './state/DataContext'
-import { HomePage } from './pages/HomePage'
 import { WatchPage, type WatchFocus } from './pages/WatchPage'
+import { DramaPage, type DramaFocus } from './pages/DramaPage'
 import { LivePage } from './pages/LivePage'
 import { MusicPage } from './pages/MusicPage'
 import { DownloadsPage, type DownloadSection } from './pages/DownloadsPage'
@@ -29,6 +30,7 @@ import { ComicPage } from './pages/ComicPage'
 import { GamePage } from './pages/GamePage'
 import { BookPage } from './pages/BookPage'
 import { MelonPage } from './pages/MelonPage'
+import { MagnetPage } from './pages/MagnetPage'
 import { ListsPage } from './pages/ListsPage'
 import { ListDetailPage } from './pages/ListDetailPage'
 import { FavoritesPage } from './pages/FavoritesPage'
@@ -46,8 +48,8 @@ import { H1_FIXED_SOURCES } from './shared/vod'
 import type { InnerFav } from './shared/types'
 
 type Route =
-  | { name: 'home' }
   | { name: 'watch'; focus?: WatchFocus; searchTitle?: string }
+  | { name: 'drama'; focus?: DramaFocus }
   | { name: 'live'; focusUrl?: string }
   | { name: 'music'; focus?: FavFocus }
   | { name: 'xsite'; focusId?: string }
@@ -58,6 +60,7 @@ type Route =
   | { name: 'h1'; index: number; focus?: WatchFocus }
   | { name: 'book'; focusId?: string }
   | { name: 'game'; focusId?: string }
+  | { name: 'magnet'; searchTitle?: string }
   | { name: 'lists' }
   | { name: 'list'; id: number }
   | { name: 'favorites'; moduleKey?: string; direct?: boolean }
@@ -75,9 +78,9 @@ interface FavFocus {
 
 interface NavItem {
   key:
-    | 'home'
     | 'lists'
     | 'watch'
+    | 'drama'
     | 'h1_1'
     | 'h1_2'
     | 'h1_3'
@@ -89,6 +92,7 @@ interface NavItem {
     | 'live'
     | 'music'
     | 'melon'
+    | 'magnet'
     | 'xsite'
     | 'psite'
     | 'settings'
@@ -99,15 +103,16 @@ interface NavItem {
   external?: boolean
 }
 
-/** 顺序与手机端 v0.325 一致（清单 → 观影 → 音乐 → 游戏 → 电视 → 吃瓜 → 外网模块 → 设置） */
+/** 顺序与手机端 v0.325 一致（清单 → 观影 → 短剧 → 音乐 → 游戏 → 电视 → 吃瓜 → 外网模块 → 设置） */
 const NAV_ITEMS: NavItem[] = [
-  { key: 'home', label: '首页', icon: Home, ready: true },
   { key: 'lists', label: '清单', icon: ListChecks, ready: true },
   { key: 'watch', label: '观影', icon: MonitorPlay, ready: true },
+  { key: 'drama', label: '短剧', icon: Clapperboard, ready: true },
   { key: 'music', label: '音乐', icon: Music, ready: true },
   { key: 'game', label: '游戏', icon: Gamepad2, ready: true },
   { key: 'live', label: '电视', icon: Tv, ready: true },
   { key: 'melon', label: '吃瓜', icon: Popcorn, ready: true },
+  { key: 'magnet', label: '磁力', icon: Magnet, ready: true },
   { key: 'book', label: '图书', icon: BookOpen, ready: true, external: true },
   { key: 'comic', label: '漫画', icon: Images, ready: true, external: true },
   { key: 'bika', label: '本子', icon: BookHeart, ready: true, external: true },
@@ -122,12 +127,12 @@ const NAV_ITEMS: NavItem[] = [
 
 function leafRoute(key: NavItem['key']): Route {
   switch (key) {
-    case 'home':
-      return { name: 'home' }
     case 'lists':
       return { name: 'lists' }
     case 'watch':
       return { name: 'watch' }
+    case 'drama':
+      return { name: 'drama' }
     case 'h1_1':
       return { name: 'h1', index: 0 }
     case 'h1_2':
@@ -150,6 +155,8 @@ function leafRoute(key: NavItem['key']): Route {
       return { name: 'music' }
     case 'melon':
       return { name: 'melon' }
+    case 'magnet':
+      return { name: 'magnet' }
     case 'xsite':
       return { name: 'xsite' }
     case 'psite':
@@ -174,7 +181,9 @@ interface ShortcutConfig {
 
 /** 各模块右上角「收藏 / 下载」对应的数据口径 */
 const MODULE_SHORTCUTS: Record<string, ShortcutConfig> = {
-  watch: { fav: 'watch', download: 'video' },
+  // 观影页只保留收藏入口，下载入口按用户要求移除
+  watch: { fav: 'watch' },
+  drama: { fav: 'drama', download: 'video' },
   h1_1: { fav: 'h1', download: 'video' },
   h1_2: { fav: 'h1', download: 'video' },
   h1_3: { fav: 'h1', download: 'video' },
@@ -200,11 +209,37 @@ interface FavPayload {
 function parseFavPayload(raw: string | null): FavPayload {
   if (!raw) return {}
   try {
-    const value = JSON.parse(raw) as FavPayload
+    const value = JSON.parse(raw) as unknown
+    if (!value || typeof value !== 'object') return {}
+    const parsed = value as FavPayload
     return {
-      sourceId: typeof value.sourceId === 'string' ? value.sourceId : undefined,
-      vodId: typeof value.vodId === 'number' ? value.vodId : undefined,
-      groupName: typeof value.groupName === 'string' ? value.groupName : undefined
+      sourceId: typeof parsed.sourceId === 'string' ? parsed.sourceId : undefined,
+      vodId: typeof parsed.vodId === 'number' ? parsed.vodId : undefined,
+      groupName: typeof parsed.groupName === 'string' ? parsed.groupName : undefined
+    }
+  } catch {
+    return {}
+  }
+}
+
+interface DramaFavPayload {
+  sourceId?: string
+  sourceName?: string
+  baseUrl?: string
+  seriesId?: string
+}
+
+function parseDramaPayload(raw: string | null): DramaFavPayload {
+  if (!raw) return {}
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!value || typeof value !== 'object') return {}
+    const parsed = value as DramaFavPayload
+    return {
+      sourceId: typeof parsed.sourceId === 'string' ? parsed.sourceId : undefined,
+      sourceName: typeof parsed.sourceName === 'string' ? parsed.sourceName : undefined,
+      baseUrl: typeof parsed.baseUrl === 'string' ? parsed.baseUrl : undefined,
+      seriesId: typeof parsed.seriesId === 'string' ? parsed.seriesId : undefined
     }
   } catch {
     return {}
@@ -213,9 +248,9 @@ function parseFavPayload(raw: string | null): FavPayload {
 
 function Shell() {
   const { ready } = useData()
-  const [stack, setStack] = useState<Route[]>([{ name: 'home' }])
+  const [stack, setStack] = useState<Route[]>([{ name: 'lists' }])
   const [notice, setNotice] = useState<string | null>(null)
-  const [visited, setVisited] = useState<string[]>(['home'])
+  const [visited, setVisited] = useState<string[]>(['lists'])
   const [navEpoch, setNavEpoch] = useState<Record<string, number>>({})
   const contentRef = useRef<HTMLElement | null>(null)
   const route = stack[stack.length - 1]
@@ -319,6 +354,28 @@ function Shell() {
       case 'tv':
         pushRoute({ name: 'live', focusUrl: fav.videoUrl ?? fav.id })
         return
+      case 'drama': {
+        const payload = parseDramaPayload(fav.payload)
+        // 收藏 id 形如「源 id|剧集 id」，旧收藏没有 payload 时用它兜底
+        const [idSource, ...rest] = fav.id.split('|')
+        const sourceId = payload.sourceId ?? idSource
+        const seriesId = payload.seriesId ?? rest.join('|')
+        if (!sourceId || !seriesId) {
+          setNotice(`「${fav.title}」缺少短剧信息，无法直接打开。`)
+          return
+        }
+        pushRoute({
+          name: 'drama',
+          focus: {
+            sourceId,
+            sourceName: payload.sourceName,
+            baseUrl: payload.baseUrl,
+            seriesId,
+            title: fav.title
+          }
+        })
+        return
+      }
       case 'watch':
       case 'h1': {
         const payload = parseFavPayload(fav.payload)
@@ -363,6 +420,11 @@ function Shell() {
   /** 清单条目「在线观看」：带着片名跳到观影并自动搜索 */
   const openWatchSearch = (title: string) => {
     pushRoute({ name: 'watch', searchTitle: title })
+  }
+
+  /** 清单条目「下载」：带着片名跳到磁力页并自动搜索 */
+  const openMagnetSearch = (title: string) => {
+    pushRoute({ name: 'magnet', searchTitle: title })
   }
 
   const openNav = (item: NavItem) => {
@@ -431,18 +493,14 @@ function Shell() {
       </aside>
 
       <main className="content" ref={contentRef}>
-        {shownKeys.includes('home') ? (
-          <div {...slot('home')}>
-            <HomePage />
-          </div>
-        ) : null}
-
         {shownKeys.includes('lists') ? (
           <div {...slot('lists')}>
             <ListsPage
               onOpenList={(id) => pushRoute({ name: 'list', id })}
               onNotice={setNotice}
               resetSignal={navEpoch.lists}
+              onWatch={openWatchSearch}
+              onMagnet={openMagnetSearch}
             />
           </div>
         ) : null}
@@ -476,6 +534,18 @@ function Shell() {
             </div>
           )
         })}
+
+        {shownKeys.includes('drama') ? (
+          <div {...slot('drama')}>
+            <DramaPage
+              onNotice={setNotice}
+              resetSignal={navEpoch.drama}
+              focus={route.name === 'drama' ? route.focus : undefined}
+              onExit={backRoute}
+              {...shortcuts('drama')}
+            />
+          </div>
+        ) : null}
 
         {shownKeys.includes('live') ? (
           <div {...slot('live')}>
@@ -561,6 +631,16 @@ function Shell() {
           </div>
         ) : null}
 
+        {shownKeys.includes('magnet') ? (
+          <div {...slot('magnet')}>
+            <MagnetPage
+              onNotice={setNotice}
+              searchTitle={route.name === 'magnet' ? route.searchTitle : undefined}
+              resetSignal={navEpoch.magnet}
+            />
+          </div>
+        ) : null}
+
         {shownKeys.includes('game') ? (
           <div {...slot('game')}>
             <GamePage
@@ -608,6 +688,7 @@ function Shell() {
             onOpenList={(id) => pushRoute({ name: 'list', id })}
             onNotice={setNotice}
             onWatch={openWatchSearch}
+            onMagnet={openMagnetSearch}
           />
         ) : null}
 

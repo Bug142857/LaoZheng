@@ -230,6 +230,7 @@ export function MusicPage({
         onSubmit={() => void doSearch(query, 1)}
         onCancel={cancelSearch}
         onClear={() => {
+          cancelSearch()
           setQuery('')
           setKeyword('')
           setSearched(false)

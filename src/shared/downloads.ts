@@ -67,6 +67,12 @@ export interface DownloadAddResult {
   error?: string
 }
 
+/** 删除下载记录：文件被占用时返回失败并保留下载记录 */
+export interface DownloadRemoveResult {
+  ok: boolean
+  error?: string
+}
+
 /** 更改下载总目录：move = 是否把旧目录内容迁移到新目录并清理旧目录 */
 export interface DownloadChangeRootResult {
   ok: boolean

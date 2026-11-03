@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
-import { ChevronDown, ChevronRight, Pencil, Plus, Trash2 } from 'lucide-react'
-import type { ItemList } from '../shared/types'
+import { ChevronDown, ChevronRight, Download, Pencil, Plus, Trash2, Upload } from 'lucide-react'
+import type { CollectionItem, ItemList, ListItem } from '../shared/types'
 import { useData } from '../state/DataContext'
 import { countItems, descendantIds, nextId } from '../utils/data'
 import { ConfirmDialog, PromptDialog } from '../components/ui'
@@ -67,6 +67,142 @@ export function ListManagerSection({ onNotice }: { onNotice: (text: string) => v
     onNotice(`已删除清单「${name}」`)
   }
 
+  const exportLists = async (): Promise<void> => {
+    if (!data.lists.length) return
+    const res = await window.laozheng.exportLists({
+      lists: data.lists,
+      listItems: data.listItems,
+      items: data.items
+    })
+    if (res.canceled) return
+    if (res.error) {
+      onNotice(`导出失败：${res.error}`)
+      return
+    }
+    onNotice(`已导出 ${res.count ?? 0} 个清单到 ${res.path}`)
+  }
+
+  const importLists = async (): Promise<void> => {
+    const res = await window.laozheng.importLists()
+    if (res.canceled) return
+    if (res.error || !res.data) {
+      onNotice(`导入失败：${res.error ?? '文件内容无效'}`)
+      return
+    }
+    const bundle = res.data
+    let addedLists = 0
+    let addedItems = 0
+
+    update((d) => {
+      const nextItems = [...d.items]
+      const nextLists = [...d.lists]
+      const nextListItems = [...d.listItems]
+
+      // 条目按「分类 + 豆瓣 id」复用，缺失豆瓣 id 时退回标题 + 年份
+      const itemKeyOf = (item: CollectionItem): string =>
+        item.doubanId
+          ? `${item.category}|${item.doubanId}`
+          : `${item.category}|${item.title}|${item.year}`
+      const itemIdByKey = new Map(nextItems.map((item) => [itemKeyOf(item), item.id]))
+      const itemIdMap = new Map<number, number>()
+      for (const raw of bundle.items) {
+        if (!raw || typeof raw !== 'object') continue
+        const item = raw as CollectionItem
+        if (typeof item.id !== 'number' || !Number.isFinite(item.id)) continue
+        const key = itemKeyOf(item)
+        const existingId = itemIdByKey.get(key)
+        if (existingId != null) {
+          itemIdMap.set(item.id, existingId)
+          continue
+        }
+        const id = nextId(nextItems)
+        nextItems.push({ ...item, id })
+        itemIdByKey.set(key, id)
+        itemIdMap.set(item.id, id)
+        addedItems += 1
+      }
+
+      // 清单按层级从浅到深导入；同名同父级复用，重复导入不会产生重复清单
+      const sourceLists = bundle.lists.filter(
+        (list): list is ItemList =>
+          !!list && typeof list === 'object' && typeof (list as ItemList).id === 'number'
+      )
+      const sourceById = new Map(sourceLists.map((list) => [list.id, list]))
+      const depthOf = (id: number, seen: Set<number>): number => {
+        const list = sourceById.get(id)
+        if (!list || list.parentId == null || seen.has(id)) return 0
+        seen.add(id)
+        return 1 + depthOf(list.parentId, seen)
+      }
+      const ordered = [...sourceLists].sort(
+        (a, b) => depthOf(a.id, new Set()) - depthOf(b.id, new Set())
+      )
+      const listIdMap = new Map<number, number>()
+      for (const raw of ordered) {
+        const parentId = raw.parentId != null ? listIdMap.get(raw.parentId) ?? null : null
+        const name =
+          typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : '未命名清单'
+        const existing = nextLists.find(
+          (list) =>
+            list.name === name &&
+            (parentId == null ? list.parentId == null : list.parentId === parentId)
+        )
+        let id: number
+        if (existing) {
+          id = existing.id
+        } else {
+          id = nextId(nextLists)
+          nextLists.push({
+            id,
+            name,
+            description: typeof raw.description === 'string' ? raw.description : '',
+            coverUrl: typeof raw.coverUrl === 'string' ? raw.coverUrl : null,
+            parentId,
+            sortIndex: nextLists.filter((list) =>
+              parentId == null ? list.parentId == null : list.parentId === parentId
+            ).length,
+            world: 0,
+            musicList: raw.musicList === true,
+            createdAt:
+              typeof raw.createdAt === 'number' && Number.isFinite(raw.createdAt)
+                ? raw.createdAt
+                : Date.now()
+          })
+          addedLists += 1
+        }
+        listIdMap.set(raw.id, id)
+      }
+
+      const seenRel = new Set(nextListItems.map((rel) => `${rel.listId}|${rel.itemId}`))
+      for (const raw of bundle.listItems) {
+        if (!raw || typeof raw !== 'object') continue
+        const rel = raw as ListItem
+        const listId = listIdMap.get(rel.listId)
+        const itemId = itemIdMap.get(rel.itemId)
+        if (listId == null || itemId == null) continue
+        const key = `${listId}|${itemId}`
+        if (seenRel.has(key)) continue
+        seenRel.add(key)
+        nextListItems.push({
+          listId,
+          itemId,
+          orderIndex:
+            typeof rel.orderIndex === 'number' && Number.isFinite(rel.orderIndex)
+              ? rel.orderIndex
+              : 0
+        })
+      }
+
+      return { ...d, items: nextItems, lists: nextLists, listItems: nextListItems }
+    })
+
+    if (!addedLists && !addedItems) {
+      onNotice('没有新增内容（清单与条目都已存在）')
+      return
+    }
+    onNotice(`已导入 ${addedLists} 个清单 · ${addedItems} 件条目`)
+  }
+
   const rows: ReactNode[] = []
   const render = (parentId: number | null, depth: number): void => {
     for (const list of childrenOf(parentId)) {
@@ -126,9 +262,19 @@ export function ListManagerSection({ onNotice }: { onNotice: (text: string) => v
           共 {data.lists.length} 个清单。带子清单的行可以逐级展开；删除清单会连同子清单与清单内关联一起移除，
           收藏条目本身会保留。
         </p>
-        <div className="settings-row">
+        <div className="settings-row" style={{ flexWrap: 'wrap', gap: 8 }}>
           <button className="btn primary" onClick={() => setCreating(true)}>
             <Plus size={15} /> 新建清单
+          </button>
+          <button className="btn" onClick={() => void importLists()}>
+            <Upload size={15} /> 导入清单
+          </button>
+          <button
+            className="btn"
+            disabled={data.lists.length === 0}
+            onClick={() => void exportLists()}
+          >
+            <Download size={15} /> 导出清单
           </button>
         </div>
         {data.lists.length === 0 ? (

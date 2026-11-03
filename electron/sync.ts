@@ -7,7 +7,7 @@ import type {
   SyncConfigView
 } from '../src/shared/sync'
 import type { AppData } from '../src/shared/types'
-import { normalizeData } from '../src/shared/types'
+import { normalizeData, stripNullFields } from '../src/shared/types'
 
 /**
  * WebDAV 云同步（坚果云等）：手动上传 / 下载 data.json。
@@ -63,9 +63,10 @@ async function readStored(): Promise<StoredSyncConfig | null> {
 
 async function writeStored(config: StoredSyncConfig): Promise<void> {
   await mkdir(app.getPath('userData'), { recursive: true })
-  const tmp = `${configPath()}.tmp`
+  const target = configPath()
+  const tmp = `${target}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
   await writeFile(tmp, JSON.stringify(config, null, 2), 'utf8')
-  await rename(tmp, configPath())
+  await rename(tmp, target)
 }
 
 export async function getSyncConfig(): Promise<SyncConfigView> {
@@ -214,7 +215,7 @@ export async function uploadSync(data: AppData): Promise<SyncActionResult> {
           'Content-Type': 'application/json; charset=utf-8'
         },
         body: JSON.stringify(
-          { ...data, version: 1, exportAt: new Date().toISOString() },
+          stripNullFields({ ...data, version: 1, exportAt: new Date().toISOString() }),
           null,
           2
         ),
@@ -255,8 +256,11 @@ export async function downloadSync(): Promise<SyncActionResult> {
       if (res.status === 401) return { ok: false, message: '认证失败：账号或密码不对' }
       if (!res.ok) return { ok: false, message: `下载失败：HTTP ${res.status}` }
       const raw = (await res.json()) as Record<string, unknown>
-      if (!('items' in raw) || !('lists' in raw) || !('listItems' in raw)) {
-        return { ok: false, message: '云端文件不是有效的备份（缺少 items / lists / listItems）' }
+      if (!Array.isArray(raw.items) || !Array.isArray(raw.lists) || !Array.isArray(raw.listItems)) {
+        return {
+          ok: false,
+          message: '云端文件不是有效的备份（items / lists / listItems 必须是数组）'
+        }
       }
       return {
         ok: true,

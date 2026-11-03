@@ -78,9 +78,12 @@ export function GamePage({
     null
   )
   const requestSeq = useRef(0)
+  /** 只应用最后一次详情请求，避免返回列表后旧详情又把详情页打开 */
+  const detailSeq = useRef(0)
 
   useEffect(() => {
     if (resetSignal === undefined) return
+    detailSeq.current += 1
     setDetail(null)
   }, [resetSignal])
 
@@ -137,10 +140,12 @@ export function GamePage({
   }, [])
 
   const loadDetail = async (id: string, alive?: () => boolean) => {
+    const seq = ++detailSeq.current
     setShowAllShots(false)
     setDetail({ game: null, loading: true, error: null })
     const res = await window.laozheng.wygamerDetail(id)
     if (alive && !alive()) return
+    if (seq !== detailSeq.current) return
     setDetail({ game: res.ok ? res.game : null, loading: false, error: res.ok ? null : res.error ?? '详情加载失败' })
   }
 
@@ -150,6 +155,7 @@ export function GamePage({
     void loadDetail(focusId, () => alive)
     return () => {
       alive = false
+      detailSeq.current += 1
       setDetail(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -222,6 +228,7 @@ export function GamePage({
             className="btn ghost"
             onClick={() => {
               // 先清掉详情再返回，避免从收藏返回后又落回详情页
+              detailSeq.current += 1
               setDetail(null)
               if (focusId && onExit) onExit()
             }}

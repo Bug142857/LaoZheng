@@ -1,7 +1,8 @@
 /**
  * PC 端与手机端（ShangYin）共用的备份格式（version 1）。
  * 基础字段与手机端 `ExportJson.kt` 一致，保证两端可以互相导入导出；
- * PC 端额外带上 liveSources / downloads / settings 三个可选字段，手机端会忽略。
+ * PC 端额外带上 liveSources / downloads / magnetSources / magnetSearch / settings，
+ * 手机端会忽略这些可选字段。
  */
 
 import type {
@@ -29,6 +30,16 @@ import type {
   LiveSource,
   LiveTestResult
 } from './live'
+import type {
+  MagnetOptions,
+  MagnetSearchCache,
+  MagnetSearchResponse,
+  MagnetSource,
+  MagnetSourcesImportResult,
+  MagnetState,
+  MagnetTestResult
+} from './magnet'
+import { normalizeMagnetSearchCache } from './magnet'
 import type { MusicResolveResponse, MusicSearchResponse } from './music'
 import type {
   ComicBatchDownloadInput,
@@ -37,7 +48,8 @@ import type {
   DownloadChangeRootResult,
   DownloadListResponse,
   DownloadReadResult,
-  DownloadRecord
+  DownloadRecord,
+  DownloadRemoveResult
 } from './downloads'
 import type { CacheClearResult, CacheInfo, UiSettings } from './settings'
 import type { XCategoriesResponse, XDetailResponse, XListResponse } from './xsite'
@@ -78,6 +90,14 @@ import type {
   ZlibSearchResponse,
   ZlibStatusResponse
 } from './zlib'
+import type {
+  DramaCatalogResponse,
+  DramaDetailResponse,
+  DramaPlayResponse,
+  DramaSource,
+  DramaSourceInput
+} from './drama'
+import { DEFAULT_DRAMA_SOURCES, normalizeDramaSources } from './drama'
 
 export interface CollectionItem {
   id: number
@@ -153,6 +173,8 @@ export interface BackupSettings {
   accent?: string
   downloadRoot?: string
   lastImageDir?: string
+  /** 各类导入 / 导出对话框上次选择的目录 */
+  lastDirs?: Record<string, string>
 }
 
 export interface AppData {
@@ -168,7 +190,12 @@ export interface AppData {
   /** PC 端备份扩展：电视源 / 下载记录 / 本机设置（字段存在才导入，手机端忽略） */
   liveSources?: LiveSource[]
   downloads?: DownloadRecord[]
+  /** 磁力源（主进程 magnet-sources.json）与上次搜索结果缓存 */
+  magnetSources?: MagnetSource[]
+  magnetSearch?: MagnetSearchCache
   settings?: BackupSettings
+  /** 短剧源（内置西饭 + 添加的苹果CMS 源），随备份与云同步一起走 */
+  dramaSources: DramaSource[]
 }
 
 export interface ImportResult {
@@ -188,6 +215,33 @@ export interface SourcesExportResult {
   canceled: boolean
   path?: string
   count?: number
+  error?: string
+}
+
+/** 片源管理：全部源整体导入导出（影视 / 短剧 / 电视 / 磁力） */
+export interface AllSourcesBundle {
+  vodSources: { name: string; baseUrl: string; enabled?: boolean }[]
+  dramaSources: { id?: string; name: string; baseUrl: string; enabled?: boolean }[]
+  liveSources: LiveSource[]
+  magnetSources: MagnetSource[]
+}
+
+export interface AllSourcesImportResult {
+  canceled: boolean
+  data?: AllSourcesBundle
+  error?: string
+}
+
+/** 清单管理：清单 / 条目关联 / 条目一起导入导出 */
+export interface ListBundle {
+  lists: ItemList[]
+  listItems: ListItem[]
+  items: CollectionItem[]
+}
+
+export interface ListBundleImportResult {
+  canceled: boolean
+  data?: ListBundle
   error?: string
 }
 
@@ -212,6 +266,9 @@ export interface LaozhengApi {
   applyBackupExtras: (data: AppData) => Promise<void>
   importData: () => Promise<ImportResult>
   exportData: (data: AppData) => Promise<ExportResult>
+  /** 清单管理：清单（含条目）单独导出 / 导入 */
+  exportLists: (bundle: ListBundle) => Promise<SourcesExportResult>
+  importLists: () => Promise<ListBundleImportResult>
   openDataDir: () => Promise<void>
   dataDir: () => Promise<string>
   appVersion: () => Promise<string>
@@ -237,6 +294,25 @@ export interface LaozhengApi {
   testVodSource: (source: VodSourceInput) => Promise<VodTestResponse>
   vodCategories: (source: VodSourceInput) => Promise<VodCategoriesResponse>
   exportVodSources: (sources: { name: string; baseUrl: string; enabled?: boolean }[]) => Promise<SourcesExportResult>
+  magnetState: () => Promise<MagnetState>
+  saveMagnetSources: (sources: MagnetSource[]) => Promise<MagnetState>
+  resetMagnetSources: () => Promise<MagnetState>
+  exportMagnetSources: (sources: MagnetSource[]) => Promise<SourcesExportResult>
+  importMagnetSources: () => Promise<MagnetSourcesImportResult>
+  openMagnetLog: () => Promise<void>
+  testMagnetSource: (source: MagnetSource) => Promise<MagnetTestResult>
+  searchMagnet: (
+    source: MagnetSource,
+    keyword: string,
+    page: number,
+    options: MagnetOptions
+  ) => Promise<MagnetSearchResponse>
+  searchMagnetAll: (
+    sources: MagnetSource[],
+    keyword: string,
+    options: MagnetOptions
+  ) => Promise<MagnetSearchResponse>
+  openMagnet: (magnet: string) => Promise<void>
   loadLiveSources: () => Promise<LiveSource[]>
   saveLiveSources: (sources: LiveSource[]) => Promise<void>
   loadLiveChannels: (source: LiveSource) => Promise<LiveChannelResult>
@@ -247,7 +323,7 @@ export interface LaozhengApi {
   resolveMusic: (songId: string, platform?: string) => Promise<MusicResolveResponse>
   listDownloads: () => Promise<DownloadListResponse>
   addDownload: (input: DownloadAddInput) => Promise<DownloadAddResult>
-  removeDownload: (id: string, deleteFile: boolean) => Promise<void>
+  removeDownload: (id: string, deleteFile: boolean) => Promise<DownloadRemoveResult>
   cancelDownload: (id: string) => Promise<void>
   openDownloadsDir: () => Promise<void>
   downloadRoot: () => Promise<string>
@@ -273,6 +349,22 @@ export interface LaozhengApi {
   trackMelonImages: (urls: string[]) => Promise<void>
   melonImage: (url: string) => Promise<{ ok: boolean; dataUrl?: string; error?: string }>
   melonDuration: (url: string) => Promise<{ ok: boolean; seconds?: number; error?: string }>
+  dramaCatalog: (
+    source: DramaSourceInput,
+    genre: string,
+    page: number,
+    keyword: string
+  ) => Promise<DramaCatalogResponse>
+  dramaDetail: (source: DramaSourceInput, seriesId: string) => Promise<DramaDetailResponse>
+  dramaPlay: (
+    source: DramaSourceInput,
+    seriesId: string,
+    episodeId: string
+  ) => Promise<DramaPlayResponse>
+  exportDramaSources: (sources: { id?: string; name: string; baseUrl: string; enabled?: boolean }[]) => Promise<SourcesExportResult>
+  /** 片源管理：全部源一起导出 / 导入 */
+  exportAllSources: (bundle: AllSourcesBundle) => Promise<SourcesExportResult>
+  importAllSources: () => Promise<AllSourcesImportResult>
   getSyncConfig: () => Promise<SyncConfigView>
   saveSyncConfig: (input: SyncConfigInput) => Promise<SyncConfigView>
   testSync: () => Promise<SyncActionResult>
@@ -330,7 +422,8 @@ export const EMPTY_DATA: AppData = {
   vodSources: [],
   innerFavs: [],
   readProgress: {},
-  config: {}
+  config: {},
+  dramaSources: DEFAULT_DRAMA_SOURCES
 }
 
 export function normalizeData(raw: unknown): AppData {
@@ -344,13 +437,40 @@ export function normalizeData(raw: unknown): AppData {
     vodSources: Array.isArray(o.vodSources) ? o.vodSources : [],
     innerFavs: Array.isArray(o.innerFavs) ? o.innerFavs : [],
     readProgress: o.readProgress && typeof o.readProgress === 'object' ? o.readProgress : {},
-    config: o.config && typeof o.config === 'object' ? o.config : {}
+    config: o.config && typeof o.config === 'object' ? o.config : {},
+    // 短剧源始终补全四个内置条目，旧备份 / 手机端备份导入后也能直接用
+    dramaSources: normalizeDramaSources(o.dramaSources)
   }
   // PC 端扩展字段：只有备份里真的存在才带上，缺失时保持 undefined（导入时保留本机原值）
   if (Array.isArray(o.liveSources)) out.liveSources = o.liveSources as LiveSource[]
   if (Array.isArray(o.downloads)) out.downloads = o.downloads as DownloadRecord[]
+  if (Array.isArray(o.magnetSources)) out.magnetSources = o.magnetSources as MagnetSource[]
+  if (o.magnetSearch && typeof o.magnetSearch === 'object') {
+    const cache = normalizeMagnetSearchCache(o.magnetSearch)
+    if (cache) out.magnetSearch = cache
+  }
   if (o.settings && typeof o.settings === 'object') {
     out.settings = o.settings as BackupSettings
   }
   return out
+}
+
+/**
+ * 导出给手机端前去掉所有 null 字段。
+ * Android org.json 的 optString 会把 JSON null 读成字符串 "null"（不是空串），
+ * 手机端再用 ifBlank { null } 判断就会把 "null" 当成真实封面 / 链接 / payload。
+ */
+export function stripNullFields<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((entry) => stripNullFields(entry)) as T
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, entry] of Object.entries(value)) {
+      if (entry === null) continue
+      out[key] = stripNullFields(entry)
+    }
+    return out as T
+  }
+  return value
 }

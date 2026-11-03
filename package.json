@@ -1,6 +1,6 @@
 {
   "name": "laozheng-pc",
-  "version": "0.51.0",
+  "version": "0.66.0",
   "private": true,
   "description": "老郑分享 PC 端（Electron + React）",
   "author": "老郑",
@@ -51,6 +51,10 @@
       {
         "from": "resources/default-seed.json",
         "to": "default-seed.json"
+      },
+      {
+        "from": "resources/magnet-filter-words.txt",
+        "to": "magnet-filter-words.txt"
       },
       {
         "from": "resources/tray.png",

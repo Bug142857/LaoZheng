@@ -89,9 +89,14 @@ export function setupImageCacheHandler(headerFor: (url: string) => Record<string
     const file = join(dir, keyOf(target))
     try {
       const buf = await readFile(file)
-      return new Response(new Uint8Array(buf), {
-        headers: { 'content-type': sniffImageMime(buf) ?? 'image/jpeg', 'cache-control': CACHE_CONTROL }
-      })
+      const mime = sniffImageMime(buf)
+      // 缓存文件损坏 / 不是可识别图片：删掉后重新走网络，避免一直显示坏图
+      if (mime) {
+        return new Response(new Uint8Array(buf), {
+          headers: { 'content-type': mime, 'cache-control': CACHE_CONTROL }
+        })
+      }
+      await rm(file, { force: true }).catch(() => undefined)
     } catch {
       // 未缓存，走网络
     }

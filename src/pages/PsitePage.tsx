@@ -77,9 +77,12 @@ export function PsitePage({
   const [playbackNonce, setPlaybackNonce] = useState(0)
   const retriedRef = useRef(false)
   const requestSeq = useRef(0)
+  /** 只应用最后一次播放解析结果，避免切走后旧请求又把播放页打开 */
+  const playSeq = useRef(0)
 
   useEffect(() => {
     if (resetSignal === undefined) return
+    playSeq.current += 1
     setPlaying(null)
     setOpening(false)
     setOpenError(null)
@@ -180,9 +183,11 @@ export function PsitePage({
   }
 
   const play = async (video: PVideo, alive?: () => boolean): Promise<boolean> => {
+    const seq = ++playSeq.current
     const media = await resolve(video)
     if (!media) return false
     if (alive && !alive()) return false
+    if (seq !== playSeq.current) return false
     retriedRef.current = false
     setPlaying({ video, url: media.url, fallbackUrl: media.fallbackUrl })
     return true
@@ -218,6 +223,7 @@ export function PsitePage({
     })()
     return () => {
       alive = false
+      playSeq.current += 1
       setPlaying(null)
       setOpening(false)
     }

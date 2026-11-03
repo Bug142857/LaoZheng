@@ -9,7 +9,7 @@ import {
   shell,
   Tray
 } from 'electron'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { basename, join, resolve, sep } from 'node:path'
 import { createWriteStream, existsSync } from 'node:fs'
 import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
@@ -26,8 +26,8 @@ import {
 import {
   initSettings,
   downloadRoot,
-  lastImageDir,
-  setLastImageDir,
+  lastDialogDir,
+  rememberDialogDir,
   setUiSettings,
   uiSettings,
   settingsSnapshot,
@@ -87,6 +87,7 @@ import {
   melonVideoDuration,
   trackMelonImages
 } from './melon'
+import { dramaCatalog, dramaDetail, dramaPlay } from './drama'
 import { initAccounts, listAccounts } from './accounts'
 import {
   bikaCategories,
@@ -130,6 +131,19 @@ import {
   zlibSearch,
   zlibStatus
 } from './zlib'
+import {
+  exportMagnetSources,
+  importMagnetSources,
+  loadMagnetState,
+  openMagnet,
+  openMagnetLog,
+  resetMagnetSources,
+  saveMagnetSources,
+  searchMagnetAll,
+  searchMagnetSource,
+  testMagnetSource
+} from './magnet'
+import type { MagnetOptions, MagnetSource } from '../src/shared/magnet'
 import type { AccountActionResult, AccountSite } from '../src/shared/accounts'
 import { downloadSync, getSyncConfig, saveSyncConfig, testSync, uploadSync } from './sync'
 import { cachedResponse, clearApiCacheMemory } from './apiCache'
@@ -145,6 +159,7 @@ import type { LiveSource } from '../src/shared/live'
 import { normalizeData, type AppData } from '../src/shared/types'
 import type { SearchCategory, SubjectKind } from '../src/shared/douban'
 import type { VodSourceInput } from '../src/shared/vod'
+import type { DramaSourceInput } from '../src/shared/drama'
 import type { CacheClearResult, CacheInfo, UiSettings } from '../src/shared/settings'
 
 const isDev = !app.isPackaged
@@ -242,6 +257,8 @@ function createWindow(): BrowserWindow {
     }
   })
 
+  const devUrl = process.env['ELECTRON_RENDERER_URL']
+
   win.once('ready-to-show', () => {
     win.show()
     ensureTray()
@@ -263,7 +280,15 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
-  const devUrl = process.env['ELECTRON_RENDERER_URL']
+  // 防止内容里的普通链接把主窗口导航走：远程页面会继承 preload，绝不能让它替换应用页面
+  win.webContents.on('will-navigate', (event, target) => {
+    const devOrigin = isDev && devUrl ? new URL(devUrl).origin : ''
+    const allowed = target.startsWith('file://') || (devOrigin && target.startsWith(devOrigin))
+    if (allowed) return
+    event.preventDefault()
+    if (/^https?:\/\//i.test(target)) void shell.openExternal(target)
+  })
+
   if (isDev && devUrl) {
     win.loadURL(devUrl)
   } else {
@@ -407,8 +432,28 @@ function isVodSourceInput(value: unknown): value is VodSourceInput {
   )
 }
 
+function isDramaSourceInput(value: unknown): value is DramaSourceInput {
+  if (!value || typeof value !== 'object') return false
+  const o = value as Record<string, unknown>
+  if (typeof o.id !== 'string' || !/^[a-zA-Z0-9_-]{1,200}$/.test(o.id)) return false
+  if (typeof o.name !== 'string' || o.name.length > 80) return false
+  // 苹果CMS 短剧源必须带合法接口地址；内置源（西饭 / 旧红果、河马）不需要
+  if (o.baseUrl === undefined) return o.id === 'xifan' || o.id === 'hongguo' || o.id === 'hema'
+  return (
+    typeof o.baseUrl === 'string' &&
+    /^https?:\/\//i.test(o.baseUrl) &&
+    o.baseUrl.length <= 300
+  )
+}
+
 const SEARCH_CATEGORIES = new Set<SearchCategory>(['video', 'book', 'game', 'person'])
 const SUBJECT_KINDS = new Set<SubjectKind>(['movie', 'tv', 'book', 'game'])
+
+/** 豆瓣登录态变化后换一套缓存 key，避免登录前搜不到的老片一直命中旧缓存 */
+function doubanCacheScope(): string {
+  const status = doubanAuthStatus()
+  return status.loggedIn ? `in-${status.updatedAt}` : 'out'
+}
 
 /** 检查更新：公开仓库优先走 GitHub API（能拿到 exe 资产直链），失败再读公开清单 */
 async function checkUpdateInternal(): Promise<UpdateCheckResult> {
@@ -683,14 +728,14 @@ async function saveImageToFile(rawUrl: string): Promise<{ canceled: boolean; pat
     const picked = await dialog.showSaveDialog({
       title: '保存图片',
       defaultPath: join(
-        lastImageDir() || app.getPath('pictures'),
+        lastDialogDir('image', app.getPath('pictures')),
         `${safeFileBase(base)}${ext}`
       ),
       filters: [{ name: '图片', extensions: ['jpg', 'png', 'webp', 'gif', 'avif'] }]
     })
     if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('image', picked.filePath)
     await writeFile(picked.filePath, buffer)
-    await setLastImageDir(dirname(picked.filePath))
     return { canceled: false, path: picked.filePath }
   } catch (err) {
     return { canceled: false, error: (err as Error).message }
@@ -722,8 +767,21 @@ function updateChannels(url: string): string[] {
   return [...new Set(list)]
 }
 
-/** 下载安装包到 userData/updates，逐条线路回退；仅接受 https 直链 */
+/** 同一时间只允许一个更新包下载：启动静默下载和手动点击可能撞在一起，共用 .part 会互相覆盖 */
+let updateDownloading = false
+
 async function downloadUpdateInstaller(url: string): Promise<UpdateDownloadResult> {
+  if (updateDownloading) return { ok: false, error: '更新安装包正在下载，请稍候' }
+  updateDownloading = true
+  try {
+    return await downloadUpdateInstallerInner(url)
+  } finally {
+    updateDownloading = false
+  }
+}
+
+/** 下载安装包到 userData/updates，逐条线路回退；仅接受 https 直链 */
+async function downloadUpdateInstallerInner(url: string): Promise<UpdateDownloadResult> {
   let target: string
   let base: string
   try {
@@ -824,21 +882,31 @@ async function autoUpdateCheck(win: BrowserWindow): Promise<void> {
  * 一起合并进备份，避免导出或同步时漏掉。
  */
 async function buildBackupPayload(data: AppData): Promise<AppData> {
-  const [liveSources, downloads] = await Promise.all([
+  const [liveSources, downloads, magnet] = await Promise.all([
     loadLiveSources(),
-    exportDownloadRecords()
+    exportDownloadRecords(),
+    loadMagnetState()
   ])
   return {
     ...data,
     version: 1,
     liveSources,
     downloads,
+    // 磁力源属于用户配置，必须跟备份 / 云同步一起走
+    magnetSources: magnet.sources,
     settings: settingsSnapshot()
   }
 }
 
 function registerIpc(): void {
-  ipcMain.handle('data:load', () => loadData())
+  // 磁力搜索结果只在本次运行期间保留：应用重启后从空结果开始
+  ipcMain.handle('data:load', async () => {
+    const data = await loadData()
+    if (!data.magnetSearch) return data
+    const next: AppData = { ...data, magnetSearch: undefined }
+    await saveData(next).catch((err) => console.error('[data] 清理磁力搜索缓存失败', err))
+    return next
+  })
 
   // 退出前同步落盘：渲染进程在 beforeunload 里调用
   ipcMain.on('data:saveSync', (event, data: AppData) => {
@@ -860,6 +928,9 @@ function registerIpc(): void {
     if (Array.isArray(data.liveSources)) {
       await saveLiveSources(normalizeLiveSources(data.liveSources))
     }
+    if (Array.isArray(data.magnetSources)) {
+      await saveMagnetSources(data.magnetSources)
+    }
     if (Array.isArray(data.downloads)) {
       await importDownloadRecords(data.downloads)
     }
@@ -872,7 +943,7 @@ function registerIpc(): void {
     if (!SEARCH_CATEGORIES.has(category) || typeof query !== 'string' || query.length > 100) {
       return { ok: false, items: [], error: '搜索参数无效' }
     }
-    return cachedResponse(`subject:search|${category}|${query}`, 12 * HOUR, () =>
+    return cachedResponse(`subject:search|${doubanCacheScope()}|${category}|${query}`, 12 * HOUR, () =>
       searchSubjects(category, query)
     )
   })
@@ -881,7 +952,7 @@ function registerIpc(): void {
     if (!SUBJECT_KINDS.has(kind) || typeof id !== 'string') {
       return { ok: false, error: '条目参数无效' }
     }
-    return cachedResponse(`subject:detail|${kind}|${id}`, 7 * DAY, () =>
+    return cachedResponse(`subject:detail|${doubanCacheScope()}|${kind}|${id}`, 7 * DAY, () =>
       fetchSubjectDetail(kind, id)
     )
   })
@@ -890,21 +961,23 @@ function registerIpc(): void {
     if (!SUBJECT_KINDS.has(kind) || typeof id !== 'string') {
       return { ok: false, error: '条目参数无效' }
     }
-    return cachedResponse(`subject:full|${kind}|${id}`, 7 * DAY, () =>
+    return cachedResponse(`subject:full|${doubanCacheScope()}|${kind}|${id}`, 7 * DAY, () =>
       fetchSubjectFull(kind, id)
     )
   })
 
   ipcMain.handle('subject:person', (_e, id: string) => {
     if (typeof id !== 'string') return { ok: false, error: '人物参数无效' }
-    return cachedResponse(`subject:person|${id}`, 7 * DAY, () => fetchPersonFull(id))
+    return cachedResponse(`subject:person|${doubanCacheScope()}|${id}`, 7 * DAY, () =>
+      fetchPersonFull(id)
+    )
   })
 
   ipcMain.handle('subject:credits', (_e, kind: SubjectKind, id: string) => {
     if (!SUBJECT_KINDS.has(kind) || typeof id !== 'string' || !/^\d+$/.test(id)) {
       return { ok: false, credits: [], error: '条目参数无效' }
     }
-    return cachedResponse(`subject:credits|${kind}|${id}`, 7 * DAY, () =>
+    return cachedResponse(`subject:credits|${doubanCacheScope()}|${kind}|${id}`, 7 * DAY, () =>
       fetchSubjectCredits(kind, id)
     )
   })
@@ -916,8 +989,10 @@ function registerIpc(): void {
         return { ok: false, comments: [], error: '条目参数无效' }
       }
       const picked = order === 'new' ? 'new' : 'hot'
-      return cachedResponse(`subject:comments|${kind}|${id}|${picked}`, 6 * HOUR, () =>
-        fetchSubjectComments(kind, id, picked)
+      return cachedResponse(
+        `subject:comments|${doubanCacheScope()}|${kind}|${id}|${picked}`,
+        6 * HOUR,
+        () => fetchSubjectComments(kind, id, picked)
       )
     }
   )
@@ -967,15 +1042,136 @@ function registerIpc(): void {
     )
   })
 
+  // ---------- 短剧（红果 / 西饭 / 河马 / 自定义） ----------
+  ipcMain.handle(
+    'drama:catalog',
+    (_e, source: DramaSourceInput, genre: string, page: number, keyword: string) => {
+      if (
+        !isDramaSourceInput(source) ||
+        typeof genre !== 'string' ||
+        genre.length > 200 ||
+        !Number.isFinite(page) ||
+        typeof keyword !== 'string' ||
+        keyword.length > 100
+      ) {
+        return {
+          ok: false,
+          items: [],
+          page: 1,
+          pageCount: 0,
+          hasMore: false,
+          categories: [],
+          error: '短剧参数无效'
+        }
+      }
+      return cachedResponse(
+        `drama:catalog|${source.id}|${source.baseUrl ?? ''}|${genre}|${Math.floor(page)}|${keyword}`,
+        10 * 60 * 1000,
+        () => dramaCatalog(source, genre, page, keyword)
+      )
+    }
+  )
+
+  ipcMain.handle('drama:detail', (_e, source: DramaSourceInput, seriesId: string) => {
+    if (
+      !isDramaSourceInput(source) ||
+      typeof seriesId !== 'string' ||
+      !seriesId ||
+      seriesId.length > 300
+    ) {
+      return { ok: false, error: '短剧参数无效' }
+    }
+    return cachedResponse(
+      `drama:detail|${source.id}|${source.baseUrl ?? ''}|${seriesId}`,
+      10 * 60 * 1000,
+      () => dramaDetail(source, seriesId)
+    )
+  })
+
+  ipcMain.handle(
+    'drama:play',
+    (_e, source: DramaSourceInput, seriesId: string, episodeId: string) => {
+      if (
+        !isDramaSourceInput(source) ||
+        typeof seriesId !== 'string' ||
+        !seriesId ||
+        seriesId.length > 300 ||
+        typeof episodeId !== 'string' ||
+        !episodeId ||
+        episodeId.length > 300
+      ) {
+        return { ok: false, error: '短剧参数无效' }
+      }
+      return cachedResponse(
+        `drama:play|${source.id}|${source.baseUrl ?? ''}|${seriesId}|${episodeId}`,
+        60 * 1000,
+        () => dramaPlay(source, seriesId, episodeId),
+        2 * 60 * 1000
+      )
+    }
+  )
+
+  // ---------- 磁力搜索（第三方索引站） ----------
+  ipcMain.handle('magnet:state', () => loadMagnetState())
+  ipcMain.handle('magnet:saveSources', (_e, sources: MagnetSource[]) =>
+    saveMagnetSources(sources)
+  )
+  ipcMain.handle('magnet:resetSources', () => resetMagnetSources())
+  ipcMain.handle('magnet:exportSources', (_e, sources: MagnetSource[]) =>
+    exportMagnetSources(sources)
+  )
+  ipcMain.handle('magnet:importSources', () => importMagnetSources())
+  ipcMain.handle('magnet:openLog', () => openMagnetLog())
+  ipcMain.handle('magnet:test', (_e, source: MagnetSource) => testMagnetSource(source))
+  ipcMain.handle(
+    'magnet:search',
+    (_e, source: MagnetSource, keyword: string, page: number, options: MagnetOptions) => {
+      if (typeof keyword !== 'string' || !Number.isFinite(page)) {
+        return {
+          ok: false,
+          items: [],
+          hasNext: false,
+          page: 1,
+          sourceId: null,
+          errors: [],
+          error: '搜索参数无效'
+        }
+      }
+      return searchMagnetSource(source, keyword, page, options)
+    }
+  )
+  ipcMain.handle(
+    'magnet:searchAll',
+    (_e, sources: MagnetSource[], keyword: string, options: MagnetOptions) => {
+      if (typeof keyword !== 'string') {
+        return {
+          ok: false,
+          items: [],
+          hasNext: false,
+          page: 1,
+          sourceId: null,
+          errors: [],
+          error: '搜索参数无效'
+        }
+      }
+      return searchMagnetAll(sources, keyword, options)
+    }
+  )
+  ipcMain.handle('magnet:open', (_e, magnet: string) => openMagnet(magnet))
+
   // 导出片源 / 电视源为 JSON 文件（只导名称与地址，不含任何账号信息）
   ipcMain.handle('vod:exportSources', async (_e, sources: unknown) => {
     const list = Array.isArray(sources) ? sources : []
     const picked = await dialog.showSaveDialog({
       title: '导出影视源',
-      defaultPath: join(app.getPath('documents'), `老郑分享-影视源-${stamp()}.json`),
+      defaultPath: join(
+        lastDialogDir('vod', app.getPath('documents')),
+        `老郑分享-影视源-${stamp()}.json`
+      ),
       filters: [{ name: 'JSON', extensions: ['json'] }]
     })
     if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('vod', picked.filePath)
     try {
       const rows = list
         .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
@@ -989,6 +1185,201 @@ function registerIpc(): void {
       return { canceled: false, path: picked.filePath, count: rows.length }
     } catch (err) {
       return { canceled: false, error: (err as Error).message }
+    }
+  })
+
+  // 导出短剧源为 JSON（含西饭短剧及其自定义地址）
+  ipcMain.handle('drama:exportSources', async (_e, sources: unknown) => {
+    const list = Array.isArray(sources) ? sources : []
+    const picked = await dialog.showSaveDialog({
+      title: '导出短剧源',
+      defaultPath: join(
+        lastDialogDir('drama', app.getPath('documents')),
+        `老郑分享-短剧源-${stamp()}.json`
+      ),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('drama', picked.filePath)
+    try {
+      const rows = list
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl))
+      await writeFile(picked.filePath, JSON.stringify(rows, null, 2), 'utf8')
+      return { canceled: false, path: picked.filePath, count: rows.length }
+    } catch (err) {
+      return { canceled: false, error: (err as Error).message }
+    }
+  })
+
+  // 片源管理：影视源 / 短剧源 / 电视源 / 磁力源一起导出或导入
+  ipcMain.handle('sources:exportAll', async (_e, bundle: unknown) => {
+    const raw = bundle && typeof bundle === 'object' ? (bundle as Record<string, unknown>) : {}
+    const rowsOf = (key: string): Record<string, unknown>[] =>
+      Array.isArray(raw[key])
+        ? (raw[key] as unknown[]).filter(
+            (item): item is Record<string, unknown> => !!item && typeof item === 'object'
+          )
+        : []
+    const picked = await dialog.showSaveDialog({
+      title: '导出全部源',
+      defaultPath: join(
+        lastDialogDir('all-sources', app.getPath('documents')),
+        `老郑分享-全部源-${stamp()}.json`
+      ),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('all-sources', picked.filePath)
+    try {
+      const toFeedRows = (rows: Record<string, unknown>[]) =>
+        rows
+          .map((s) => ({
+            name: typeof s.name === 'string' ? s.name : '',
+            baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+            enabled: s.enabled !== false
+          }))
+          .filter((s) => /^https?:\/\//i.test(s.baseUrl))
+      const vodSources = toFeedRows(rowsOf('vodSources'))
+      const dramaSources = rowsOf('dramaSources')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => s.id === 'xifan' || /^https?:\/\//i.test(s.baseUrl))
+      const liveSources = normalizeLiveSources(rowsOf('liveSources')).map((s) => ({
+        name: s.name,
+        url: s.url,
+        enabled: s.enabled,
+        content: s.content
+      }))
+      const magnetSources = rowsOf('magnetSources').map((s) => ({
+        ...s,
+        testStatus: null,
+        testMsg: null,
+        testAt: 0
+      }))
+      const payload = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        vodSources,
+        dramaSources,
+        liveSources,
+        magnetSources
+      }
+      await writeFile(picked.filePath, JSON.stringify(payload, null, 2), 'utf8')
+      return {
+        canceled: false,
+        path: picked.filePath,
+        count: vodSources.length + dramaSources.length + liveSources.length + magnetSources.length
+      }
+    } catch (err) {
+      return { canceled: false, error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle('sources:importAll', async () => {
+    const picked = await dialog.showOpenDialog({
+      title: '导入全部源',
+      defaultPath: lastDialogDir('all-sources', app.getPath('documents')),
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePaths[0]) return { canceled: true }
+    await rememberDialogDir('all-sources', picked.filePaths[0])
+    try {
+      const text = (await readFile(picked.filePaths[0], 'utf8')).replace(/^\uFEFF/, '')
+      const raw = JSON.parse(text) as unknown
+      const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+      const rowsOf = (key: string): unknown[] => (Array.isArray(o[key]) ? (o[key] as unknown[]) : [])
+      const data = {
+        vodSources: rowsOf('vodSources'),
+        dramaSources: rowsOf('dramaSources'),
+        liveSources: normalizeLiveSources(rowsOf('liveSources')),
+        magnetSources: rowsOf('magnetSources')
+      }
+      if (
+        !data.vodSources.length &&
+        !data.dramaSources.length &&
+        !data.liveSources.length &&
+        !data.magnetSources.length
+      ) {
+        return { canceled: false, error: '文件里没有可导入的源' }
+      }
+      return { canceled: false, data }
+    } catch (err) {
+      return { canceled: false, error: `读取失败：${(err as Error).message}` }
+    }
+  })
+
+  // 清单管理：清单 / 关联 / 条目单独导出或导入
+  ipcMain.handle('lists:export', async (_e, bundle: unknown) => {
+    const raw = bundle && typeof bundle === 'object' ? (bundle as Record<string, unknown>) : {}
+    const rowsOf = (key: string): unknown[] => (Array.isArray(raw[key]) ? (raw[key] as unknown[]) : [])
+    const lists = rowsOf('lists')
+    const picked = await dialog.showSaveDialog({
+      title: '导出清单',
+      defaultPath: join(
+        lastDialogDir('lists', app.getPath('documents')),
+        `老郑分享-清单-${stamp()}.json`
+      ),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('lists', picked.filePath)
+    try {
+      await writeFile(
+        picked.filePath,
+        JSON.stringify(
+          {
+            version: 1,
+            exportedAt: new Date().toISOString(),
+            lists,
+            listItems: rowsOf('listItems'),
+            items: rowsOf('items')
+          },
+          null,
+          2
+        ),
+        'utf8'
+      )
+      return { canceled: false, path: picked.filePath, count: lists.length }
+    } catch (err) {
+      return { canceled: false, error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle('lists:import', async () => {
+    const picked = await dialog.showOpenDialog({
+      title: '导入清单',
+      defaultPath: lastDialogDir('lists', app.getPath('documents')),
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePaths[0]) return { canceled: true }
+    await rememberDialogDir('lists', picked.filePaths[0])
+    try {
+      const text = (await readFile(picked.filePaths[0], 'utf8')).replace(/^\uFEFF/, '')
+      const raw = JSON.parse(text) as unknown
+      const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+      const rowsOf = (key: string): unknown[] => (Array.isArray(o[key]) ? (o[key] as unknown[]) : [])
+      const data = {
+        lists: rowsOf('lists'),
+        listItems: rowsOf('listItems'),
+        items: rowsOf('items')
+      }
+      if (!data.lists.length) return { canceled: false, error: '文件里没有清单' }
+      return { canceled: false, data }
+    } catch (err) {
+      return { canceled: false, error: `读取失败：${(err as Error).message}` }
     }
   })
 
@@ -1040,10 +1431,14 @@ function registerIpc(): void {
     const list = Array.isArray(sources) ? sources : []
     const picked = await dialog.showSaveDialog({
       title: '导出电视源',
-      defaultPath: join(app.getPath('documents'), `老郑分享-电视源-${stamp()}.json`),
+      defaultPath: join(
+        lastDialogDir('live', app.getPath('documents')),
+        `老郑分享-电视源-${stamp()}.json`
+      ),
       filters: [{ name: 'JSON', extensions: ['json'] }]
     })
     if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('live', picked.filePath)
     try {
       const rows = normalizeLiveSources(list).map((s) => ({
         name: s.name,
@@ -1117,9 +1512,11 @@ function registerIpc(): void {
   ipcMain.handle('downloads:chooseRoot', async () => {
     const picked = await dialog.showOpenDialog({
       title: '选择下载总目录',
+      defaultPath: lastDialogDir('downloadRoot', downloadRoot()),
       properties: ['openDirectory', 'createDirectory']
     })
     if (picked.canceled || !picked.filePaths[0]) return { canceled: true }
+    await rememberDialogDir('downloadRoot', picked.filePaths[0], true)
     return { canceled: false, root: picked.filePaths[0] }
   })
 
@@ -1614,11 +2011,13 @@ function registerIpc(): void {
   ipcMain.handle('live:importFile', async () => {
     const picked = await dialog.showOpenDialog({
       title: '导入 M3U 直播源',
+      defaultPath: lastDialogDir('live', app.getPath('documents')),
       properties: ['openFile'],
       filters: [{ name: 'M3U 播放列表', extensions: ['m3u', 'm3u8', 'txt'] }]
     })
     if (picked.canceled || picked.filePaths.length === 0) return { canceled: true }
     const file = picked.filePaths[0]
+    await rememberDialogDir('live', file)
     try {
       const text = await readFile(file, 'utf8')
       if (!text.trim()) return { canceled: false, error: '文件内容为空' }
@@ -1644,10 +2043,12 @@ function registerIpc(): void {
   ipcMain.handle('data:import', async () => {
     const picked = await dialog.showOpenDialog({
       title: '导入备份',
+      defaultPath: lastDialogDir('data', app.getPath('documents')),
       properties: ['openFile'],
       filters: [{ name: '备份 JSON', extensions: ['json'] }]
     })
     if (picked.canceled || picked.filePaths.length === 0) return { canceled: true }
+    await rememberDialogDir('data', picked.filePaths[0])
     try {
       const data = await importFromFile(picked.filePaths[0])
       return { canceled: false, data }
@@ -1659,10 +2060,14 @@ function registerIpc(): void {
   ipcMain.handle('data:export', async (_e, data: AppData) => {
     const picked = await dialog.showSaveDialog({
       title: '导出备份',
-      defaultPath: join(app.getPath('documents'), `老郑分享备份-${stamp()}.json`),
+      defaultPath: join(
+        lastDialogDir('data', app.getPath('documents')),
+        `老郑分享备份-${stamp()}.json`
+      ),
       filters: [{ name: '备份 JSON', extensions: ['json'] }]
     })
     if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('data', picked.filePath)
     try {
       await exportToFile(picked.filePath, await buildBackupPayload(data))
       return { canceled: false, path: picked.filePath }

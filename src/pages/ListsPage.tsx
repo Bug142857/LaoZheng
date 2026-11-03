@@ -15,12 +15,18 @@ import { SearchPage } from './SearchPage'
 export function ListsPage({
   onOpenList,
   onNotice,
-  resetSignal
+  resetSignal,
+  onWatch,
+  onMagnet
 }: {
   onOpenList: (id: number) => void
   onNotice: (text: string) => void
   /** 点侧栏进入清单时回到清单首页 */
   resetSignal?: number
+  /** 影视搜索结果详情的「在线观看」 */
+  onWatch?: (title: string) => void
+  /** 影视搜索结果详情的「下载」 */
+  onMagnet?: (title: string) => void
 }) {
   const { data, update } = useData()
   const [creating, setCreating] = useState(false)
@@ -101,6 +107,8 @@ export function ListsPage({
         onNotice={onNotice}
         onImmersiveChange={setDetailOpen}
         resetSignal={resetSignal}
+        onWatch={onWatch}
+        onMagnet={onMagnet}
       />
 
       {detailOpen ? null : (

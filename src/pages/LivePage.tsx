@@ -74,10 +74,24 @@ export function LivePage({
     return () => setPlaying(null)
   }, [focusUrl])
 
-  // 从播放页去收藏/下载再返回时，回到频道列表而不是又停在播放页
+  // 从播放页去收藏/下载再返回时，回到频道列表而不是又停在播放页；
+  // 同时重新读一次电视源，保证导入备份 / 云恢复后不会继续用旧的源列表
   useEffect(() => {
     if (resetSignal === undefined) return
     setPlaying(null)
+    let alive = true
+    void window.laozheng.loadLiveSources().then((list) => {
+      if (!alive) return
+      setSources(list)
+      if (selectedId && list.some((s) => s.id === selectedId)) return
+      const first = list.find((s) => s.enabled)
+      if (first) void loadChannels(first)
+      else setSelectedId('')
+    })
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetSignal])
 
   const current = sources?.find((s) => s.id === selectedId) ?? null

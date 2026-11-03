@@ -73,9 +73,13 @@ export function listCovers(data: AppData, listId: number, limit = 4): string[] {
   push(list?.coverUrl)
   for (const item of newestItems(listId)) push(item.coverUrl)
 
+  // 坏数据里可能出现父子环（a.parentId=b、b.parentId=a），用 visited 防止无限递归
+  const visited = new Set<number>([listId])
   const walk = (parentId: number): void => {
     const children = childrenOf(data, parentId).sort((a, b) => b.createdAt - a.createdAt)
     for (const child of children) {
+      if (visited.has(child.id)) continue
+      visited.add(child.id)
       push(child.coverUrl)
       for (const item of newestItems(child.id)) push(item.coverUrl)
       if (out.length >= limit) return
@@ -144,6 +148,7 @@ export const FAV_MODULE_LABELS: Record<string, string> = {
   tv: '电视',
   music: '音乐',
   watch: '观影',
+  drama: '短剧',
   book: '图书',
   game: '游戏'
 }

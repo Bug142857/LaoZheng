@@ -18,7 +18,7 @@ interface DataContextValue {
   ready: boolean
   saveState: SaveState
   update: (fn: (data: AppData) => AppData) => void
-  replaceData: (data: AppData) => void
+  replaceData: (data: AppData) => Promise<void>
 }
 
 const DataContext = createContext<DataContextValue | null>(null)
@@ -53,12 +53,15 @@ export function DataProvider({ children }: { children: ReactNode }) {
       .catch(() => undefined)
       .then(() => window.laozheng.saveData(next))
       .then(() => {
-        if (dataRef.current === next) dirtyRef.current = false
-        setSaveState('saved')
+        // 只有落盘的就是当前最新数据时才标记已保存，避免旧请求把状态改回 saved
+        if (dataRef.current === next) {
+          dirtyRef.current = false
+          setSaveState('saved')
+        }
       })
       .catch((err) => {
         console.error('[data] 保存失败', err)
-        setSaveState('idle')
+        if (dataRef.current === next) setSaveState('idle')
       })
   }, [])
 
@@ -86,13 +89,18 @@ export function DataProvider({ children }: { children: ReactNode }) {
   )
 
   const replaceData = useCallback(
-    (next: AppData) => {
+    (next: AppData): Promise<void> => {
+      // 取消尚未触发的防抖保存：否则导入 / 云恢复后，旧的待保存数据会把新数据覆盖回磁盘
+      if (timerRef.current != null) {
+        window.clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
       dataRef.current = next
       dirtyRef.current = true
       setData(next)
       flush(next)
       // 导入 / 云恢复：把电视源、下载记录、本机设置一起写回，并立即应用新主题
-      void window.laozheng
+      return window.laozheng
         .applyBackupExtras(next)
         .then(() => window.laozheng.getUiSettings())
         .then((settings) => applyUiSettings(settings))

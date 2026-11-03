@@ -227,7 +227,17 @@ export function DownloadsPage({
 
   const doRemove = async (deleteFile: boolean) => {
     if (!removing) return
-    await window.laozheng.removeDownload(removing.id, deleteFile)
+    try {
+      const res = await window.laozheng.removeDownload(removing.id, deleteFile)
+      if (!res?.ok) {
+        // 文件被占用时记录仍在，弹窗保留，用户可以关掉播放器后重试
+        onNotice(`删除失败：${res?.error ?? '未知错误'}`)
+        return
+      }
+    } catch (err) {
+      onNotice(`删除失败：${(err as Error).message}`)
+      return
+    }
     onNotice(deleteFile ? '已移到系统回收站并删除记录' : '已移除下载记录')
     setRemoving(null)
     void refresh()
@@ -287,9 +297,11 @@ export function DownloadsPage({
         </button>
         <h1 className="page-title">{activeSection ? activeSection.label : '下载'}</h1>
         <div className="page-actions">
-          <button className="btn" onClick={() => void chooseRoot()}>
-            <Settings2 size={15} /> 更改目录
-          </button>
+          {!section && (
+            <button className="btn" onClick={() => void chooseRoot()}>
+              <Settings2 size={15} /> 更改目录
+            </button>
+          )}
           <button className="btn" onClick={() => void openDir()}>
             <FolderOpen size={15} /> 打开目录
           </button>
@@ -549,7 +561,7 @@ export function DownloadsPage({
           <p>
             确定删除「{removing.title}」吗？
             {'\n'}
-            文件会移到 Windows 回收站，仍可从回收站还原；下载记录会一并移除。
+            文件会移到 Windows 回收站，仍可从回收站还原；下载记录会一并移除，之后从回收站还原文件时记录会自动恢复。
             {removing.hls ? '\nHLS 下载会整目录移到回收站（切片与播放列表）。' : ''}
           </p>
         </Modal>

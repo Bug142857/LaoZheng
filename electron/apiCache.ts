@@ -118,7 +118,8 @@ export async function cachedResponse<T>(
 
   try {
     const raw = JSON.parse(await readFile(fileOf(key), 'utf8')) as CacheEntry<T>
-    if (raw && typeof raw.at === 'number') {
+    // 缓存文件可能被截断或手工改坏：value 缺失时按未命中处理，避免把 undefined 返回给页面
+    if (raw && typeof raw.at === 'number' && 'value' in raw && raw.value !== undefined) {
       remember(key, raw)
       const age = now - raw.at
       if (age > maxStaleMs) return refreshNow(key, load, raw.value)

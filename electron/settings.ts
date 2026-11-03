@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { ThemeMode, UiSettings } from '../src/shared/settings'
 import type { BackupSettings } from '../src/shared/types'
 
@@ -13,7 +13,12 @@ interface AppSettings {
   downloadRoot: string
   theme: ThemeMode
   accent: string
-  /** 上次保存图片选择的位置（再次保存时默认打开这里） */
+  /**
+   * 各类文件对话框上次选择的目录：
+   * data / vod / live / magnet / image / downloadRoot
+   */
+  lastDirs?: Record<string, string>
+  /** 旧字段：上次保存图片的目录，读取时迁移到 lastDirs.image */
   lastImageDir?: string
 }
 
@@ -42,17 +47,36 @@ export function uiSettings(): UiSettings {
   return { theme: current.theme, accent: current.accent }
 }
 
-export function lastImageDir(): string {
-  return current.lastImageDir ?? ''
+/** 某个文件对话框上次使用的目录，没记过时返回 fallback */
+export function lastDialogDir(key: string, fallback: string): string {
+  return current.lastDirs?.[key]?.trim() || fallback
 }
 
-/** 备份用的本机设置快照（下载目录 / 主题 / 上次保存图片位置） */
+/**
+ * 记住文件对话框这次选择的目录（导入 / 导出 / 保存图片共用）。
+ * isDirectory = true 时把传入路径本身当目录（选择文件夹的对话框）。
+ */
+export async function rememberDialogDir(
+  key: string,
+  filePath: string,
+  isDirectory = false
+): Promise<void> {
+  const dir = (isDirectory ? filePath : dirname(filePath)).trim()
+  if (!dir) return
+  if (!current.lastDirs) current.lastDirs = {}
+  if (current.lastDirs[key] === dir) return
+  current.lastDirs[key] = dir
+  await saveSettings()
+}
+
+/** 备份用的本机设置快照（下载目录 / 主题 / 各对话框上次位置） */
 export function settingsSnapshot(): BackupSettings {
   return {
     theme: current.theme,
     accent: current.accent,
     downloadRoot: current.downloadRoot,
-    lastImageDir: current.lastImageDir
+    lastImageDir: current.lastDirs?.image,
+    lastDirs: current.lastDirs ? { ...current.lastDirs } : undefined
   }
 }
 
@@ -71,18 +95,21 @@ export async function applySettingsSnapshot(input: BackupSettings): Promise<void
     current.downloadRoot = input.downloadRoot.trim()
     changed = true
   }
-  if (typeof input.lastImageDir === 'string') {
-    current.lastImageDir = input.lastImageDir.trim()
+  if (input.lastDirs && typeof input.lastDirs === 'object') {
+    if (!current.lastDirs) current.lastDirs = {}
+    for (const [key, value] of Object.entries(input.lastDirs)) {
+      if (typeof value !== 'string' || !value.trim()) continue
+      current.lastDirs[key] = value.trim()
+      changed = true
+    }
+  }
+  // 旧备份只有 lastImageDir
+  if (typeof input.lastImageDir === 'string' && input.lastImageDir.trim()) {
+    if (!current.lastDirs) current.lastDirs = {}
+    current.lastDirs.image = input.lastImageDir.trim()
     changed = true
   }
   if (changed) await saveSettings()
-}
-
-export async function setLastImageDir(dir: string): Promise<void> {
-  const next = dir.trim()
-  if (!next || next === current.lastImageDir) return
-  current.lastImageDir = next
-  await saveSettings()
 }
 
 export async function initSettings(): Promise<void> {
@@ -95,8 +122,17 @@ export async function initSettings(): Promise<void> {
     if (typeof raw.accent === 'string' && ACCENT_KEYS.includes(raw.accent)) {
       current.accent = raw.accent
     }
+    if (raw.lastDirs && typeof raw.lastDirs === 'object') {
+      const dirs: Record<string, string> = {}
+      for (const [key, value] of Object.entries(raw.lastDirs)) {
+        if (typeof value === 'string' && value.trim()) dirs[key] = value.trim()
+      }
+      current.lastDirs = dirs
+    }
+    // 旧版本只存过图片保存目录
     if (typeof raw.lastImageDir === 'string' && raw.lastImageDir.trim()) {
-      current.lastImageDir = raw.lastImageDir.trim()
+      if (!current.lastDirs) current.lastDirs = {}
+      if (!current.lastDirs.image) current.lastDirs.image = raw.lastImageDir.trim()
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -126,7 +162,7 @@ export async function setUiSettings(input: Partial<UiSettings>): Promise<UiSetti
 async function saveSettings(): Promise<void> {
   const path = settingsPath()
   await mkdir(app.getPath('userData'), { recursive: true })
-  const tmp = `${path}.tmp`
+  const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
   await writeFile(tmp, JSON.stringify(current, null, 2), 'utf8')
   await rename(tmp, path)
 }

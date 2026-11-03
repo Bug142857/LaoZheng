@@ -440,6 +440,14 @@ button:disabled {
   display: block;
 }
 
+/* 默认（小窗口）：清单卡片保持紧凑 */
+.tile .tile-cover {
+  width: 52px;
+  height: 68px;
+  flex: 0 0 52px;
+  font-size: 13px;
+}
+
 .tile-name {
   font-size: 14.5px;
   font-weight: 600;
@@ -541,6 +549,11 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.row-title .badge {
+  margin-left: 6px;
+  vertical-align: 1px;
 }
 
 .row-meta {
@@ -790,6 +803,30 @@ button:disabled {
   font-weight: 600;
 }
 
+/* 可折叠的设置分区（短剧源默认收起） */
+.settings-card-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-card-toggle h3 {
+  flex: 1;
+  margin: 0;
+}
+
+.settings-card-toggle:hover h3 {
+  color: var(--brand);
+}
+
 .settings-hint {
   margin: 0 0 14px;
   font-size: 12px;
@@ -964,6 +1001,16 @@ button:disabled {
   background: var(--brand-soft);
   border-color: color-mix(in srgb, var(--brand) 40%, transparent);
   color: var(--brand);
+}
+
+.episode.locked {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.episode svg {
+  vertical-align: -2px;
+  margin-right: 3px;
 }
 
 .detail-head {
@@ -1936,6 +1983,76 @@ button:disabled {
   font-size: 11.5px;
   font-weight: 650;
   color: #f5c518;
+}
+
+/* 大窗口：清单首页与清单详情都换成大卡片（窗口变小时自动回到上面的小卡片） */
+@media (min-width: 1200px) {
+  .tile-grid {
+    grid-template-columns: repeat(auto-fill, minmax(460px, 1fr));
+    gap: 20px;
+  }
+
+  .tile {
+    gap: 20px;
+    padding: 22px 24px;
+  }
+
+  .tile .tile-cover {
+    width: 104px;
+    height: 136px;
+    flex: 0 0 104px;
+    font-size: 20px;
+  }
+
+  .tile-name {
+    font-size: 18px;
+  }
+
+  .tile-meta {
+    font-size: 13.5px;
+    margin-top: 6px;
+  }
+
+  .item-grid {
+    grid-template-columns: repeat(auto-fill, minmax(440px, 1fr));
+    gap: 20px;
+  }
+
+  .item-card {
+    gap: 16px;
+    padding: 16px;
+  }
+
+  .item-card-cover {
+    width: 112px;
+    height: 148px;
+    flex: 0 0 112px;
+    border-radius: 10px;
+    font-size: 18px;
+  }
+
+  .tile-cover.item-card-cover {
+    width: 112px;
+    height: 148px;
+    flex: 0 0 112px;
+  }
+
+  .item-card-main {
+    gap: 6px;
+  }
+
+  .item-card-title {
+    font-size: 17px;
+  }
+
+  .item-card-meta {
+    font-size: 13px;
+  }
+
+  .item-card-rating {
+    gap: 4px;
+    font-size: 13px;
+  }
 }
 
 .view-toggle {

@@ -90,9 +90,12 @@ export function MelonPage({
   /** 正文视频时长：站点不返回，播放前用隐藏 video 读元数据补上 */
   const [durations, setDurations] = useState<Record<number, string>>({})
   const requestSeq = useRef(0)
+  /** 只应用最后一次详情请求，避免返回后旧详情又把详情页打开 */
+  const detailSeq = useRef(0)
 
   useEffect(() => {
     if (resetSignal === undefined) return
+    detailSeq.current += 1
     setDetail(null)
     setPlaying(null)
   }, [resetSignal])
@@ -142,6 +145,7 @@ export function MelonPage({
     void openDetail({ id: focusId }, () => alive)
     return () => {
       alive = false
+      detailSeq.current += 1
       setDetail(null)
       setPlaying(null)
       setDetailError(null)
@@ -174,6 +178,7 @@ export function MelonPage({
   }
 
   const openDetail = async (post: MelonPost | { id: string }, alive?: () => boolean) => {
+    const seq = ++detailSeq.current
     setDetail(null)
     setDetailError(null)
     setDetailLoading(true)
@@ -181,6 +186,7 @@ export function MelonPage({
     setDurations({})
     const res = await window.laozheng.melonDetail(post.id)
     if (alive && !alive()) return
+    if (seq !== detailSeq.current) return
     setDetailLoading(false)
     if (!res.ok || !res.detail) {
       setDetailError(res.error ?? '加载失败')
@@ -282,6 +288,7 @@ export function MelonPage({
           <button
             className="btn ghost"
             onClick={() => {
+              detailSeq.current += 1
               setPlaying(null)
               setDetail(null)
               setDetailError(null)

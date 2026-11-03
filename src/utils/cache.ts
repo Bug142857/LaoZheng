@@ -14,8 +14,31 @@ export function loadCache<T>(key: string, fallback: T): T {
     if (Array.isArray(fallback)) {
       return (Array.isArray(parsed) ? parsed : fallback) as T
     }
-    if (parsed && typeof parsed === 'object') {
-      return { ...(fallback as object), ...(parsed as object) } as T
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed) &&
+      fallback &&
+      typeof fallback === 'object' &&
+      !Array.isArray(fallback)
+    ) {
+      // 按 fallback 逐字段校验类型：旧版本 / 损坏缓存里的 items 不是数组时直接丢弃该字段
+      const base: Record<string, unknown> = { ...(fallback as Record<string, unknown>) }
+      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (!(key in base)) {
+          base[key] = value
+          continue
+        }
+        const expected = base[key]
+        if (Array.isArray(expected)) {
+          if (Array.isArray(value)) base[key] = value
+        } else if (expected === null || expected === undefined) {
+          base[key] = value
+        } else if (typeof expected === typeof value) {
+          base[key] = value
+        }
+      }
+      return base as T
     }
     return fallback
   } catch {

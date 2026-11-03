@@ -19,7 +19,10 @@ const DEFAULT_LIVE_SOURCES: LiveSource[] = [
     name: 'IPv4 直播源',
     url: 'https://gh-proxy.com/raw.githubusercontent.com/vbskycn/iptv/refs/heads/master/tv/iptv4.m3u',
     content: '',
-    enabled: true
+    enabled: true,
+    testStatus: null,
+    testMsg: null,
+    testAt: 0
   }
 ]
 
@@ -33,7 +36,10 @@ function normalizeSource(raw: unknown): LiveSource | null {
     name: typeof o.name === 'string' && o.name ? o.name : '直播源',
     url,
     content: typeof o.content === 'string' ? o.content : '',
-    enabled: o.enabled !== false
+    enabled: o.enabled !== false,
+    testStatus: o.testStatus === 'ok' || o.testStatus === 'failed' ? o.testStatus : null,
+    testMsg: typeof o.testMsg === 'string' ? o.testMsg : null,
+    testAt: typeof o.testAt === 'number' && Number.isFinite(o.testAt) ? o.testAt : 0
   }
 }
 
@@ -56,12 +62,22 @@ export async function loadLiveSources(): Promise<LiveSource[]> {
   }
 }
 
-export async function saveLiveSources(sources: LiveSource[]): Promise<void> {
-  const path = liveSourcesPath()
-  await mkdir(app.getPath('userData'), { recursive: true })
-  const tmp = `${path}.tmp`
-  await writeFile(tmp, JSON.stringify(sources, null, 2), 'utf8')
-  await rename(tmp, path)
+/**
+ * 电视源保存串行化：整体测试时会并发回写多条结果，
+ * 固定临时文件名 / 并发 rename 会互相覆盖，这里按调用顺序排队写入。
+ */
+let saveChain: Promise<void> = Promise.resolve()
+
+export function saveLiveSources(sources: LiveSource[]): Promise<void> {
+  const snapshot = sources.map((source) => ({ ...source }))
+  saveChain = saveChain.catch(() => undefined).then(async () => {
+    const path = liveSourcesPath()
+    await mkdir(app.getPath('userData'), { recursive: true })
+    const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
+    await writeFile(tmp, JSON.stringify(snapshot, null, 2), 'utf8')
+    await rename(tmp, path)
+  })
+  return saveChain
 }
 
 const UA =
@@ -116,7 +132,16 @@ export async function testLiveSource(source: LiveSource): Promise<LiveTestResult
 
 export function makeLocalSource(name: string, content: string): LiveSource {
   const id = `local_${Math.abs(hash(`${name}:${content.length}`))}`
-  return { id, name, url: `local://${name}`, content, enabled: true }
+  return {
+    id,
+    name,
+    url: `local://${name}`,
+    content,
+    enabled: true,
+    testStatus: null,
+    testMsg: null,
+    testAt: 0
+  }
 }
 
 function hash(s: string): number {

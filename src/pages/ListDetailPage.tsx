@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, Grid2X2, List, Pencil, Plus, Search, Star, Trash2, X } from 'lucide-react'
 import type { CollectionItem, ItemList } from '../shared/types'
 import { useData } from '../state/DataContext'
@@ -20,13 +20,15 @@ export function ListDetailPage({
   onBack,
   onOpenList,
   onNotice,
-  onWatch
+  onWatch,
+  onMagnet
 }: {
   listId: number
   onBack: () => void
   onOpenList: (id: number) => void
   onNotice: (text: string) => void
   onWatch?: (title: string) => void
+  onMagnet?: (title: string) => void
 }) {
   const { data, update } = useData()
   const [renaming, setRenaming] = useState(false)
@@ -36,6 +38,16 @@ export function ListDetailPage({
   const [view, setView] = useState<ViewMode>('grid')
   const [detail, setDetail] = useState<CollectionItem | null>(null)
   const [query, setQuery] = useState('')
+
+  useEffect(() => {
+    // 进入子清单 / 返回上级时沿用同一个组件实例，搜索词和弹窗状态不能带过去
+    setQuery('')
+    setDetail(null)
+    setRenaming(false)
+    setDeleting(false)
+    setCreatingChild(false)
+    setRemoving(null)
+  }, [listId])
 
   const list = data.lists.find((l) => l.id === listId)
   const children = useMemo(() => childrenOf(data, listId), [data, listId])
@@ -176,6 +188,7 @@ export function ListDetailPage({
           onBack={() => setDetail(null)}
           onNotice={onNotice}
           onWatch={onWatch}
+          onMagnet={onMagnet}
           actions={
             <button className="btn danger" onClick={() => setRemoving(detail.id)}>
               <Trash2 size={14} /> 从清单移除

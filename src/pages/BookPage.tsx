@@ -36,9 +36,12 @@ export function BookPage({
   const [downloading, setDownloading] = useState(false)
   const [pending, setPending] = useState<ZlibBook | null>(null)
   const seqRef = useRef(0)
+  /** 只应用最后一次详情请求，避免返回列表后旧详情又把详情页打开 */
+  const detailSeq = useRef(0)
 
   useEffect(() => {
     if (resetSignal === undefined) return
+    detailSeq.current += 1
     setDetail(null)
   }, [resetSignal])
 
@@ -62,6 +65,7 @@ export function BookPage({
     void loadDetail(id, hash || '-', () => alive)
     return () => {
       alive = false
+      detailSeq.current += 1
       setDetail(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -88,9 +92,11 @@ export function BookPage({
   }
 
   const loadDetail = async (id: string, hash: string, alive?: () => boolean) => {
+    const seq = ++detailSeq.current
     setDetail({ book: null, loading: true, error: null })
     const res = await window.laozheng.zlibDetail(id, hash)
     if (alive && !alive()) return
+    if (seq !== detailSeq.current) return
     setDetail({
       book: res.ok ? res.book : null,
       loading: false,
@@ -165,6 +171,7 @@ export function BookPage({
             className="btn ghost"
             onClick={() => {
               // 先清掉详情再返回，避免从收藏返回后又落回详情页
+              detailSeq.current += 1
               setDetail(null)
               if (focusId && onExit) onExit()
             }}
@@ -257,6 +264,9 @@ export function BookPage({
           setSearching(false)
         }}
         onClear={() => {
+          // 清空时作废正在跑的搜索，避免旧结果过一会儿又冒出来
+          seqRef.current += 1
+          setSearching(false)
           setInput('')
           setSearched(false)
           setBooks([])

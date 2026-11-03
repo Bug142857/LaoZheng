@@ -66,7 +66,9 @@ export function SearchPage({
   onNotice,
   embedded = false,
   onImmersiveChange,
-  resetSignal
+  resetSignal,
+  onWatch,
+  onMagnet
 }: {
   onNotice: (text: string) => void
   /** 嵌在「清单」页里时不再重复页面标题 */
@@ -75,6 +77,10 @@ export function SearchPage({
   onImmersiveChange?: (open: boolean) => void
   /** 点侧栏重新进入清单时关闭详情页 */
   resetSignal?: number
+  /** 影视搜索结果详情的「在线观看」 */
+  onWatch?: (title: string) => void
+  /** 影视搜索结果详情的「下载」 */
+  onMagnet?: (title: string) => void
 }) {
   const { data, update } = useData()
   const [category, setCategory] = useState<SearchCategory>('video')
@@ -144,6 +150,9 @@ export function SearchPage({
 
   const switchCategory = (next: SearchCategory) => {
     if (next === category) return
+    // 作废还在跑的旧分类搜索，避免旧结果回来后显示在新分类下
+    seqRef.current += 1
+    setLoading(false)
     setCategory(next)
     setItems([])
     setError(null)
@@ -339,6 +348,8 @@ export function SearchPage({
           item={workItem}
           onBack={() => setPersonWork(null)}
           onNotice={onNotice}
+          onWatch={onWatch}
+          onMagnet={onMagnet}
           actions={
             collected ? (
               <button className="btn danger" onClick={() => setRemovingDetail(collected)}>
@@ -387,6 +398,8 @@ export function SearchPage({
             setDetailSource(null)
           }}
           onNotice={onNotice}
+          onWatch={onWatch}
+          onMagnet={onMagnet}
           actions={
             collected ? (
               <>
@@ -452,6 +465,9 @@ export function SearchPage({
           setLoading(false)
         }}
         onClear={() => {
+          // 清空时也作废正在跑的搜索，避免旧结果过一会儿又冒出来
+          seqRef.current += 1
+          setLoading(false)
           setQuery('')
           setItems([])
           setSearched(false)

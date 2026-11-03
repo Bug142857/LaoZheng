@@ -1,7 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { existsSync, createReadStream, createWriteStream } from 'node:fs'
 import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { createServer } from 'node:http'
+import { createServer, type ServerResponse } from 'node:http'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -18,6 +18,7 @@ import type {
   DownloadKind,
   DownloadListResponse,
   DownloadRecord,
+  DownloadRemoveResult,
   DownloadTask
 } from '../src/shared/downloads'
 import { komiicImageAuth } from './komiic'
@@ -315,9 +316,102 @@ async function loadLibrary(): Promise<void> {
 async function saveLibrary(): Promise<void> {
   const path = libraryPath()
   await mkdir(app.getPath('userData'), { recursive: true })
-  const tmp = `${path}.tmp`
+  const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
   await writeFile(tmp, JSON.stringify(items, null, 2), 'utf8')
   await rename(tmp, path)
+}
+
+interface DeletedDownload {
+  record: DownloadRecord
+  deletedAt: number
+}
+
+/** 已删除文件的记录墓碑：文件从回收站还原后，下次读取下载列表时自动恢复记录 */
+let deletedRecords: DeletedDownload[] = []
+let deletedLoaded = false
+let restoreRunning: Promise<void> | null = null
+
+function deletedRecordsPath(): string {
+  return join(app.getPath('userData'), 'downloads-trash.json')
+}
+
+async function loadDeletedRecords(): Promise<void> {
+  if (deletedLoaded) return
+  deletedLoaded = true
+  try {
+    const raw = JSON.parse(await readFile(deletedRecordsPath(), 'utf8')) as unknown
+    if (!Array.isArray(raw)) return
+    deletedRecords = raw
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') return null
+        const o = entry as Record<string, unknown>
+        const record = normalizeRecord(o.record)
+        if (!record) return null
+        return {
+          record,
+          deletedAt: typeof o.deletedAt === 'number' ? o.deletedAt : Date.now()
+        }
+      })
+      .filter((entry): entry is DeletedDownload => !!entry)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error('[downloads] 读取删除记录失败', err)
+    }
+  }
+}
+
+async function saveDeletedRecords(): Promise<void> {
+  const path = deletedRecordsPath()
+  await mkdir(app.getPath('userData'), { recursive: true })
+  const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
+  await writeFile(tmp, JSON.stringify(deletedRecords, null, 2), 'utf8')
+  await rename(tmp, path)
+}
+
+async function rememberDeleted(item: DownloadRecord): Promise<void> {
+  await loadDeletedRecords()
+  deletedRecords = deletedRecords.filter((entry) => entry.record.playPath !== item.playPath)
+  deletedRecords.push({ record: { ...item }, deletedAt: Date.now() })
+  // 只保留最近 300 条，避免文件一直不还原时无限增长
+  if (deletedRecords.length > 300) {
+    deletedRecords = deletedRecords.slice(deletedRecords.length - 300)
+  }
+  await saveDeletedRecords()
+}
+
+/**
+ * 文件被还原回下载目录后（回收站还原 / 手动放回），把对应记录加回列表。
+ * 只认应用自己删除过的记录，不会把用户随手放进目录的文件当成下载。
+ */
+async function restoreDeletedRecords(): Promise<void> {
+  await loadLibrary()
+  await loadDeletedRecords()
+  if (!deletedRecords.length) return
+  const root = resolve(downloadsRoot())
+  const existing = new Set(items.map((item) => item.playPath))
+  const keep: DeletedDownload[] = []
+  let changed = false
+  for (const entry of deletedRecords) {
+    const abs = resolve(root, entry.record.playPath)
+    // 坏记录可能带 ../，只恢复下载目录内的路径
+    if (!abs.startsWith(root + sep)) continue
+    if (existing.has(entry.record.playPath)) continue
+    if (!existsSync(abs)) {
+      keep.push(entry)
+      continue
+    }
+    items.push(entry.record)
+    existing.add(entry.record.playPath)
+    changed = true
+  }
+  if (keep.length !== deletedRecords.length) {
+    deletedRecords = keep
+    await saveDeletedRecords()
+  }
+  if (changed) {
+    await saveLibrary()
+    notify()
+  }
 }
 
 function notify(): void {
@@ -342,17 +436,31 @@ function notify(): void {
 function toPublicItem(item: StoredItem): DownloadItem {
   return {
     ...item,
-    playUrl: mediaPort ? `http://127.0.0.1:${mediaPort}/media/${encodeURI(item.playPath)}` : ''
+    playUrl: mediaUrl(item.playPath)
   }
 }
 
 /** 是否有下载任务在跑（清理 .part 缓存前判断，避免删掉正在写入的文件） */
 export function hasRunningDownloads(): boolean {
-  return tasks.size > 0
+  for (const task of tasks.values()) {
+    if (task.state === 'running') return true
+  }
+  return false
 }
 
 export async function listDownloads(): Promise<DownloadListResponse> {
   await loadLibrary()
+  // 文件从回收站还原后自动恢复对应记录；并发调用时只跑一次
+  if (!restoreRunning) {
+    restoreRunning = restoreDeletedRecords()
+      .catch((err) => {
+        console.error('[downloads] 恢复删除记录失败', err)
+      })
+      .finally(() => {
+        restoreRunning = null
+      })
+  }
+  await restoreRunning
   // 旧版本下载的 HLS 因为 ffmpeg 工作目录问题没有合并：后台补一次无损合成
   void repairLegacyHls()
   return {
@@ -917,8 +1025,14 @@ export async function playDownloadItem(id: string): Promise<void> {
   if (err) throw new Error(err)
 }
 
+/** 本地媒体地址：逐段编码，文件名里的 # / % 等字符也能正确播放 */
 function mediaUrl(rel: string): string {
-  return mediaPort ? `http://127.0.0.1:${mediaPort}/media/${encodeURI(rel)}` : ''
+  if (!mediaPort) return ''
+  const encoded = rel
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/')
+  return `http://127.0.0.1:${mediaPort}/media/${encoded}`
 }
 
 async function walkFiles(dir: string, depth = 0): Promise<string[]> {
@@ -1023,29 +1137,48 @@ export async function readDownloadItem(
   return { ok: true, kind: 'book', url: mediaUrl(item.playPath) }
 }
 
-export async function removeDownload(id: string, deleteFile: boolean): Promise<void> {
+export async function removeDownload(
+  id: string,
+  deleteFile: boolean
+): Promise<DownloadRemoveResult> {
   await loadLibrary()
   const item = items.find((i) => i.id === id)
-  if (!item) return
-  items = items.filter((i) => i.id !== id)
-  await saveLibrary()
-  if (deleteFile) {
-    const abs = resolve(downloadsRoot(), item.playPath)
-    const root = resolve(downloadsRoot())
-    if (abs.startsWith(root + sep)) {
-      // HLS 下载是目录（index.m3u8 的父目录），整目录删除
-      const target = item.hls ? resolve(abs, '..') : abs
-      // 删到系统回收站，误删可从回收站恢复；回收站不可用时才彻底删除
-      await shell.trashItem(target).catch(async () => {
-        await rm(target, { recursive: true, force: true }).catch(() => undefined)
-      })
-      // EPUB 应用内阅读会把书解包到同名 .unpacked 目录，删除时一起清掉
-      if (extname(abs).toLowerCase() === '.epub') {
-        const unpacked = join(dirname(abs), `${basename(abs, '.epub')}.unpacked`)
-        await rm(unpacked, { recursive: true, force: true }).catch(() => undefined)
+  if (!item) return { ok: true }
+  if (!deleteFile) {
+    items = items.filter((i) => i.id !== id)
+    await saveLibrary()
+    return { ok: true }
+  }
+  const root = resolve(downloadsRoot())
+  const abs = resolve(root, item.playPath)
+  // HLS 下载是目录（index.m3u8 的父目录），整目录删除
+  const target = item.hls ? resolve(abs, '..') : abs
+  if (!abs.startsWith(root + sep) || !target.startsWith(root + sep)) {
+    return { ok: false, error: '文件路径不在下载目录内，已保留下载记录' }
+  }
+  if (existsSync(target)) {
+    try {
+      // 删到系统回收站，误删可从回收站还原
+      await shell.trashItem(target)
+    } catch (err) {
+      // 文件被播放器 / 下载器占用时，先保留记录，避免文件还在但记录已消失
+      const message = (err as Error).message || '未知错误'
+      return {
+        ok: false,
+        error: `文件正在被使用或无法移到回收站，请关闭播放器后重试（${message}）`
       }
     }
   }
+  // 文件处理成功后才删记录；留一份墓碑，文件从回收站还原后记录能自动回来
+  items = items.filter((i) => i.id !== id)
+  await saveLibrary()
+  await rememberDeleted(item)
+  // EPUB 应用内阅读会把书解包到同名 .unpacked 目录，删除时一起清掉
+  if (extname(abs).toLowerCase() === '.epub') {
+    const unpacked = join(dirname(abs), `${basename(abs, '.epub')}.unpacked`)
+    await rm(unpacked, { recursive: true, force: true }).catch(() => undefined)
+  }
+  return { ok: true }
 }
 
 export async function cancelTask(id: string): Promise<void> {
@@ -1099,7 +1232,7 @@ export async function changeDownloadRoot(
   if (nextAbs.startsWith(oldAbs + sep) || oldAbs.startsWith(nextAbs + sep)) {
     return { ok: false, error: '新旧目录不能互相包含' }
   }
-  if (move && tasks.size > 0) {
+  if (move && hasRunningDownloads()) {
     return { ok: false, error: '还有下载任务进行中，等下载完成后再迁移' }
   }
 
@@ -1108,6 +1241,19 @@ export async function changeDownloadRoot(
     try {
       await mkdir(nextAbs, { recursive: true })
       const names = await readdir(oldAbs).catch(() => [] as string[])
+      // 新目录里已有同名文件 / 目录时取消迁移，避免 cp(force) 直接覆盖用户原有内容
+      for (const name of names) {
+        const exists = await stat(join(nextAbs, name)).then(
+          () => true,
+          () => false
+        )
+        if (exists) {
+          return {
+            ok: false,
+            error: `新目录里已经有「${name}」，为避免覆盖已取消迁移，请换一个空目录`
+          }
+        }
+      }
       for (const name of names) {
         await moveEntry(join(oldAbs, name), join(nextAbs, name))
         moved += 1
@@ -1553,6 +1699,27 @@ const MIME: Record<string, string> = {
   '.otf': 'font/otf'
 }
 
+/** 本地媒体文件输出：读流出错（文件被删除 / 磁盘错误）时收掉响应，避免主进程未捕获异常 */
+function pipeMediaFile(
+  res: ServerResponse,
+  abs: string,
+  options?: { start?: number; end?: number }
+): void {
+  const stream = createReadStream(abs, options)
+  stream.on('error', () => {
+    if (!res.headersSent) {
+      try {
+        res.writeHead(404).end()
+      } catch {
+        res.destroy()
+      }
+      return
+    }
+    res.destroy()
+  })
+  stream.pipe(res)
+}
+
 export async function startMediaServer(): Promise<void> {
   if (mediaPort) return
   // 每次请求时再取根目录，设置里改了下载目录后无需重启应用
@@ -1593,12 +1760,12 @@ export async function startMediaServer(): Promise<void> {
         headers['Content-Range'] = `bytes ${start}-${end}/${info.size}`
         headers['Content-Length'] = end - start + 1
         res.writeHead(206, headers)
-        createReadStream(abs, { start, end }).pipe(res)
+        pipeMediaFile(res, abs, { start, end })
         return
       }
       headers['Content-Length'] = info.size
       res.writeHead(200, headers)
-      createReadStream(abs).pipe(res)
+      pipeMediaFile(res, abs)
     } catch {
       res.writeHead(404).end()
     }

@@ -122,11 +122,14 @@ export function ComicPage({
   const [chapterDesc, setChapterDesc] = useState(true)
   const readerRef = useRef<HTMLDivElement | null>(null)
   const requestSeq = useRef(0)
+  /** 只应用最后一次章节取图结果，避免返回后旧请求又把阅读器打开 */
+  const chapterSeq = useRef(0)
   const listKeyRef = useRef('')
   const probeCache = useRef(new Map<string, number>())
 
   useEffect(() => {
     if (resetSignal === undefined) return
+    chapterSeq.current += 1
     setDetail(null)
     setReader(null)
   }, [resetSignal])
@@ -348,6 +351,7 @@ export function ComicPage({
     void openDetailById(focusId, () => alive)
     return () => {
       alive = false
+      chapterSeq.current += 1
       setDetail(null)
       setReader(null)
     }
@@ -366,8 +370,10 @@ export function ComicPage({
   const openChapter = async (chapter: KomiicChapter) => {
     const comic = detail?.comic
     if (!comic) return
+    const seq = ++chapterSeq.current
     setReader({ comic, chapter, urls: [], loading: true, error: null })
     const res = await window.laozheng.komiicImages(comic.id, chapter.id)
+    if (seq !== chapterSeq.current) return
     setReader({
       comic,
       chapter,
@@ -381,6 +387,11 @@ export function ComicPage({
         readProgress: { ...d.readProgress, [progressKey(comic.id)]: chapter.id }
       }))
     }
+  }
+
+  const closeReader = () => {
+    chapterSeq.current += 1
+    setReader(null)
   }
 
   const downloadChapters = async (chapters: KomiicChapter[]) => {
@@ -477,7 +488,7 @@ export function ComicPage({
     return (
       <div ref={readerRef}>
         <header className="page-header">
-          <button className="btn ghost" onClick={() => setReader(null)}>
+          <button className="btn ghost" onClick={closeReader}>
             <ChevronLeft size={15} /> 返回章节
           </button>
           <h1 className="page-title">{reader.comic.title}</h1>
@@ -549,6 +560,7 @@ export function ComicPage({
             className="btn ghost"
             onClick={() => {
               // 先清掉详情再返回，避免从收藏返回后又落回详情页
+              chapterSeq.current += 1
               setDetail(null)
               setReader(null)
               if (focusId && onExit) onExit()

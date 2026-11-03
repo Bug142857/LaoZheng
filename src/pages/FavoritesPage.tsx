@@ -4,6 +4,7 @@ import {
   BookOpen,
   ChevronLeft,
   ChevronRight,
+  Clapperboard,
   Film,
   Gamepad2,
   Globe,
@@ -28,6 +29,7 @@ import type { InnerFav } from '../shared/types'
 /** 收藏管理按模块整理（顺序与手机端模块宫格一致） */
 const FAV_MODULE_ORDER = [
   'watch',
+  'drama',
   'music',
   'game',
   'tv',
@@ -42,6 +44,7 @@ const FAV_MODULE_ORDER = [
 
 const MODULE_ICONS: Record<string, LucideIcon> = {
   watch: MonitorPlay,
+  drama: Clapperboard,
   music: Music,
   game: Gamepad2,
   tv: Tv,
@@ -135,8 +138,9 @@ export function FavoritesPage({
       : `${m}:${String(s).padStart(2, '0')}`
   }
 
-  /** 番号 / P站 / X站用视频网格展示，其余模块保持列表 */
-  const gridModule = moduleKey === 'h1' || moduleKey === 'psite' || moduleKey === 'xsite'
+  /** 番号 / 短剧 / P站 / X站用视频网格展示，其余模块保持列表 */
+  const gridModule =
+    moduleKey === 'h1' || moduleKey === 'drama' || moduleKey === 'psite' || moduleKey === 'xsite'
 
   const removeFav = (fav: InnerFav) => {
     update((d) => ({

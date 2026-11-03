@@ -9,7 +9,13 @@ export interface LiveSource {
   url: string
   content: string
   enabled: boolean
+  /** 最近一次测试结果：保存在 live-sources.json，重开应用后仍显示 */
+  testStatus?: LiveSourceTestStatus | null
+  testMsg?: string | null
+  testAt?: number
 }
+
+export type LiveSourceTestStatus = 'ok' | 'failed'
 
 export interface LiveChannel {
   group: string

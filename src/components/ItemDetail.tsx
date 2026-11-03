@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ChevronLeft, Play, Star, X } from 'lucide-react'
+import { ChevronLeft, Download, Play, Star, X } from 'lucide-react'
 import type { CollectionItem } from '../shared/types'
 import type {
   PersonWork,
@@ -55,7 +55,8 @@ export function ItemDetail({
   onBack,
   actions,
   onNotice,
-  onWatch
+  onWatch,
+  onMagnet
 }: {
   item: CollectionItem
   onBack: () => void
@@ -64,6 +65,8 @@ export function ItemDetail({
   onNotice?: (text: string) => void
   /** 影视条目的「在线观看」：按片名进入观影搜索 */
   onWatch?: (title: string) => void
+  /** 影视条目的「下载」：按片名跳到磁力页并自动搜索 */
+  onMagnet?: (title: string) => void
 }) {
   const kind = useMemo(() => kindOf(item), [item])
   const [full, setFull] = useState<SubjectFull | null>(null)
@@ -182,6 +185,7 @@ export function ItemDetail({
           onBack={() => setPersonWork(null)}
           onNotice={onNotice}
           onWatch={onWatch}
+          onMagnet={onMagnet}
         />
       )
     }
@@ -337,7 +341,11 @@ export function ItemDetail({
               <button className="btn primary" onClick={() => onWatch(data.title)}>
                 <Play size={14} /> 在线观看
               </button>
-              <span className="page-desc">会按片名到观影里搜索全部片源</span>
+              {onMagnet ? (
+                <button className="btn" onClick={() => onMagnet(data.title)}>
+                  <Download size={14} /> 下载
+                </button>
+              ) : null}
             </div>
           ) : null}
           {loading ? <div className="page-desc">正在补全详情…</div> : null}

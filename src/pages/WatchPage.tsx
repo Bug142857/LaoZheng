@@ -112,6 +112,7 @@ export function WatchPage({
   const { data, update } = useData()
   const favModule = variant ? 'h1' : 'watch'
   const [keyword, setKeyword] = useState('')
+  const [sourceId, setSourceId] = useState('')
   const [searching, setSearching] = useState(false)
   const [searched, setSearched] = useState(false)
   const [progress, setProgress] = useState({ done: 0, total: 0 })
@@ -124,6 +125,8 @@ export function WatchPage({
   const [loadingName, setLoadingName] = useState<string | null>(null)
   const [focusLoading, setFocusLoading] = useState(false)
   const seqRef = useRef(0)
+  /** 只应用最后一次点开的详情请求，避免慢请求回来后又跳去播上一部 */
+  const openSeqRef = useRef(0)
   const handledFocusRef = useRef('')
   const handledSearchRef = useRef('')
   const playbackRef = useRef<HTMLDivElement | null>(null)
@@ -159,6 +162,10 @@ export function WatchPage({
   // 离开再点侧栏进入时回到列表
   useEffect(() => {
     if (resetSignal === undefined) return
+    // 同时作废还没跑完的搜索 / 详情请求，避免回到列表后旧结果又追加进来
+    seqRef.current += 1
+    openSeqRef.current += 1
+    setSearching(false)
     setPlayback(null)
     setLoadingName(null)
     setFocusLoading(false)
@@ -274,6 +281,14 @@ export function WatchPage({
     () => new Map(data.vodSources.map((s) => [s.id, s])),
     [data.vodSources]
   )
+  /** 搜索框前的片源选择：空 = 全部已启用片源 */
+  const activeSource = useMemo(
+    () => sources.find((source) => source.id === sourceId) ?? null,
+    [sources, sourceId]
+  )
+  useEffect(() => {
+    if (sourceId && !activeSource) setSourceId('')
+  }, [sourceId, activeSource])
 
   const favOf = (sourceId: string, vodId: number): InnerFav | undefined =>
     data.innerFavs.find((f) => f.module === favModule && f.id === `${sourceId}|${vodId}`)
@@ -319,19 +334,21 @@ export function WatchPage({
 
   const runSearch = async (raw: string) => {
     const kw = raw.trim()
-    if (!kw || searching) return
-    if (!sources.length) {
+    if (!kw) return
+    const targets = activeSource ? [activeSource] : sources
+    if (!targets.length) {
       onNotice('还没有可用的片源，请到「配置管理 → 片源管理」添加')
       return
     }
+    // 新的搜索直接作废上一次未完成的搜索（收藏 / 清单入口可能在搜索途中进入）
     const seq = ++seqRef.current
     setSearching(true)
     setSearched(true)
     setResults([])
     setSourceErrors([])
-    setProgress({ done: 0, total: sources.length })
+    setProgress({ done: 0, total: targets.length })
     const year = kw.match(/\b(19|20)\d{2}\b/)?.[0] ?? ''
-    const queue = [...sources]
+    const queue = [...targets]
     const errors: { name: string; error: string }[] = []
     let done = 0
 
@@ -342,7 +359,7 @@ export function WatchPage({
         const res = await window.laozheng.searchVod(toInput(source), kw, year)
         if (seq !== seqRef.current) return
         done += 1
-        setProgress({ done, total: sources.length })
+        setProgress({ done, total: targets.length })
         if (!res.ok) {
           errors.push({ name: source.name, error: res.error ?? '搜索失败' })
           setSourceErrors([...errors])
@@ -412,6 +429,7 @@ export function WatchPage({
 
   /** 点搜索结果直接进播放页：默认播放最新一集，集数默认倒序 */
   const openDetail = async (source: VodSource, item: VodItem) => {
+    const seq = ++openSeqRef.current
     setLoadingName(item.vod_name)
     setEpisodeAsc(false)
     const immediate = parsePlayGroups(item.vod_play_from, item.vod_play_url)
@@ -421,6 +439,7 @@ export function WatchPage({
       return
     }
     const res = await window.laozheng.fetchVodDetail(toInput(source), item.vod_id)
+    if (seq !== openSeqRef.current) return
     setLoadingName(null)
     if (res.ok && res.item && res.groups?.length) {
       startPlayback(source, { ...item, ...res.item }, res.groups)
@@ -880,7 +899,7 @@ export function WatchPage({
         ) : null}
         <h1 className="page-title">观影</h1>
         <div className="page-actions">
-          <ModuleShortcuts onOpenFavorites={onOpenFavorites} onOpenDownloads={onOpenDownloads} />
+          <ModuleShortcuts onOpenFavorites={onOpenFavorites} />
         </div>
       </header>
 
@@ -890,6 +909,7 @@ export function WatchPage({
         onSubmit={() => void runSearch(keyword)}
         onCancel={stopSearch}
         onClear={() => {
+          stopSearch()
           setKeyword('')
           setSearched(false)
           setResults([])
@@ -897,6 +917,26 @@ export function WatchPage({
         }}
         searching={searching}
         placeholder="输入片名（可带年份，如 沙丘 2021）"
+        leading={
+          <select
+            className="select-inline"
+            value={sourceId}
+            onChange={(event) => {
+              // 换片源时停止上一轮搜索，避免旧源结果继续追加
+              stopSearch()
+              setSourceId(event.target.value)
+            }}
+            title="选择片源"
+            style={{ maxWidth: 180 }}
+          >
+            <option value="">全部源（{sources.length}）</option>
+            {sources.map((source) => (
+              <option key={source.id} value={source.id}>
+                {source.name}
+              </option>
+            ))}
+          </select>
+        }
       />
 
       {loadingName ? (
@@ -912,8 +952,8 @@ export function WatchPage({
         />
       ) : !searched ? (
         <EmptyState
-          title="输入片名开始跨源搜索"
-          desc="会并行查询所有已启用的片源，结果随片源返回实时追加；点结果直接进入播放页。"
+          title="输入片名开始搜索"
+          desc="默认搜索全部已启用片源，也可以先在搜索框前选择单个片源；结果随片源返回实时追加。"
         />
       ) : results.length === 0 && searching ? (
         <EmptyState

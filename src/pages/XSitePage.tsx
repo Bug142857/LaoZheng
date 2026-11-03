@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, Download, Heart } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import { EmptyState, LoadingBlock, ModuleShortcuts, Pagination } from '../components/ui'
@@ -74,9 +74,13 @@ export function XSitePage({
   /** 从收藏进入时先显示打开中，避免闪一下榜单界面 */
   const [opening, setOpening] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
+  /** 只应用最后一次榜单 / 分类请求的结果，避免快速切换时旧请求后到覆盖新内容 */
+  const requestSeq = useRef(0)
 
   useEffect(() => {
     if (resetSignal === undefined) return
+    requestSeq.current += 1
+    setLoading(false)
     setPlaying(null)
     setOpening(false)
     setOpenError(null)
@@ -88,10 +92,12 @@ export function XSitePage({
   }, [playing])
 
   const load = async (nextRange: string, nextCategory: string, nextPage: number) => {
+    const seq = ++requestSeq.current
     setPending({ range: nextRange, category: nextCategory })
     setLoading(true)
     setError(null)
     const res = await window.laozheng.xList(nextRange, nextPage, nextCategory)
+    if (seq !== requestSeq.current) return
     setPending(null)
     setLoading(false)
     if (!res.ok || !res.page) {
@@ -143,9 +149,11 @@ export function XSitePage({
         const category = queue.shift()
         if (!category) return
         const res = await window.laozheng.xList(range, 1, category.code)
+        // 切换榜单后旧请求可能才返回：不要再写进新榜单的数量缓存
+        if (!alive) return
         if (res.ok && res.page) {
           countCache.set(category.code, res.page.total)
-          if (alive) setCatCounts(Object.fromEntries(countCache))
+          setCatCounts(Object.fromEntries(countCache))
         }
       }
     }

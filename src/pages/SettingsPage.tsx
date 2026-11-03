@@ -97,6 +97,7 @@ export function SettingsPage({
   const [clearOpen, setClearOpen] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [liveCount, setLiveCount] = useState(0)
+  const [magnetCount, setMagnetCount] = useState(0)
   const [checking, setChecking] = useState(false)
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null)
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
@@ -138,6 +139,10 @@ export function SettingsPage({
     void refreshCache()
     void refreshDownloads()
     void window.laozheng.loadLiveSources().then((list) => setLiveCount(list.length))
+    void window.laozheng
+      .magnetState()
+      .then((state) => setMagnetCount(state.sources.length))
+      .catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -157,6 +162,10 @@ export function SettingsPage({
     void refreshCache()
     void refreshDownloads()
     void window.laozheng.loadLiveSources().then((list) => setLiveCount(list.length))
+    void window.laozheng
+      .magnetState()
+      .then((state) => setMagnetCount(state.sources.length))
+      .catch(() => undefined)
     void window.laozheng.downloadRoot().then(setDownloadDir)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section])
@@ -211,11 +220,13 @@ export function SettingsPage({
     if (res.data) setPendingImport(res.data)
   }
 
-  const confirmImport = () => {
+  const confirmImport = async () => {
     if (!pendingImport) return
-    replaceData(pendingImport)
+    const imported = pendingImport
+    await replaceData(imported)
+    setUi(await window.laozheng.getUiSettings())
     onNotice(
-      `已导入：${pendingImport.items.length} 个条目 / ${pendingImport.lists.length} 个清单 / ${pendingImport.innerFavs.length} 条收藏`
+      `已导入：${imported.items.length} 个条目 / ${imported.lists.length} 个清单 / ${imported.innerFavs.length} 条收藏`
     )
     setPendingImport(null)
   }
@@ -346,7 +357,12 @@ export function SettingsPage({
   const installUpdate = async () => {
     if (!updatePath) return
     setUpdateBusy('install')
-    await window.laozheng.installUpdate(updatePath)
+    try {
+      await window.laozheng.installUpdate(updatePath)
+    } catch (err) {
+      setUpdateBusy(null)
+      onNotice(`启动安装失败：${(err as Error).message}`)
+    }
   }
 
   const clearCacheNow = async () => {
@@ -364,11 +380,13 @@ export function SettingsPage({
     window.setTimeout(() => window.location.reload(), 900)
   }
 
-  const confirmSyncImport = () => {
+  const confirmSyncImport = async () => {
     if (!pendingSync) return
-    replaceData(pendingSync)
+    const restored = pendingSync
+    await replaceData(restored)
+    setUi(await window.laozheng.getUiSettings())
     onNotice(
-      `已从云端恢复：${pendingSync.items.length} 个条目 / ${pendingSync.lists.length} 个清单 / ${pendingSync.innerFavs.length} 条收藏`
+      `已从云端恢复：${restored.items.length} 个条目 / ${restored.lists.length} 个清单 / ${restored.innerFavs.length} 条收藏`
     )
     setPendingSync(null)
   }
@@ -412,7 +430,7 @@ export function SettingsPage({
             <SettingsEntry
               icon={Tv}
               title="片源管理"
-              hint={`影视源 ${data.vodSources.length} 个 · 电视源 ${liveCount} 个`}
+              hint={`影视源 ${data.vodSources.length} 个 · 短剧源 ${data.dramaSources.length} 个 · 电视源 ${liveCount} 个 · 磁力源 ${magnetCount} 个`}
               onClick={() => setSection('sources')}
             />
             <SettingsEntry
@@ -520,7 +538,7 @@ export function SettingsPage({
                 <h3>云端同步（WebDAV）</h3>
                 <p className="settings-hint">
                   与手机端共用同一份 data.json，只有点「上传到云端 / 从云端恢复」时才同步，不会自动执行。
-                  PC 端上传内容额外包含电视源、下载记录和本机设置（手机端会忽略这些字段）。
+                  PC 端上传内容额外包含电视源、磁力源、下载记录和本机设置（手机端会忽略这些字段）。
                   坚果云地址形如 https://dav.jianguoyun.com/dav/老郑分享/ ，密码要用「应用密码」。只填根目录
                   https://dav.jianguoyun.com/dav/ 也可以，应用会自动使用「老郑分享」子目录（坚果云根目录不能直接写文件）。账号密码只存本机（加密），不会写进备份。
                 </p>
@@ -577,8 +595,9 @@ export function SettingsPage({
               <section className="settings-card">
                 <h3>导入 / 导出</h3>
                 <p className="settings-hint">
-                  与手机端共用同一份备份格式（version 1）。PC 端额外带上电视源、下载记录、本机设置（主题 / 下载目录），
-                  手机端会自动忽略这些字段。导入会覆盖本机当前数据；导出生成手机端可直接识别的 JSON。
+                  与手机端共用同一份备份格式（version 1）。PC 端额外带上电视源、磁力源、磁力搜索缓存、
+                  下载记录、本机设置（主题 / 下载目录 / 各对话框上次位置），手机端会自动忽略这些字段。
+                  导入会覆盖本机当前数据；导出生成手机端可直接识别的 JSON。
                   豆瓣与各站登录态、WebDAV 密码属于本机加密凭据，不写入备份。
                 </p>
                 <div className="settings-row">
@@ -717,8 +736,10 @@ export function SettingsPage({
           title="导入备份"
           message={`将用备份覆盖本机数据：\n${pendingImport.items.length} 个条目 · ${pendingImport.lists.length} 个清单 · ${pendingImport.innerFavs.length} 条收藏 · ${pendingImport.vodSources.length} 个片源${
             pendingImport.liveSources ? ` · ${pendingImport.liveSources.length} 个电视源` : ''
-          }${pendingImport.downloads ? ` · ${pendingImport.downloads.length} 条下载记录` : ''}${
-            pendingImport.settings ? ' · 本机设置' : ''
+          }${pendingImport.magnetSources ? ` · ${pendingImport.magnetSources.length} 个磁力源` : ''}${
+            pendingImport.downloads ? ` · ${pendingImport.downloads.length} 条下载记录` : ''
+          }${pendingImport.settings ? ' · 本机设置' : ''}${
+            pendingImport.magnetSearch ? ' · 磁力搜索缓存' : ''
           }\n\n当前本机数据会被替换，建议先导出一份备份。`}
           confirmText="覆盖导入"
           danger
@@ -732,8 +753,10 @@ export function SettingsPage({
           title="从云端恢复"
           message={`将用云端备份覆盖本机数据：\n${pendingSync.items.length} 个条目 · ${pendingSync.lists.length} 个清单 · ${pendingSync.innerFavs.length} 条收藏 · ${pendingSync.vodSources.length} 个片源${
             pendingSync.liveSources ? ` · ${pendingSync.liveSources.length} 个电视源` : ''
-          }${pendingSync.downloads ? ` · ${pendingSync.downloads.length} 条下载记录` : ''}${
-            pendingSync.settings ? ' · 本机设置' : ''
+          }${pendingSync.magnetSources ? ` · ${pendingSync.magnetSources.length} 个磁力源` : ''}${
+            pendingSync.downloads ? ` · ${pendingSync.downloads.length} 条下载记录` : ''
+          }${pendingSync.settings ? ' · 本机设置' : ''}${
+            pendingSync.magnetSearch ? ' · 磁力搜索缓存' : ''
           }\n\n当前本机数据会被替换，建议先点「上传到云端」保留一份。`}
           confirmText="覆盖恢复"
           danger

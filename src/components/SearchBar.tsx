@@ -16,6 +16,7 @@ export function SearchBar({
   placeholder = '搜索…',
   disabled = false,
   submitLabel = '搜索',
+  leading,
   extra
 }: {
   value: string
@@ -27,6 +28,8 @@ export function SearchBar({
   placeholder?: string
   disabled?: boolean
   submitLabel?: string
+  /** 搜索框前面的附加控件，例如片源 / 资源库选择 */
+  leading?: ReactNode
   extra?: ReactNode
 }) {
   return (
@@ -41,6 +44,7 @@ export function SearchBar({
         onSubmit()
       }}
     >
+      {leading}
       <label className="search">
         <Search size={16} />
         <input
