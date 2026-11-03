@@ -334,7 +334,7 @@ export function SettingsPage({
     setUpdatePath(null)
     setUpdateProgress(null)
     if (!res.hasUpdate) {
-      onNotice(`已是最新版本 ${res.current}`)
+      onNotice(`已是最新版本 ${res.current}${res.line ? ` · 线路 ${res.line}` : ''}`)
       return
     }
     setUpdateOpen(true)
@@ -837,6 +837,7 @@ export function SettingsPage({
               {updateProgress.total > 0
                 ? `${Math.round(updateProgress.percent * 100)}%`
                 : `${Math.round(updateProgress.received / 1024 / 1024)} MB`}
+              {updateProgress.line ? ` · 线路 ${updateProgress.line}` : ''}
             </div>
           ) : null}
         </Modal>

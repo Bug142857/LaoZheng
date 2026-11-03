@@ -455,6 +455,91 @@ function doubanCacheScope(): string {
   return status.loggedIn ? `in-${status.updatedAt}` : 'out'
 }
 
+/** 更新线路：直连 + 实测可用的 GitHub 镜像（与手机端一致，先测速再选线） */
+const UPDATE_LINES: Array<{ name: string; prefix: string }> = [
+  { name: '直连', prefix: '' },
+  { name: 'gh-proxy', prefix: 'https://gh-proxy.com/' },
+  { name: 'ghproxy', prefix: 'https://ghproxy.net/' }
+]
+
+const GITHUB_URL_RE =
+  /^https:\/\/(?:api\.github\.com|github\.com|gist\.github\.com|gist\.githubusercontent\.com|raw\.githubusercontent\.com|objects\.githubusercontent\.com)\//i
+
+/** 同一资源在各条线路上的地址；非 GitHub 地址没有镜像，只能直连 */
+function updateLineCandidates(url: string): Array<{ name: string; url: string }> {
+  if (!GITHUB_URL_RE.test(url)) return [{ name: '直连', url }]
+  return UPDATE_LINES.map((line) => ({ name: line.name, url: `${line.prefix}${url}` }))
+}
+
+/** 单线路测速：只等响应头，拿到就断开，避免探测时白下安装包 */
+async function probeUpdateLine(url: string, timeoutMs: number): Promise<number | null> {
+  const startedAt = Date.now()
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'laozheng-pc', Range: 'bytes=0-0' },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(timeoutMs)
+    })
+    const ok = res.ok || res.status === 206
+    await res.body?.cancel().catch(() => undefined)
+    return ok ? Date.now() - startedAt : null
+  } catch {
+    return null
+  }
+}
+
+/** 先看哪条线通、哪条最快：可用线路按延迟升序，不可用线路排最后留作兜底 */
+async function rankUpdateLines(
+  url: string,
+  timeoutMs: number
+): Promise<Array<{ name: string; url: string }>> {
+  const candidates = updateLineCandidates(url)
+  if (candidates.length === 1) return candidates
+  const probed = await Promise.all(
+    candidates.map(async (line) => ({
+      ...line,
+      latency: await probeUpdateLine(line.url, timeoutMs)
+    }))
+  )
+  const alive = probed
+    .filter((line) => line.latency !== null)
+    .sort((a, b) => (a.latency ?? 0) - (b.latency ?? 0))
+  const dead = probed.filter((line) => line.latency === null)
+  return [...alive, ...dead].map(({ name, url: lineUrl }) => ({ name, url: lineUrl }))
+}
+
+/** 多线路并发取同一份 JSON：谁最先完整返回用谁（即最快线路），全失败返回 null */
+async function fetchJsonFastest<T>(
+  url: string,
+  timeoutMs: number
+): Promise<{ data: T; line: string } | null> {
+  const candidates = updateLineCandidates(url)
+  return await new Promise((resolve) => {
+    let remaining = candidates.length
+    let settled = false
+    const finish = (value: { data: T; line: string } | null): void => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+    for (const candidate of candidates) {
+      void fetch(candidate.url, {
+        headers: { 'User-Agent': 'laozheng-pc', Accept: 'application/json' },
+        signal: AbortSignal.timeout(timeoutMs)
+      })
+        .then(async (res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          finish({ data: (await res.json()) as T, line: candidate.name })
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          remaining -= 1
+          if (remaining === 0) finish(null)
+        })
+    }
+  })
+}
+
 /** 检查更新：公开仓库优先走 GitHub API（能拿到 exe 资产直链），失败再读公开清单 */
 async function checkUpdateInternal(): Promise<UpdateCheckResult> {
   const current = displayVersion()
@@ -462,7 +547,7 @@ async function checkUpdateInternal(): Promise<UpdateCheckResult> {
   if (api) return api
   const manifest = await checkViaManifest(current)
   if (manifest) return manifest
-  return { ok: false, current, error: '检查更新失败（网络不可用）' }
+  return { ok: false, current, error: '检查更新失败：直连与镜像线路都不可用，请检查网络后重试' }
 }
 
 interface GithubAsset {
@@ -473,71 +558,59 @@ interface GithubAsset {
 
 /** GitHub Releases API（仓库公开后匿名可用，能直接拿到安装包地址） */
 async function checkViaGithubApi(current: string): Promise<UpdateCheckResult | null> {
-  try {
-    const res = await fetch('https://api.github.com/repos/Bug142857/LaoZheng/releases/latest', {
-      headers: { 'User-Agent': 'laozheng-pc', Accept: 'application/vnd.github+json' },
-      signal: AbortSignal.timeout(15_000)
-    })
-    if (!res.ok) return null
-    const json = (await res.json()) as {
-      tag_name?: string
-      html_url?: string
-      body?: string
-      assets?: GithubAsset[]
-    }
-    const tag = (json.tag_name ?? '').trim()
-    if (!tag) return null
-    const latest = tag.replace(/^v/i, '')
-    const assets = Array.isArray(json.assets) ? json.assets : []
-    const exe = assets.find(
-      (a) =>
-        typeof a.browser_download_url === 'string' &&
-        /\.exe$/i.test(a.name ?? '') &&
-        !/\.blockmap$/i.test(a.name ?? '')
-    )
-    return {
-      ok: true,
-      current,
-      latest,
-      hasUpdate: compareVersions(latest, current) > 0,
-      url: json.html_url,
-      downloadUrl: exe?.browser_download_url,
-      notes: (json.body ?? '').slice(0, 2000)
-    }
-  } catch {
-    return null
+  const fetched = await fetchJsonFastest<{
+    tag_name?: string
+    html_url?: string
+    body?: string
+    assets?: GithubAsset[]
+  }>('https://api.github.com/repos/Bug142857/LaoZheng/releases/latest', 12_000)
+  if (!fetched) return null
+  const json = fetched.data
+  const tag = (json.tag_name ?? '').trim()
+  if (!tag) return null
+  const latest = tag.replace(/^v/i, '')
+  const assets = Array.isArray(json.assets) ? json.assets : []
+  const exe = assets.find(
+    (a) =>
+      typeof a.browser_download_url === 'string' &&
+      /\.exe$/i.test(a.name ?? '') &&
+      !/\.blockmap$/i.test(a.name ?? '')
+  )
+  return {
+    ok: true,
+    current,
+    latest,
+    hasUpdate: compareVersions(latest, current) > 0,
+    url: json.html_url,
+    downloadUrl: exe?.browser_download_url,
+    notes: (json.body ?? '').slice(0, 2000),
+    line: fetched.line
   }
 }
 
 /** 公开清单兜底（GitHub API 被墙 / 限流时） */
 async function checkViaManifest(current: string): Promise<UpdateCheckResult | null> {
-  try {
-    const res = await fetch(UPDATE_MANIFEST_URL, {
-      headers: { 'User-Agent': 'laozheng-pc', Accept: 'application/json' },
-      signal: AbortSignal.timeout(15_000)
-    })
-    if (!res.ok) return null
-    const json = (await res.json()) as {
-      version?: string
-      url?: string
-      exe?: string
-      downloadUrl?: string
-      notes?: string
-    }
-    const latest = (json.version ?? '').trim().replace(/^v/i, '')
-    if (!latest) return null
-    const exe = (json.exe ?? json.downloadUrl ?? '').trim()
-    return {
-      ok: true,
-      current,
-      latest,
-      hasUpdate: compareVersions(latest, current) > 0,
-      url: typeof json.url === 'string' ? json.url : undefined,
-      downloadUrl: /^https:\/\//i.test(exe) ? exe : undefined,
-      notes: (json.notes ?? '').slice(0, 2000)
-    }
-  } catch {
-    return null
+  const fetched = await fetchJsonFastest<{
+    version?: string
+    url?: string
+    exe?: string
+    downloadUrl?: string
+    notes?: string
+  }>(UPDATE_MANIFEST_URL, 12_000)
+  if (!fetched) return null
+  const json = fetched.data
+  const latest = (json.version ?? '').trim().replace(/^v/i, '')
+  if (!latest) return null
+  const exe = (json.exe ?? json.downloadUrl ?? '').trim()
+  return {
+    ok: true,
+    current,
+    latest,
+    hasUpdate: compareVersions(latest, current) > 0,
+    url: typeof json.url === 'string' ? json.url : undefined,
+    downloadUrl: /^https:\/\//i.test(exe) ? exe : undefined,
+    notes: (json.notes ?? '').slice(0, 2000),
+    line: fetched.line
   }
 }
 
@@ -758,15 +831,6 @@ function broadcastUpdateProgress(progress: UpdateProgress): void {
   }
 }
 
-/** GitHub 直连 + 两个实测可用的镜像前缀（与手机端一致） */
-function updateChannels(url: string): string[] {
-  const list = [url]
-  if (/^https:\/\/github\.com\//i.test(url)) {
-    list.push(`https://gh-proxy.com/${url}`, `https://ghproxy.net/${url}`)
-  }
-  return [...new Set(list)]
-}
-
 /** 同一时间只允许一个更新包下载：启动静默下载和手动点击可能撞在一起，共用 .part 会互相覆盖 */
 let updateDownloading = false
 
@@ -780,7 +844,7 @@ async function downloadUpdateInstaller(url: string): Promise<UpdateDownloadResul
   }
 }
 
-/** 下载安装包到 userData/updates，逐条线路回退；仅接受 https 直链 */
+/** 下载安装包到 userData/updates：先测速选线，再按「最快 → 兜底」顺序下载；仅接受 https 直链 */
 async function downloadUpdateInstallerInner(url: string): Promise<UpdateDownloadResult> {
   let target: string
   let base: string
@@ -794,11 +858,13 @@ async function downloadUpdateInstallerInner(url: string): Promise<UpdateDownload
     return { ok: false, error: '更新地址无效' }
   }
 
+  // 先看哪条线通、哪条最快，避免直连被墙时一直等到超时
+  const channels = await rankUpdateLines(url, 5_000)
   let lastError = '下载更新失败'
-  for (const channel of updateChannels(url)) {
+  for (const channel of channels) {
     const tmp = `${target}.part`
     try {
-      const res = await fetch(channel, {
+      const res = await fetch(channel.url, {
         headers: { 'User-Agent': 'laozheng-pc', Accept: '*/*' },
         redirect: 'follow',
         signal: AbortSignal.timeout(30 * 60 * 1000)
@@ -824,7 +890,8 @@ async function downloadUpdateInstallerInner(url: string): Promise<UpdateDownload
             broadcastUpdateProgress({
               received,
               total,
-              percent: total > 0 ? received / total : 0
+              percent: total > 0 ? received / total : 0,
+              line: channel.name
             })
           }
           cb(null, chunk)
@@ -832,7 +899,7 @@ async function downloadUpdateInstallerInner(url: string): Promise<UpdateDownload
       })
       await pipeline(Readable.fromWeb(res.body as never), meter, createWriteStream(tmp))
       await rename(tmp, target)
-      broadcastUpdateProgress({ received, total: total || received, percent: 1 })
+      broadcastUpdateProgress({ received, total: total || received, percent: 1, line: channel.name })
       return { ok: true, path: target }
     } catch (err) {
       await unlink(tmp).catch(() => undefined)

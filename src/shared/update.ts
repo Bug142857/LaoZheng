@@ -9,12 +9,16 @@ export interface UpdateCheckResult {
   downloadUrl?: string
   notes?: string
   error?: string
+  /** 本次实际走通的线路名（直连 / gh-proxy / ghproxy） */
+  line?: string
 }
 
 export interface UpdateProgress {
   received: number
   total: number
   percent: number
+  /** 当前下载使用的线路名 */
+  line?: string
 }
 
 export interface UpdateDownloadResult {

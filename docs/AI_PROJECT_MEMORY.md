@@ -1,13 +1,15 @@
 # 老郑分享 · PC 端项目记忆
 
 > 本文件是 **PC 端仓库（https://github.com/Bug142857/LaoZheng）** 的唯一记忆入口，换电脑 / 换 AI 账号后从这里恢复上下文。
-> 最后更新：2026-11-03（v0.66 已发版）。
+> 最后更新：2026-11-03（v0.66 已发版；v0.67 更新选线、v0.68 卸载选项均未发版）。
 >
 > 结构：**第一部分 = PC 端工程约定与进度**；**第二部分 = 手机端（ShangYin）历史记忆**，原样迁移，仅供功能口径与踩坑参考，不代表 PC 端已经实现。
 
 ### 0. 新窗口先读（当前状态）
 
 - **「优化」指令口径（2026-11-02 用户要求）**：以后用户说「优化」「整体优化」「检查一下」，默认执行全应用体检，不要只改表面。固定检查 9 类：① 路由 / 返回栈 / 常驻页面与切页暂停；② 搜索 / 分类 / 详情 / 章节 / 播放解析的异步竞态（旧响应不得覆盖新状态，返回后旧请求不得重开详情）；③ 播放器生命周期与 HLS 回退；④ 下载记录与文件一致性、并发锁、目录迁移不覆盖、特殊文件名编码、本地媒体读流错误；⑤ 数据源重复 URL / ID 冲突与测试结果持久化；⑥ 导入 / 云恢复 / 坏缓存 / 清单父子环 / 原子写；⑦ IPC 校验、`will-navigate`、外链与 preload 安全边界；⑧ 缓存登录态隔离、缓存自愈、更新下载锁与安装异常；⑨ 响应式卡片、吸顶、空状态与用户最新 UI 口径。流程：先静态审计列问题 → 修可确认的 bug → 版本号 +1 → `npm run build` → CDP 逐页冒烟（目标按 `out/renderer/index.html` 过滤，监听 `Runtime.exceptionThrown` 与 console error，覆盖全部侧栏页 + 详情进入/返回）→ `npm run dist` 出包并删旧包 → 更新本文件 → 按「问题清单 / 修复内容 / 验证结果 / 剩余限制 / 安装包」汇报；未明确说「发版」不得提交或上传 Release。
+- **2026-11-03 v0.68（未发版）卸载可选清除个人数据**：新增 `build/installer.nsh`（通过 `package.json → build.nsis.include` 引入），替换 NSIS 卸载欢迎页为自定义 nsDialogs 页：**默认不勾选**「同时清除个人数据」，勾选后卸载结束时 `RMDir /r "$APPDATA\laozheng-pc"`（清单 / 收藏 / 登录态 / 设置 / 缓存 / 下载记录），**不会删除**下载目录里的视频 / 漫画 / 音乐 / 图书；`--updated` 覆盖升级时强制跳过删除，静默卸载默认也不删。NSIS 坑：卸载回调函数必须用 `un.` 前缀（否则报 resolving create-page function）；`Var` 必须放进 `!ifdef BUILD_UNINSTALLER`（否则安装器构建报 warning 6001，electron-builder 把 warning 当错误）。已通过 `npm run dist`，安装包 `release/老郑分享 Setup 0.68.exe`（107,183,464 字节，SHA256 `EE03B802659908E2F9DD16313A806F08998CFF52E72AB044ECB9266BB40DDEEC`，未发版）。
+- **2026-11-03 v0.67（未发版）更新检查 / 下载先测速选线**：用户反馈「点更新显示更新失败（网络不可用）」。现在 `app:checkUpdate` 与下载都先并发探测 3 条线路（直连 / gh-proxy.com / ghproxy.net）：检查用 `fetchJsonFastest` 并发请求、取最先完整返回的那条（GitHub API 与 Gist 清单都走同一套线路）；下载用 `Range: bytes=0-0` 只等响应头测速，按延迟从低到高排序，不可用线路排最后兜底；结果带 `line` 字段，设置页显示「线路 xxx」。本机实测：直连 `api.github.com` 与 gist 均 `fetch failed`；gh-proxy API 200（627ms）、gist 200、exe `206`；ghproxy API 403 但 gist / exe 206 → 选 gh-proxy。已通过 typecheck / build，本地安装包 `release/老郑分享 Setup 0.67.exe`（107,185,853 字节，SHA256 `4DC6B50638A1D9A88E5E15DEA5BEE4691D7751B2956252EBD1225851399CA129`，未发版）。⚠️ 公开 Gist 清单仍是 `version=0.5`（直连实测，不是镜像缓存），下次发版必须同步到 v0.67，否则 API 全挂时回退清单会误报「已是最新」。
 - **2026-11-03 v0.66（已发版）片源管理统一 + 短剧源重构 + 导入导出**：① 片源管理四类源（影视 / 短剧 / 电视 / 磁力）全部默认折叠，标题右侧统一「共 N 个 · 启用 N · 有效 N · 无效 N」，按钮统一「添加源」、电视源「导入 M3U」改「批量导入」；顶部新增「全部源」整体导入 / 导出（影视 + 短剧 + 电视 + 磁力，按地址去重合并，含西饭短剧及其自定义地址）。② 短剧源只保留西饭默认项，旧红果 / 河马 / 自定义内置项在 normalize 时丢弃；西饭可改名、改接口地址（主进程按 baseUrl 请求，支持镜像）、可删除且显式空列表不会被自动加回；短剧源支持添加苹果CMS 源 / 批量导入（识别 `id=xifan` 恢复西饭）/ 整体测试 / 导出。③ 短剧页默认「全部源」，分类改为 chips（西饭接口无总数不显示，苹果CMS 显示精确数量），去掉「共 X 部」；新增收藏（收藏页短剧分区、可直接回到剧集）与下载本集。④ 清单管理新增导入 / 导出（清单 + 条目 + 关联；清单按名称 + 父级复用，条目按分类 + 豆瓣 ID 复用并重映射 ID，重复导入不产生重复数据）。已通过 typecheck / build。
 - **2026-11-03 v0.65（未发版）短剧模块 + 首页移除 + 磁力缓存清理**：① 侧栏新增「短剧」（在观影下），参考 jackotom/hongguo-drama，主进程 `electron/drama.ts` 支持红果 / 西饭 / 河马 / 自定义（苹果CMS 影视源）四类短剧源，目录 / 分类 / 搜索 / 详情 / 分集 / 播放均已实测；短剧列表默认视图写 localStorage，重开应用先显示上次内容。② 片源管理新增「短剧源」折叠区（默认不展开），四个源可启停，自定义源可选择具体影视源；配置存 `data.dramaSources`，随导入导出与云同步走。③ 首页模块移除，启动默认进入清单。④ 磁力搜索结果只在本次运行期间保留：主进程 `data:load` 启动时清空 `magnetSearch` 并落盘。**已知限制**：红果官网公开页只给前 5 集 MP4，完整剧集仍需红果官方 App；河马多数分集标记付费锁定，西饭基本全免费。**
 - **2026-11-03 v0.64（未发版）双端互通修正**：PC 导出 JSON 前递归去掉 null 字段（`stripNullFields`），因为 Android `org.json` 的 `optString` 会把 JSON null 读成字符串 `"null"`，手机端 `ifBlank { null }` 会把 `"null"` 当成真实封面 / 链接 / payload；手动导出与 WebDAV 云上传共用该处理。另修复 `parseFavPayload`：payload 为 `"null"` 或非对象时不再抛异常。核对手机端 `ExportJson.kt`：items / lists / listItems / vodSources / innerFavs / readProgress / config 字段一一对应，PC 扩展字段手机会忽略；手机端自己的电视源 / 下载记录等放在 `config` 快照里，PC 只原样保存、不会应用到 PC 模块。已用 esbuild 实测 `stripNullFields` 输出无 null 字段，typecheck / build 通过。
@@ -72,7 +74,8 @@
 - 构建产物 `out/`、安装包 `release/`、`node_modules/` 一律不入库（`.gitignore` 已按通配符写好）。
 - `npm run dist` 收尾（`scripts/pack-artifact.cjs`）只保留当前 exe，删除旧版安装包、`latest.yml`、`.blockmap` 与 `win-unpacked` 中间产物；应用启动时会清空 `userData/updates` 里的旧安装包。
 - 发版前必须 `npm run build` 通过；安装包用 `npm run dist`（electron-builder，NSIS，可选安装目录、桌面快捷方式「老郑分享」）。
-- 更新已接入：公开仓库 GitHub Releases API → 后台下载 exe（直连 / gh-proxy / ghproxy 回退）→ 打开 NSIS 安装向导；清单不可达时回退 Gist `update.json`。安装包签名仍未做（无证书）。
+- **发版必做（2026-11-03 用户强调「以后记得同步 Gist 清单」）**：每次发布后必须同步公开 Gist 更新清单 `update.json`（gist id `802551160083623580189fc536724d65`，字段 `version / url / exe / notes`），版本号、tag 页地址、exe 直链、更新说明与当次 Release 完全一致；这是 GitHub API 不可达时应用检查更新的唯一兜底，漏更会让用户永远收不到新版。同步后实测直连与 gh-proxy 都能读到新版本号。
+- 更新已接入：公开仓库 GitHub Releases API → 后台下载 exe（检查与下载都先并发探测直连 / gh-proxy / ghproxy 并按延迟选最快，失败再按序兜底）→ 打开 NSIS 安装向导；清单不可达时回退 Gist `update.json`。安装包签名仍未做（无证书）。
 
 ### 4. 工程结构（当前）
 
@@ -153,7 +156,7 @@ docs/AI_PROJECT_MEMORY.md  本文件
 - **图书（Z-Library）**：登录窗口过 DiamWall，页面内 fetch 搜索 / 详情，`/dl/{token}` 下载到「图书」目录并登记下载库；设置页可保存账号密码（safeStorage 加密），启动静默自动登录，失败时打开窗口并自动填写表单；收藏 id = `{bookId}|{hash}`；豆瓣图书收藏保留为页内页签。
 - **收藏跳转**：收藏行可点击回到对应模块（漫画 / 本子 / 游戏 / 图书 / X站 / P站 / 吃瓜 / 音乐按歌名回退播放 / 电视直链 / 观影或番号收藏直链播放）。
 - **下载**：视频直链、HLS 切片合并、音乐、漫画/本子整本或单章批量下载（`漫画/<书名>/<章节>/0001.jpg` + `meta.json`，同序号跳过可续传）、Z-Library 图书；下载页可用系统默认应用打开 / 播放 / 删除。
-- **设置**：数据概览、导入导出、数据目录、账号管理、Z-Library 登录、WebDAV 云同步、检查更新（GitHub API 找 exe → 后台下载，直连/gh-proxy/ghproxy 回退 → 打开安装向导）。
+- **设置**：数据概览、导入导出、数据目录、账号管理、Z-Library 登录、WebDAV 云同步、检查更新（并发测速直连 / gh-proxy / ghproxy，选最快线路读 GitHub API → 后台下载 → 打开安装向导）。
 
 ### 7. 各模块实现口径
 
@@ -219,7 +222,7 @@ docs/AI_PROJECT_MEMORY.md  本文件
 #### 7.8 云同步 / 更新
 
 - WebDAV：配置存 `userData/sync.json`，密码用 `safeStorage` 加密；上传 PUT `{目录}/data.json`，恢复 GET 并校验 items/lists/listItems；测试连接用 PROPFIND（207/200）。
-- 更新：`app:checkUpdate` 先查 GitHub Releases API（公开仓库可匿名读 exe 资产），失败回退公开 Gist 清单（`gist_id=802551160083623580189fc536724d65`，字段 `version / url / exe / notes`）；下载逐条线路回退（直连 → gh-proxy.com → ghproxy.net），完成后 `spawn` 安装包打开 NSIS 安装向导并退出应用。**仓库必须公开**，否则匿名读取 Release 资产会 404。应用启动时会清空 `userData/updates` 里的旧安装包。
+- 更新：`app:checkUpdate` 先查 GitHub Releases API（公开仓库可匿名读 exe 资产），失败回退公开 Gist 清单（`gist_id=802551160083623580189fc536724d65`，字段 `version / url / exe / notes`）。**检查与下载都先测速选线**：直连 / gh-proxy.com / ghproxy.net 三条线路并发探测（检查用并发请求取最先完整返回，下载用 `Range: bytes=0-0` 只等响应头），可用的按延迟从低到高排序，不可用的排最后兜底；完成后 `spawn` 安装包打开 NSIS 安装向导并退出应用。**仓库必须公开**，否则匿名读取 Release 资产会 404。应用启动时会清空 `userData/updates` 里的旧安装包。
 
 #### 7.9 播放与请求层规则（`electron/main.ts setupRequestRules`）
 

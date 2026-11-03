@@ -3,7 +3,7 @@
 手机端（[Bug142857/ShangYin](https://github.com/Bug142857/ShangYin)）的桌面版本，数据格式与手机端互通。
 本仓库只承载 PC 端代码，手机端仓库保持独立、不再改动。
 
-**当前版本：v0.66** ｜ [下载最新安装包](https://github.com/Bug142857/LaoZheng/releases/latest)
+**当前版本：v0.68** ｜ [下载最新安装包](https://github.com/Bug142857/LaoZheng/releases/latest)
 
 ## 技术选型
 
@@ -41,7 +41,9 @@
 
 > 打包结束时 `scripts/pack-artifact.cjs` 只保留当前安装包，并删除 `win-unpacked`、`latest.yml`、`.blockmap` 等中间产物。
 
-> 应用内「检查更新」优先读公开仓库的 GitHub Releases，找到 exe 资产后在后台下载（直连 + gh-proxy / ghproxy 镜像回退），完成后弹出安装向导；API 不可用时回退读公开清单（`update.json` 的 `version / url / exe / notes`）。**仓库需要是公开的**，匿名才能读取 Release 资产。
+> 卸载时默认保留个人数据（`%APPDATA%\laozheng-pc` 与下载目录里的文件）；卸载向导第一页提供「同时清除个人数据」勾选项，默认不勾选。已下载的视频 / 漫画 / 音乐 / 图书文件不会被卸载程序删除。
+
+> 应用内「检查更新」优先读公开仓库的 GitHub Releases，找到 exe 资产后在后台下载，完成后弹出安装向导。检查与下载都会先并发探测直连 / gh-proxy / ghproxy 三条线路，选最快且可用的一条（直连被墙时自动走镜像，其它线路留作兜底）；API 全部不可用时回退读公开清单（`update.json` 的 `version / url / exe / notes`）。**仓库需要是公开的**，匿名才能读取 Release 资产。
 
 ### 安装包签名
 
@@ -60,10 +62,11 @@ npm run dist
 
 ## 版本与发布
 
-- 当前版本 **v0.66**。以后每次修改版本号 **+1**：`0.66 → 0.67 → 0.68 …`，即使不上传 GitHub 也照样递增。
-- `package.json` 内部使用三段式（`0.66.0 / 0.67.0 / …`）；应用内显示、安装包文件名、tag 与 Release 一律去掉末尾 `.0`（`v0.66 / v0.67`），由 `main.ts` 的 `displayVersion()` 统一转换。
+- 当前版本 **v0.68**。以后每次修改版本号 **+1**：`0.68 → 0.69 → 0.70 …`，即使不上传 GitHub 也照样递增。
+- `package.json` 内部使用三段式（`0.68.0 / 0.69.0 / …`）；应用内显示、安装包文件名、tag 与 Release 一律去掉末尾 `.0`（`v0.68 / v0.69`），由 `main.ts` 的 `displayVersion()` 统一转换。
 - 发版流程：改好代码与版本号 → 提交推送 → 打 `v*` tag 并推送。**GitHub Actions 会自动构建 Windows 安装包并上传到对应 Release**，不需要本地打包或手动传 100MB 文件。
-- 也可以在 Actions 页面手动运行 `Build Windows installer`，填写要补传的 tag（例如 `v0.66`）即可补传安装包。
+- **每次发版必须同步公开 Gist 更新清单**（`update.json` 的 `version / url / exe / notes` 与本次 Release 完全一致）：GitHub API 不可达时应用靠它检查新版，漏更会导致回退线路报旧版本。
+- 也可以在 Actions 页面手动运行 `Build Windows installer`，填写要补传的 tag（例如 `v0.68`）即可补传安装包。
 - GitHub Release 说明必须用 UTF-8 写入，避免中文乱码。
 
 ### 自动构建（GitHub Actions）
