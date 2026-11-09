@@ -283,9 +283,6 @@ export function PsitePage({
             <ChevronLeft size={15} /> 返回
           </button>
           <h1 className="page-title">{playing.video.title}</h1>
-          <span className="page-desc">
-            P站 · {playing.video.uploader || '未知频道'} · {formatDuration(playing.video.durationSec)}
-          </span>
           <div className="page-actions">
             <button className="btn" onClick={() => void download(playing.video)}>
               <Download size={15} /> 下载

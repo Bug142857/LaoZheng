@@ -1,11 +1,12 @@
-import { app, protocol, type Session } from 'electron'
+import { protocol, type Session } from 'electron'
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { cacheRoot } from './settings'
 
 /**
  * 图片磁盘缓存：所有 http(s) 图片请求在请求层重定向到 lzimg://，
- * 主进程按 URL 哈希存到 userData/image-cache，命中则直接返回本地字节。
+ * 主进程按 URL 哈希存到 <cacheRoot>/image-cache（默认 userData，可更换），命中则直接返回本地字节。
  * 这样重开应用时封面 / 剧照 / 头像都能立刻显示，不再等网络。
  */
 
@@ -28,7 +29,7 @@ export function registerImageCacheScheme(): void {
 }
 
 export function imageCacheDir(): string {
-  return join(app.getPath('userData'), 'image-cache')
+  return join(cacheRoot(), 'image-cache')
 }
 
 function keyOf(url: string): string {
@@ -83,9 +84,9 @@ export function setupImageRequestRedirect(ses: Session): void {
  * 缓存未命中时按同一套头去源站取图，成功后落盘。
  */
 export function setupImageCacheHandler(headerFor: (url: string) => Record<string, string>): void {
-  const dir = imageCacheDir()
-
   const respond = async (target: string): Promise<Response> => {
+    // 缓存目录可以在设置里更换，这里每次请求都重新取
+    const dir = imageCacheDir()
     const file = join(dir, keyOf(target))
     try {
       const buf = await readFile(file)

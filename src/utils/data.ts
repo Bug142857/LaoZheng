@@ -133,7 +133,7 @@ export function tileGradient(name: string): string {
 }
 
 export function countFavs(data: AppData): number {
-  return data.innerFavs.length
+  return data.innerFavs.length + data.liveFavorites.length
 }
 
 export type FavModule = { key: string; label: string }
@@ -147,10 +147,14 @@ export const FAV_MODULE_LABELS: Record<string, string> = {
   comic: '漫画',
   tv: '电视',
   music: '音乐',
-  watch: '观影',
+  watch: '影视',
   drama: '短剧',
+  novel: '小说',
   book: '图书',
-  game: '游戏'
+  game: '游戏',
+  trainer: '补丁',
+  live: '直播',
+  wallpaper: '壁纸'
 }
 
 export function favModuleLabel(key: string): string {

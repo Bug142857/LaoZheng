@@ -1,6 +1,14 @@
-/** 下载管理共用类型（视频 / 音乐 / 漫画 / 图书 / 其他文件） */
+/** 下载管理共用类型（视频 / 音乐 / 漫画 / 图书 / 小说 / 壁纸 / 修改器 / 其他文件） */
 
-export type DownloadKind = 'video' | 'music' | 'comic' | 'book' | 'file'
+export type DownloadKind =
+  | 'video'
+  | 'music'
+  | 'comic'
+  | 'book'
+  | 'novel'
+  | 'wallpaper'
+  | 'trainer'
+  | 'file'
 
 /** 落盘保存的下载记录（不含每次启动临时生成的 playUrl），也是备份 JSON 的一部分 */
 export interface DownloadRecord {
@@ -91,7 +99,7 @@ export interface DownloadReadResult {
 }
 
 /** 漫画 / 本子批量下载（整本或单章都是 chapters 数组） */
-export type ComicSource = 'komiic' | 'bika'
+export type ComicSource = 'komiic' | 'bika' | 'yumanhua'
 
 export interface ComicMetaInput {
   source: ComicSource

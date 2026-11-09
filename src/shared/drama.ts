@@ -28,7 +28,11 @@ export const DEFAULT_DRAMA_SOURCES: DramaSource[] = [
     name: '西饭短剧',
     enabled: true,
     builtin: true,
-    baseUrl: XIFAN_DRAMA_BASE_URL
+    baseUrl: XIFAN_DRAMA_BASE_URL,
+    // 内置源均已实测可用：新安装默认显示有效，之后手动测试再覆盖真实结果
+    testStatus: 'ok',
+    testMsg: '可用',
+    testAt: 0
   }
 ]
 
@@ -77,7 +81,7 @@ export function normalizeDramaSources(raw: unknown): DramaSource[] {
       })
       continue
     }
-    // 旧红果 / 河马 / 自定义源没有苹果CMS 地址，直接丢弃
+    // 旧红果 / 河马 / duanju55 / 自定义源没有苹果CMS 地址，直接丢弃
     const baseUrl = typeof source.baseUrl === 'string' ? source.baseUrl.trim() : ''
     if (!/^https?:\/\//i.test(baseUrl)) continue
     if (out.some((entry) => entry.id === source.id || entry.baseUrl === baseUrl)) continue

@@ -10,6 +10,7 @@ import {
 import type { AppData } from '../shared/types'
 import { EMPTY_DATA } from '../shared/types'
 import { applyUiSettings } from '../utils/theme'
+import { clearModuleCaches } from '../utils/cache'
 
 type SaveState = 'idle' | 'saving' | 'saved'
 
@@ -95,15 +96,23 @@ export function DataProvider({ children }: { children: ReactNode }) {
         window.clearTimeout(timerRef.current)
         timerRef.current = null
       }
+      // 模块列表缓存不会随备份走：数据换了之后旧缓存可能指向已删除的源，直接清掉
+      clearModuleCaches()
       dataRef.current = next
       dirtyRef.current = true
       setData(next)
       flush(next)
-      // 导入 / 云恢复：把电视源、下载记录、本机设置一起写回，并立即应用新主题
+      // 导入 / 云恢复：把电视源、下载记录、本机设置一起写回，并立即应用新主题 / 导航顺序
       return window.laozheng
         .applyBackupExtras(next)
         .then(() => window.laozheng.getUiSettings())
-        .then((settings) => applyUiSettings(settings))
+        .then((settings) => {
+          applyUiSettings(settings)
+          return window.laozheng.getNavOrder()
+        })
+        .then((order) => {
+          window.dispatchEvent(new CustomEvent('laozheng:nav-order', { detail: order }))
+        })
         .catch((err) => console.error('[data] 恢复扩展数据失败', err))
     },
     [flush]

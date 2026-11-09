@@ -14,9 +14,9 @@ export function openImageZoom(src: string, gallery?: string[]): void {
   )
 }
 
-/** 单击图片打开放大层的范围：详情页内的剧照 / 人物照片 / 吃瓜正文 / 漫画 */
+/** 单击图片打开放大层的范围：详情页内的剧照 / 人物照片 / 吃瓜正文 / 漫画 / 游戏与修改器 */
 const DETAIL_IMAGE_SCOPE =
-  '.detail-photos, .melon-article, .comic-reader, .item-detail-head, .person-detail-cover'
+  '.detail-photos, .melon-article, .comic-reader, .item-detail-head, .person-detail-cover, .game-detail-cover, .cheat-detail-cover, .game-shots'
 /** 点击会跳转的封面 / 卡片，不拦截单击 */
 const CLICKABLE_SCOPE =
   'button, a, [role="button"], .clickable, .media-card, .item-card, .comic-card, .tile, .person-work-card'

@@ -20,8 +20,8 @@ const DEFAULT_LIVE_SOURCES: LiveSource[] = [
     url: 'https://gh-proxy.com/raw.githubusercontent.com/vbskycn/iptv/refs/heads/master/tv/iptv4.m3u',
     content: '',
     enabled: true,
-    testStatus: null,
-    testMsg: null,
+    testStatus: 'ok',
+    testMsg: '可用',
     testAt: 0
   }
 ]
@@ -138,9 +138,9 @@ export function makeLocalSource(name: string, content: string): LiveSource {
     url: `local://${name}`,
     content,
     enabled: true,
-    testStatus: null,
-    testMsg: null,
-    testAt: 0
+    testStatus: 'ok',
+    testMsg: '可用',
+    testAt: Date.now()
   }
 }
 

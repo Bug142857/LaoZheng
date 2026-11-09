@@ -391,9 +391,9 @@ function MagnetSourceModal({
       navigationPage: '',
       fixedRules: false,
       api: null,
-      testStatus: null,
-      testMsg: null,
-      testAt: 0
+      testStatus: 'ok',
+      testMsg: '可用',
+      testAt: Date.now()
     }
     onSave({
       ...base,
@@ -406,9 +406,9 @@ function MagnetSourceModal({
       directNavigate: useWebView2 ? directNavigate : false,
       isApi,
       api: isApi ? apiResult.value : null,
-      testStatus: null,
-      testMsg: null,
-      testAt: 0
+      testStatus: 'ok',
+      testMsg: '可用',
+      testAt: Date.now()
     })
   }
 

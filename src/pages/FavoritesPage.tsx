@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   BookHeart,
   BookOpen,
+  BookText,
   ChevronLeft,
   ChevronRight,
   Clapperboard,
@@ -9,21 +10,28 @@ import {
   Gamepad2,
   Globe,
   Heart,
+  ImageIcon,
   Images,
   MonitorPlay,
   Music,
   PlayCircle,
   Popcorn,
+  Radio,
   Search,
   Trash2,
   Tv,
+  Wand2,
   type LucideIcon
 } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import { favModuleLabel, filterFavs, formatTime } from '../utils/data'
-import { EmptyState } from '../components/ui'
+import { ConfirmDialog, EmptyState } from '../components/ui'
 import { MelonImage } from '../components/MelonImage'
 import { useMusicPlayer } from '../components/MusicPlayer'
+import {
+  livePlatformDefaultName,
+  livePlatformOfSource
+} from '../shared/livePlatformSources'
 import type { InnerFav } from '../shared/types'
 
 /** 收藏管理按模块整理（顺序与手机端模块宫格一致） */
@@ -32,14 +40,18 @@ const FAV_MODULE_ORDER = [
   'drama',
   'music',
   'game',
+  'trainer',
   'tv',
   'melon',
+  'novel',
   'book',
   'comic',
   'h2',
   'h1',
   'psite',
-  'xsite'
+  'xsite',
+  'live',
+  'wallpaper'
 ] as const
 
 const MODULE_ICONS: Record<string, LucideIcon> = {
@@ -47,14 +59,18 @@ const MODULE_ICONS: Record<string, LucideIcon> = {
   drama: Clapperboard,
   music: Music,
   game: Gamepad2,
+  trainer: Wand2,
   tv: Tv,
   melon: Popcorn,
+  novel: BookText,
   book: BookOpen,
   comic: Images,
   h2: BookHeart,
   h1: Film,
   psite: PlayCircle,
-  xsite: Globe
+  xsite: Globe,
+  live: Radio,
+  wallpaper: ImageIcon
 }
 
 export function FavoritesPage({
@@ -92,11 +108,43 @@ export function FavoritesPage({
     onModuleChange?.(key)
   }
 
+  /** 平台直播收藏单独存在 data.liveFavorites，这里转换成统一收藏行参与收藏管理 */
+  const liveFavs = useMemo<InnerFav[]>(() => {
+    return data.liveFavorites.map((fav) => {
+      const source = data.livePlatformSources.find(
+        (item) => livePlatformOfSource(item) === fav.platform
+      )
+      const platformName = source?.name || livePlatformDefaultName(fav.platform)
+      return {
+        module: 'live',
+        id: `${fav.platform}:${fav.roomId}`,
+        title: fav.title || '未命名直播间',
+        subtitle: [platformName, fav.anchor].filter(Boolean).join(' · '),
+        cover: fav.cover || null,
+        savedAt: fav.savedAt,
+        videoUrl: null,
+        mediaId: 0,
+        durationSec: 0,
+        tweetUrl: null,
+        payload: JSON.stringify({
+          platform: fav.platform,
+          roomId: fav.roomId,
+          title: fav.title,
+          anchor: fav.anchor,
+          cover: fav.cover,
+          area: fav.area
+        })
+      }
+    })
+  }, [data.liveFavorites, data.livePlatformSources])
+
+  const allFavs = useMemo(() => [...data.innerFavs, ...liveFavs], [data.innerFavs, liveFavs])
+
   const counts = useMemo(() => {
     const map = new Map<string, number>()
-    for (const fav of data.innerFavs) map.set(fav.module, (map.get(fav.module) ?? 0) + 1)
+    for (const fav of allFavs) map.set(fav.module, (map.get(fav.module) ?? 0) + 1)
     return map
-  }, [data.innerFavs])
+  }, [allFavs])
 
   /** 每个模块都固定显示（没有收藏也显示 0 条），不再提供「全部收藏」 */
   const modules = useMemo(() => {
@@ -109,8 +157,8 @@ export function FavoritesPage({
   const favs = useMemo(() => {
     const base =
       moduleKey && moduleKey !== 'all'
-        ? data.innerFavs.filter((f) => f.module === moduleKey)
-        : data.innerFavs
+        ? allFavs.filter((f) => f.module === moduleKey)
+        : allFavs
     const list = filterFavs(base, query)
     if (moduleKey === 'music' && sortMode === 'artist') {
       return [...list].sort(
@@ -119,7 +167,7 @@ export function FavoritesPage({
       )
     }
     return [...list].sort((a, b) => b.savedAt - a.savedAt)
-  }, [data.innerFavs, moduleKey, query, sortMode])
+  }, [allFavs, moduleKey, query, sortMode])
 
   const musicDuration = (fav: InnerFav): string => {
     if (!fav.durationSec) return ''
@@ -138,11 +186,29 @@ export function FavoritesPage({
       : `${m}:${String(s).padStart(2, '0')}`
   }
 
-  /** 番号 / 短剧 / P站 / X站用视频网格展示，其余模块保持列表 */
+  /** 番号 / 短剧 / P站 / X站 / 直播 / 壁纸用网格展示，其余模块保持列表 */
   const gridModule =
-    moduleKey === 'h1' || moduleKey === 'drama' || moduleKey === 'psite' || moduleKey === 'xsite'
+    moduleKey === 'h1' ||
+    moduleKey === 'drama' ||
+    moduleKey === 'psite' ||
+    moduleKey === 'xsite' ||
+    moduleKey === 'live' ||
+    moduleKey === 'wallpaper'
+
+  /** 删除前先确认，避免误点垃圾桶直接删掉收藏 */
+  const [removing, setRemoving] = useState<InnerFav | null>(null)
 
   const removeFav = (fav: InnerFav) => {
+    if (fav.module === 'live') {
+      update((d) => ({
+        ...d,
+        liveFavorites: d.liveFavorites.filter(
+          (item) => `${item.platform}:${item.roomId}` !== fav.id
+        )
+      }))
+      onNotice?.(`已删除收藏「${fav.title}」`)
+      return
+    }
     update((d) => ({
       ...d,
       innerFavs: d.innerFavs.filter((f) => !(f.module === fav.module && f.id === fav.id))
@@ -273,7 +339,7 @@ export function FavoritesPage({
                     title="删除收藏"
                     onClick={(e) => {
                       e.stopPropagation()
-                      removeFav(f)
+                      setRemoving(f)
                     }}
                   >
                     <Trash2 size={14} />
@@ -336,7 +402,7 @@ export function FavoritesPage({
                   title="删除收藏"
                   onClick={(e) => {
                     e.stopPropagation()
-                    removeFav(f)
+                    setRemoving(f)
                   }}
                 >
                   <Trash2 size={15} />
@@ -347,6 +413,20 @@ export function FavoritesPage({
           })}
         </div>
       )}
+
+      {removing ? (
+        <ConfirmDialog
+          title="删除收藏"
+          message={`确定删除收藏「${removing.title}」吗？删除后可在对应模块重新收藏。`}
+          confirmText="删除"
+          danger
+          onConfirm={() => {
+            removeFav(removing)
+            setRemoving(null)
+          }}
+          onCancel={() => setRemoving(null)}
+        />
+      ) : null}
     </>
   )
 }

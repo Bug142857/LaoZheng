@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   ChevronLeft,
   ChevronRight,
@@ -96,6 +96,10 @@ export function SettingsPage({
   const [cache, setCache] = useState<CacheInfo | null>(null)
   const [clearOpen, setClearOpen] = useState(false)
   const [clearing, setClearing] = useState(false)
+  const [chooseCacheBusy, setChooseCacheBusy] = useState(false)
+  const [chooseDownloadBusy, setChooseDownloadBusy] = useState(false)
+  const [pendingDownloadRoot, setPendingDownloadRoot] = useState<string | null>(null)
+  const [changingDownloadRoot, setChangingDownloadRoot] = useState(false)
   const [liveCount, setLiveCount] = useState(0)
   const [magnetCount, setMagnetCount] = useState(0)
   const [checking, setChecking] = useState(false)
@@ -380,6 +384,23 @@ export function SettingsPage({
     window.setTimeout(() => window.location.reload(), 900)
   }
 
+  /** 更换缓存目录：主进程会先清空旧目录里的图片 / 接口缓存 */
+  const chooseCacheDirNow = async () => {
+    if (chooseCacheBusy) return
+    setChooseCacheBusy(true)
+    const res = await window.laozheng.chooseCacheDir()
+    setChooseCacheBusy(false)
+    if (res.canceled) return
+    if (res.error) {
+      onNotice(`更换缓存目录失败：${res.error}`)
+      return
+    }
+    await refreshCache()
+    onNotice(
+      `缓存目录已切换到 ${res.dir}，旧缓存已清除（${formatBytes(res.freed ?? 0)}）`
+    )
+  }
+
   const confirmSyncImport = async () => {
     if (!pendingSync) return
     const restored = pendingSync
@@ -390,6 +411,56 @@ export function SettingsPage({
     )
     setPendingSync(null)
   }
+
+  /** 更换下载目录：选好后询问是否把旧目录内容一起迁移 */
+  const chooseDownloadDirNow = async () => {
+    if (chooseDownloadBusy) return
+    setChooseDownloadBusy(true)
+    const res = await window.laozheng.chooseDownloadRoot()
+    setChooseDownloadBusy(false)
+    if (res.canceled) return
+    if (res.error) {
+      onNotice(`选择下载目录失败：${res.error}`)
+      return
+    }
+    if (!res.root) return
+    if (res.root === downloadDir) {
+      onNotice('下载目录没有变化')
+      return
+    }
+    setPendingDownloadRoot(res.root)
+  }
+
+  const applyDownloadRoot = async (move: boolean) => {
+    if (!pendingDownloadRoot || changingDownloadRoot) return
+    setChangingDownloadRoot(true)
+    const res = await window.laozheng.changeDownloadRoot(pendingDownloadRoot, move)
+    setChangingDownloadRoot(false)
+    if (!res.ok) {
+      onNotice(`更改下载目录失败：${res.error ?? '未知错误'}`)
+      return
+    }
+    setDownloadDir(res.root ?? pendingDownloadRoot)
+    setPendingDownloadRoot(null)
+    onNotice(
+      move
+        ? `下载目录已改为 ${res.root}，已迁移 ${res.moved ?? 0} 项内容并清理旧目录`
+        : `下载目录已改为 ${res.root}（旧目录内容保留在原处）`
+    )
+    void refreshDownloads()
+  }
+
+  const sourceTotal =
+    data.vodSources.length +
+    data.dramaSources.length +
+    data.novelSources.length +
+    data.comicSources.length +
+    data.h1Sources.length +
+    data.livePlatformSources.length +
+    liveCount +
+    magnetCount +
+    data.trainerSources.length +
+    data.wallpaperSources.length
 
   const zlibHint = zlib
     ? zlib.loggedIn
@@ -430,7 +501,7 @@ export function SettingsPage({
             <SettingsEntry
               icon={Tv}
               title="片源管理"
-              hint={`影视源 ${data.vodSources.length} 个 · 短剧源 ${data.dramaSources.length} 个 · 电视源 ${liveCount} 个 · 磁力源 ${magnetCount} 个`}
+              hint={`共 ${sourceTotal} 个源`}
               onClick={() => setSection('sources')}
             />
             <SettingsEntry
@@ -442,7 +513,7 @@ export function SettingsPage({
             <SettingsEntry
               icon={Heart}
               title="收藏管理"
-              hint={data.innerFavs.length ? `共 ${data.innerFavs.length} 条收藏 · 按模块整理` : '暂无收藏'}
+              hint={`共 ${data.innerFavs.length + data.liveFavorites.length} 个收藏`}
               onClick={() => onOpenPage('favorites')}
             />
             <SettingsEntry
@@ -454,14 +525,38 @@ export function SettingsPage({
                   : `暂无文件 · ${downloadDir || '读取中…'}`
               }
               onClick={() => onOpenPage('downloads')}
+              action={
+                <button
+                  className="settings-entry-action"
+                  disabled={chooseDownloadBusy}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void chooseDownloadDirNow()
+                  }}
+                >
+                  {chooseDownloadBusy ? '选择中…' : '更改目录'}
+                </button>
+              }
             />
             <SettingsEntry
               icon={Eraser}
               title="清理缓存"
               hint={`当前缓存：${cache ? formatBytes(cache.bytes) : '计算中…'}${
                 cache?.parts ? ` · ${cache.parts} 个未完成文件` : ''
-              }`}
+              } · ${cache?.dir ?? '读取中…'}`}
               onClick={() => setClearOpen(true)}
+              action={
+                <button
+                  className="settings-entry-action"
+                  disabled={chooseCacheBusy}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void chooseCacheDirNow()
+                  }}
+                >
+                  {chooseCacheBusy ? '选择中…' : '更改目录'}
+                </button>
+              }
             />
             <SettingsEntry
               icon={RefreshCw}
@@ -778,6 +873,49 @@ export function SettingsPage({
         />
       )}
 
+      {pendingDownloadRoot && (
+        <Modal
+          title="更改下载目录"
+          onClose={() => {
+            if (!changingDownloadRoot) setPendingDownloadRoot(null)
+          }}
+          footer={
+            <>
+              <button
+                className="btn ghost"
+                disabled={changingDownloadRoot}
+                onClick={() => setPendingDownloadRoot(null)}
+              >
+                取消
+              </button>
+              <button
+                className="btn"
+                disabled={changingDownloadRoot}
+                onClick={() => void applyDownloadRoot(false)}
+              >
+                仅修改目录
+              </button>
+              <button
+                className="btn primary"
+                disabled={changingDownloadRoot}
+                onClick={() => void applyDownloadRoot(true)}
+              >
+                {changingDownloadRoot ? '正在迁移…' : '迁移内容并修改'}
+              </button>
+            </>
+          }
+        >
+          <p>
+            新目录：{pendingDownloadRoot}
+            {'\n'}
+            旧目录：{downloadDir || '—'}
+            {'\n\n'}
+            是否把旧目录里的视频 / 音乐 / 漫画 / 图书 / 小说移动到新目录？迁移完成后会删除旧目录的残余。
+            选择「仅修改目录」则旧文件留在原处（下载记录会找不到这些文件）。
+          </p>
+        </Modal>
+      )}
+
       {logoutDoubanOpen && (
         <ConfirmDialog
           title="退出豆瓣登录"
@@ -850,16 +988,19 @@ function SettingsEntry({
   icon,
   title,
   hint,
-  onClick
+  onClick,
+  action
 }: {
   icon: LucideIcon
   title: string
   hint: string
   onClick: () => void
+  /** 行尾小按钮：有值时整行改用 div，避免按钮里再嵌按钮 */
+  action?: ReactNode
 }) {
   const Icon = icon
-  return (
-    <button className="settings-entry" onClick={onClick}>
+  const content = (
+    <>
       <span className="settings-entry-icon">
         <Icon size={20} strokeWidth={1.8} />
       </span>
@@ -867,7 +1008,32 @@ function SettingsEntry({
         <span className="settings-entry-title">{title}</span>
         <span className="settings-entry-hint">{hint}</span>
       </span>
+      {action}
       <ChevronRight size={17} className="settings-entry-arrow" />
+    </>
+  )
+  if (action) {
+    return (
+      <div
+        className="settings-entry"
+        role="button"
+        tabIndex={0}
+        onClick={onClick}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            onClick()
+          }
+        }}
+      >
+        {content}
+      </div>
+    )
+  }
+  return (
+    <button className="settings-entry" onClick={onClick}>
+      {content}
     </button>
   )
 }

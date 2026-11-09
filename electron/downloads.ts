@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, nativeImage, shell } from 'electron'
 import { existsSync, createReadStream, createWriteStream } from 'node:fs'
 import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type ServerResponse } from 'node:http'
@@ -24,6 +24,8 @@ import type {
 import { komiicImageAuth } from './komiic'
 import { melonImageAuth, melonReferer } from './melon'
 import { downloadRoot, setDownloadRoot } from './settings'
+import { runElevatedProcess, runPowerShell } from './powershell'
+import type { MusicLyricsSaveResult } from '../src/shared/music'
 
 /**
  * 下载管理：视频（mp4 直链 / m3u8 切片合并）与音乐直链。
@@ -285,6 +287,9 @@ function kindDir(kind: DownloadKind): string {
   if (kind === 'music') return '音乐'
   if (kind === 'comic') return '漫画'
   if (kind === 'book') return '图书'
+  if (kind === 'novel') return '小说'
+  if (kind === 'wallpaper') return '壁纸'
+  if (kind === 'trainer') return '修改器'
   return '其他'
 }
 
@@ -482,7 +487,16 @@ function normalizeRecord(raw: unknown): DownloadRecord | null {
   const id = typeof o.id === 'string' ? o.id : ''
   const playPath = typeof o.playPath === 'string' ? o.playPath : ''
   if (!id || !playPath) return null
-  const kinds: DownloadKind[] = ['video', 'music', 'comic', 'book', 'file']
+  const kinds: DownloadKind[] = [
+    'video',
+    'music',
+    'comic',
+    'book',
+    'novel',
+    'wallpaper',
+    'trainer',
+    'file'
+  ]
   const kind = kinds.includes(o.kind as DownloadKind) ? (o.kind as DownloadKind) : 'video'
   return {
     id,
@@ -827,7 +841,7 @@ export async function addComicBatchDownload(
   const comic = input.comic
   if (
     !comic ||
-    (comic.source !== 'komiic' && comic.source !== 'bika') ||
+    (comic.source !== 'komiic' && comic.source !== 'bika' && comic.source !== 'yumanhua') ||
     typeof comic.id !== 'string' ||
     !comic.id ||
     typeof comic.title !== 'string' ||
@@ -999,6 +1013,44 @@ export async function registerLocalFile(input: {
   notify()
 }
 
+/** 歌词下载：写到「下载目录/音乐」，文件名与歌曲保持一致（同名自动加序号） */
+export async function saveMusicLyrics(input: {
+  title: string
+  artists?: string
+  lrc: string
+}): Promise<MusicLyricsSaveResult> {
+  const lrc = input.lrc.replace(/\r\n/g, '\n').trim()
+  if (!lrc) return { ok: false, error: '这首歌没有歌词' }
+  const dir = join(downloadsRoot(), kindDir('music'))
+  await mkdir(dir, { recursive: true })
+  const base = safeName([input.artists, input.title].filter(Boolean).join(' - ') || '歌词')
+  const target = await uniqueTarget(dir, base, '.lrc')
+  await writeFile(target, lrc, 'utf8')
+  return { ok: true, path: target }
+}
+
+/** 小说整本 TXT：写到「下载目录/小说」，并登记到下载管理 */
+export async function saveNovelFile(input: {
+  title: string
+  content: string
+  coverUrl?: string
+  sourceName?: string
+}): Promise<{ path: string; sizeBytes: number }> {
+  const dir = join(downloadsRoot(), kindDir('novel'))
+  await mkdir(dir, { recursive: true })
+  const target = await uniqueTarget(dir, safeName(input.title), '.txt')
+  await writeFile(target, input.content, 'utf8')
+  const info = await stat(target)
+  await registerLocalFile({
+    title: input.title,
+    kind: 'novel',
+    absPath: target,
+    sourceName: input.sourceName,
+    coverUrl: input.coverUrl
+  })
+  return { path: target, sizeBytes: info.size }
+}
+
 /** 在系统里打开下载项（文件或目录） */
 export async function openDownloadItem(id: string): Promise<void> {
   await loadLibrary()
@@ -1010,6 +1062,80 @@ export async function openDownloadItem(id: string): Promise<void> {
   const target = item.hls ? resolve(abs, '..') : abs
   const err = await shell.openPath(target)
   if (err) throw new Error(err)
+}
+
+/** 把下载的壁纸设为 Windows 桌面壁纸（webp / avif 先借用 Chromium 转成 jpg） */
+export async function setDownloadWallpaper(id: string): Promise<void> {
+  await loadLibrary()
+  const item = items.find((i) => i.id === id)
+  if (!item) throw new Error('下载记录不存在')
+  if (item.kind !== 'wallpaper') throw new Error('不是壁纸下载')
+  if (item.folder) throw new Error('这是一组图片，不能直接设为桌面壁纸')
+  const root = resolve(downloadsRoot())
+  const abs = resolve(root, item.playPath)
+  if (!abs.startsWith(root + sep)) throw new Error('路径无效')
+  if (!existsSync(abs)) throw new Error('文件不存在，可能已被删除')
+  const ext = extname(abs).toLowerCase()
+  if (!['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.avif', '.gif'].includes(ext)) {
+    throw new Error('这个文件不是支持的图片格式')
+  }
+  let target = abs
+  // Windows 壁纸引擎不认 webp / avif，先转成 jpg 再设置
+  if (ext === '.webp' || ext === '.avif' || ext === '.gif') {
+    const image = nativeImage.createFromPath(abs)
+    if (image.isEmpty()) throw new Error('图片读取失败')
+    const temp = join(app.getPath('temp'), `laozheng-wallpaper-${Date.now()}.jpg`)
+    await writeFile(temp, image.toJPEG(92))
+    target = temp
+  }
+  const quote = (value: string): string => `'${value.replace(/'/g, "''")}'`
+  const script = [
+    `$path = ${quote(target)}`,
+    `$code = @'
+using System;
+using System.Runtime.InteropServices;
+public class LaoZhengWallpaper {
+  [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+  private static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
+  public static void Set(string path) {
+    SystemParametersInfo(20, 0, path, 0x01 | 0x02);
+  }
+}
+'@`,
+    'Add-Type -TypeDefinition $code',
+    // 10 = 填充，0 = 不平铺
+    "Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name WallpaperStyle -Value '10' -ErrorAction SilentlyContinue",
+    "Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name TileWallpaper -Value '0' -ErrorAction SilentlyContinue",
+    '[LaoZhengWallpaper]::Set($path)',
+    `Write-Output 'ok'`
+  ].join('\r\n')
+  await runPowerShell(script, 20_000)
+}
+
+/** 打开下载项所在目录（修改器需要直接进安装目录） */
+export async function openDownloadFolder(id: string): Promise<void> {
+  await loadLibrary()
+  const item = items.find((i) => i.id === id)
+  if (!item) throw new Error('下载记录不存在')
+  const root = resolve(downloadsRoot())
+  const abs = resolve(root, item.playPath)
+  if (!abs.startsWith(root + sep)) throw new Error('路径无效')
+  const err = await shell.openPath(dirname(abs))
+  if (err) throw new Error(err)
+}
+
+/** 以管理员权限启动下载的修改器（只接受下载目录内的 exe） */
+export async function runTrainerDownload(id: string): Promise<void> {
+  await loadLibrary()
+  const item = items.find((i) => i.id === id)
+  if (!item) throw new Error('下载记录不存在')
+  if (item.kind !== 'trainer') throw new Error('不是修改器下载')
+  const root = resolve(downloadsRoot())
+  const abs = resolve(root, item.playPath)
+  if (!abs.startsWith(root + sep)) throw new Error('路径无效')
+  if (extname(abs).toLowerCase() !== '.exe') throw new Error('这个文件不是可启动的修改器 exe')
+  if (!existsSync(abs)) throw new Error('文件不存在，可能已被删除')
+  await runElevatedProcess(abs, dirname(abs))
 }
 
 /** 用系统默认播放器播放下载项（视频不再走应用内播放页） */
@@ -1151,8 +1277,14 @@ export async function removeDownload(
   }
   const root = resolve(downloadsRoot())
   const abs = resolve(root, item.playPath)
-  // HLS 下载是目录（index.m3u8 的父目录），整目录删除
-  const target = item.hls ? resolve(abs, '..') : abs
+  // HLS 下载是目录（index.m3u8 的父目录）；修改器删除整个安装目录
+  const target = item.hls
+    ? resolve(abs, '..')
+    : item.kind === 'trainer'
+      ? item.folder
+        ? abs
+        : resolve(abs, '..')
+      : abs
   if (!abs.startsWith(root + sep) || !target.startsWith(root + sep)) {
     return { ok: false, error: '文件路径不在下载目录内，已保留下载记录' }
   }
@@ -1190,9 +1322,14 @@ export async function cancelTask(id: string): Promise<void> {
   await cleanupArtifacts(id)
 }
 
-export async function openDownloadsDir(): Promise<void> {
-  await mkdir(downloadsRoot(), { recursive: true })
-  const err = await shell.openPath(downloadsRoot())
+/** 打开下载目录：带 kind 时直接打开对应子目录（视频 / 音乐 / 漫画 / 图书 / 小说 / 修改器） */
+export async function openDownloadsDir(kind?: DownloadKind): Promise<void> {
+  const target =
+    kind && ['video', 'music', 'comic', 'book', 'novel', 'wallpaper', 'trainer', 'file'].includes(kind)
+      ? join(downloadsRoot(), kindDir(kind))
+      : downloadsRoot()
+  await mkdir(target, { recursive: true })
+  const err = await shell.openPath(target)
   if (err) throw new Error(err)
 }
 
@@ -1323,9 +1460,6 @@ async function downloadDirect(
   const dirName = kindDir(input.kind)
   const dir = join(downloadsRoot(), dirName)
   await mkdir(dir, { recursive: true })
-  const target = await uniqueTarget(dir, safeName(input.title), guessExt(input.url, input.kind))
-  const tmp = `${target}.part`
-  artifactsOf(task.id).files.add(tmp)
 
   const res = await fetch(input.url, {
     headers: downloadHeaders(input.url, input.referer),
@@ -1333,6 +1467,20 @@ async function downloadDirect(
     signal
   })
   if (!res.ok || !res.body) throw new Error(`下载失败 HTTP ${res.status}`)
+  // 壁纸站点经常用 .png 地址返回 webp / mp4，按响应类型决定扩展名，避免存错格式
+  const contentType = res.headers.get('content-type') ?? ''
+  const ext =
+    input.kind === 'wallpaper'
+      ? contentType.includes('mp4')
+        ? '.mp4'
+        : contentType.includes('webm')
+          ? '.webm'
+          : guessImageExt(input.url, contentType)
+      : guessExt(input.url, input.kind)
+  const target = await uniqueTarget(dir, safeName(input.title), ext)
+  const tmp = `${target}.part`
+  artifactsOf(task.id).files.add(tmp)
+
   const total = Number(res.headers.get('content-length') ?? 0)
   task.totalBytes = Number.isFinite(total) ? total : 0
 

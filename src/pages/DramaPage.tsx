@@ -99,7 +99,7 @@ export function DramaPage({
 
   const initialCache = useMemo(() => loadCache<DramaCache>(cacheKeyOf(''), EMPTY_CACHE), [])
 
-  /** 空字符串 = 全部源（和观影一致，默认全部源） */
+  /** 空字符串 = 全部源（和影视一致，默认全部源） */
   const [sourceId, setSourceId] = useState('')
   const [genre, setGenre] = useState(initialCache.genre)
   const [categories, setCategories] = useState<DramaCategory[]>(initialCache.categories)
@@ -495,6 +495,15 @@ export function DramaPage({
           src={playing.url}
           resumeKey={`drama|${detailSource?.id ?? detail.sourceId}|${detail.seriesId}|${playing.episode.index}`}
           onFail={onNotice}
+          onEnded={() => {
+            const nextEp = detail.episodes.find(
+              (ep) => ep.index === playing.episode.index + 1 && !ep.locked
+            )
+            if (nextEp) {
+              void playEpisode(nextEp)
+              onNotice(`自动播放下一集：${nextEp.name}`)
+            }
+          }}
         />
 
         <div className="detail-section">

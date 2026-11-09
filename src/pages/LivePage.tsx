@@ -16,6 +16,9 @@ interface ChannelCache {
   [sourceId: string]: LiveChannelResult
 }
 
+/** 「全部源」用自己的缓存 key，不与单个源冲突 */
+const ALL_SOURCES_ID = '__all__'
+
 export function LivePage({
   onNotice,
   focusUrl,
@@ -34,7 +37,7 @@ export function LivePage({
 }) {
   const { data, update } = useData()
   const [sources, setSources] = useState<LiveSource[] | null>(null)
-  const [selectedId, setSelectedId] = useState('')
+  const [selectedId, setSelectedId] = useState(ALL_SOURCES_ID)
   const [cache, setCache] = useState<ChannelCache>({})
   const [loadingId, setLoadingId] = useState<string | null>(null)
   const [input, setInput] = useState('')
@@ -42,16 +45,46 @@ export function LivePage({
   const [group, setGroup] = useState('全部')
   const [playing, setPlaying] = useState<Playing | null>(null)
 
-  const loadChannels = async (source: LiveSource) => {
-    setSelectedId(source.id)
+  const clearFilter = () => {
     setGroup('全部')
     setQuery('')
     setInput('')
+  }
+
+  const loadChannels = async (source: LiveSource) => {
+    setSelectedId(source.id)
+    clearFilter()
     if (cache[source.id] && !cache[source.id].error) return
     setLoadingId(source.id)
     const res = await window.laozheng.loadLiveChannels(source)
     setCache((prev) => ({ ...prev, [source.id]: res }))
-    setLoadingId(null)
+    setLoadingId((prev) => (prev === source.id ? null : prev))
+  }
+
+  /** 全部源：并发读取所有已启用源，分类按原始分组名合并（不再加源名前缀） */
+  const loadAllChannels = async (list: LiveSource[], force = false) => {
+    setSelectedId(ALL_SOURCES_ID)
+    clearFilter()
+    if (!force && cache[ALL_SOURCES_ID] && !cache[ALL_SOURCES_ID].error) return
+    setLoadingId(ALL_SOURCES_ID)
+    const results = await Promise.all(list.map((source) => window.laozheng.loadLiveChannels(source)))
+    const channels: LiveChannel[] = []
+    const errors: string[] = []
+    for (const result of results) {
+      if (result.error) {
+        errors.push(`${result.sourceName}：${result.error}`)
+        continue
+      }
+      channels.push(...result.channels)
+    }
+    const merged: LiveChannelResult = {
+      sourceId: ALL_SOURCES_ID,
+      sourceName: '全部源',
+      channels,
+      error: channels.length ? undefined : errors.join('；') || '没有频道'
+    }
+    setCache((prev) => ({ ...prev, [ALL_SOURCES_ID]: merged }))
+    setLoadingId((prev) => (prev === ALL_SOURCES_ID ? null : prev))
   }
 
   useEffect(() => {
@@ -59,8 +92,8 @@ export function LivePage({
     window.laozheng.loadLiveSources().then((list) => {
       if (!alive) return
       setSources(list)
-      const first = list.find((s) => s.enabled)
-      if (first) void loadChannels(first)
+      const enabled = list.filter((s) => s.enabled)
+      if (enabled.length) void loadAllChannels(enabled)
     })
     return () => {
       alive = false
@@ -83,9 +116,8 @@ export function LivePage({
     void window.laozheng.loadLiveSources().then((list) => {
       if (!alive) return
       setSources(list)
-      if (selectedId && list.some((s) => s.id === selectedId)) return
-      const first = list.find((s) => s.enabled)
-      if (first) void loadChannels(first)
+      const enabled = list.filter((s) => s.enabled)
+      if (enabled.length) void loadAllChannels(enabled, true)
       else setSelectedId('')
     })
     return () => {
@@ -95,8 +127,29 @@ export function LivePage({
   }, [resetSignal])
 
   const current = sources?.find((s) => s.id === selectedId) ?? null
+  const enabledSources = useMemo(() => (sources ?? []).filter((s) => s.enabled), [sources])
   const currentResult = selectedId ? cache[selectedId] : undefined
   const channels = currentResult?.channels ?? []
+
+  const changeSource = (next: string) => {
+    if (next === ALL_SOURCES_ID) {
+      if (selectedId === ALL_SOURCES_ID) return
+      void loadAllChannels(enabledSources)
+      return
+    }
+    const source = sources?.find((s) => s.id === next)
+    if (!source || source.id === selectedId) return
+    void loadChannels(source)
+  }
+
+  const retryCurrent = () => {
+    if (selectedId === ALL_SOURCES_ID) {
+      void loadAllChannels(enabledSources, true)
+      return
+    }
+    if (!current) return
+    void loadChannels(current)
+  }
 
   const groups = useMemo(() => {
     const list: string[] = []
@@ -201,8 +254,54 @@ export function LivePage({
           title="还没有电视源"
           desc="到「配置管理 → 片源管理」添加 M3U / M3U8 地址，或从本地导入播放列表。"
         />
+      ) : enabledSources.length === 0 ? (
+        <EmptyState
+          title="还没有启用的电视源"
+          desc="到「配置管理 → 片源管理 → 电视源」启用或添加播放列表。"
+        />
       ) : (
         <>
+          <SearchBar
+            value={input}
+            onChange={setInput}
+            onSubmit={() => setQuery(input.trim())}
+            onClear={() => {
+              setInput('')
+              setQuery('')
+            }}
+            placeholder="搜索频道…"
+            submitLabel="搜索"
+            disabled={!channels.length}
+            leading={
+              <select
+                className="select-inline"
+                value={selectedId}
+                title="电视源"
+                onChange={(e) => changeSource(e.target.value)}
+              >
+                <option value={ALL_SOURCES_ID}>全部源（{enabledSources.length}）</option>
+                {enabledSources.map((source) => (
+                  <option key={source.id} value={source.id}>
+                    {source.name}
+                  </option>
+                ))}
+              </select>
+            }
+            extra={
+              query ? (
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => {
+                    setInput('')
+                    setQuery('')
+                  }}
+                >
+                  取消搜索
+                </button>
+              ) : null
+            }
+          />
           {currentResult?.error ? (
             <EmptyState
               title="频道加载失败"
@@ -211,50 +310,24 @@ export function LivePage({
                 <button
                   className="btn"
                   onClick={() => {
-                    if (!current) return
                     setCache((prev) => {
                       const next = { ...prev }
-                      delete next[current.id]
+                      delete next[selectedId]
                       return next
                     })
-                    void loadChannels(current)
+                    retryCurrent()
                   }}
                 >
                   重试
                 </button>
               }
             />
-          ) : loadingId === current?.id && channels.length === 0 ? (
+          ) : loadingId === selectedId && channels.length === 0 ? (
             <EmptyState title="正在加载频道…" desc="直播源较大时可能需要几秒。" />
           ) : channels.length === 0 ? (
             <EmptyState title="这个源没有频道" desc="换一个源，或重新导入播放列表。" />
           ) : (
             <>
-              <SearchBar
-                value={input}
-                onChange={setInput}
-                onSubmit={() => setQuery(input.trim())}
-                onClear={() => {
-                  setInput('')
-                  setQuery('')
-                }}
-                placeholder="搜索频道…"
-                submitLabel="搜索"
-                extra={
-                  query ? (
-                    <button
-                      type="button"
-                      className="btn ghost"
-                      onClick={() => {
-                        setInput('')
-                        setQuery('')
-                      }}
-                    >
-                      取消搜索
-                    </button>
-                  ) : null
-                }
-              />
               <div className="toolbar">
                 <button
                   className={`chip ${group === '全部' ? 'active' : ''}`}
@@ -280,14 +353,19 @@ export function LivePage({
                 <EmptyState title="没有匹配的频道" desc="换个关键词或分组再试。" />
               ) : (
                 <div className="channel-grid">
-                  {filtered.map((c) => {
-                    const item = { channel: c, sourceName: current?.name ?? '' }
+                  {filtered.map((c, index) => {
+                    const item = {
+                      channel: c,
+                      sourceName:
+                        current?.name ??
+                        (c.group.includes(' · ') ? c.group.split(' · ')[0] : '全部源')
+                    }
                     const saved = data.innerFavs.some(
                       (f) => f.module === 'tv' && f.id === favId(c)
                     )
                     return (
                       <div
-                        key={`${c.url}-${c.name}`}
+                        key={`${c.url}-${c.name}-${index}`}
                         className="channel-card"
                         role="button"
                         tabIndex={0}

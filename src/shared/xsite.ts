@@ -17,6 +17,8 @@ export interface XCategory {
   id: number
   name: string
   code: string
+  /** 标签的多语言别名（站点搜索同样按这些名字匹配） */
+  aliases?: string[]
 }
 
 export interface XPage {

@@ -13,10 +13,20 @@ export interface CacheInfo {
   bytes: number
   /** 下载目录里残留的 .part 临时文件数量 */
   parts: number
+  /** 当前缓存根目录（图片 / 接口缓存都放在这里） */
+  dir: string
 }
 
 export interface CacheClearResult {
   ok: boolean
   freed: number
+  error?: string
+}
+
+/** 更换缓存目录结果：切换成功后旧目录的缓存会被清空 */
+export interface CacheDirResult {
+  canceled: boolean
+  dir?: string
+  freed?: number
   error?: string
 }

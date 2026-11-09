@@ -227,16 +227,18 @@ export function Modal({
   title,
   children,
   onClose,
-  footer
+  footer,
+  className
 }: {
   title: string
   children?: ReactNode
   onClose: () => void
   footer: ReactNode
+  className?: string
 }) {
   return (
     <div className="modal-mask" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className={`modal${className ? ` ${className}` : ''}`} onClick={(e) => e.stopPropagation()}>
         <h3>{title}</h3>
         {children}
         <div className="modal-actions">{footer}</div>

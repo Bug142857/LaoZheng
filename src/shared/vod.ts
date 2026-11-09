@@ -1,5 +1,5 @@
 /**
- * 观影模块共用类型：苹果CMS V10 采集源 / 搜索条目 / 播放线路。
+ * 影视模块共用类型：苹果CMS V10 采集源 / 搜索条目 / 播放线路。
  * 与手机端 VodModels.kt 的字段保持一致，`vodSources` 随备份 JSON 与手机端互通。
  */
 
@@ -54,7 +54,7 @@ export interface VodCategoriesResponse {
   error?: string
 }
 
-/** 番1~番4 的整站浏览结果（关键词 / 分类 / 页码） */
+/** 番号模块的整站浏览结果（关键词 / 分类 / 页码） */
 export interface VodListResponse {
   ok: boolean
   items?: VodItem[]
@@ -171,24 +171,6 @@ export function parsePlayGroups(from: string, playUrl: string): VodPlayGroup[] {
   })
   const only3u8 = groups.filter((g) => g.name.toLowerCase().includes('3u8'))
   return only3u8.length ? only3u8 : groups
-}
-
-/**
- * 番1~番4 固定绑定的片源（与手机端 v0.325 一致）。
- * 与「片源管理」里的配置完全解耦，片源怎么删改都不影响这四个入口。
- */
-export const H1_FIXED_SOURCES: { name: string; baseUrl: string }[] = [
-  { name: 'hsckzy.vip', baseUrl: 'https://hsckzy.vip/api.php/provide/vod' },
-  { name: '91md.me', baseUrl: 'https://91md.me/api.php/provide/vod' },
-  { name: 'naixxzy.com', baseUrl: 'https://Naixxzy.com/api.php/provide/vod' },
-  { name: 'jingpinx.com', baseUrl: 'https://www.jingpinx.com/api.php/provide/vod' }
-]
-
-/** index 从 0 开始；超出 0~3 返回 null */
-export function h1FixedSource(index: number): VodSourceInput | null {
-  const raw = H1_FIXED_SOURCES[index]
-  if (!raw) return null
-  return { id: `h1_fixed_${index + 1}`, name: raw.name, baseUrl: raw.baseUrl }
 }
 
 export function genSourceId(url: string): string {

@@ -21,6 +21,7 @@ import {
   X
 } from 'lucide-react'
 import type { InnerFav } from '../shared/types'
+import type { MusicQuality } from '../shared/music'
 
 export type PlayMode = 'single' | 'order' | 'shuffle'
 
@@ -29,6 +30,12 @@ export interface PlayerSong {
   key: string
   id: string
   platform?: string
+  /** 音源站点地址（自定义 / 镜像音乐源需要） */
+  baseUrl?: string
+  /** 无损音乐站点的实际平台（kuwo / wyy），用于下载窗口提示 */
+  origin?: string
+  /** 下载时可选的音质 */
+  qualities?: MusicQuality[]
   title: string
   artists: string
   cover: string | null
@@ -77,6 +84,7 @@ export const PLAY_MODE_LABEL: Record<PlayMode, string> = {
 export function songFromFav(fav: InnerFav): PlayerSong {
   let id = fav.id
   let platform: string | undefined
+  let baseUrl: string | undefined
   if (fav.id.includes('|')) {
     const [prefix, ...rest] = fav.id.split('|')
     id = rest.join('|')
@@ -85,10 +93,13 @@ export function songFromFav(fav: InnerFav): PlayerSong {
   if (fav.payload) {
     try {
       const payload = JSON.parse(fav.payload) as {
-        raw?: { id?: string; platform?: string }
+        raw?: { id?: string; platform?: string; baseUrl?: string }
       }
       if (payload.raw?.id) id = payload.raw.id
       if (payload.raw?.platform) platform = payload.raw.platform
+      if (typeof payload.raw?.baseUrl === 'string' && payload.raw.baseUrl) {
+        baseUrl = payload.raw.baseUrl
+      }
     } catch {
       // 旧收藏没有 payload，按标题回退解析
     }
@@ -97,6 +108,7 @@ export function songFromFav(fav: InnerFav): PlayerSong {
     key: `fav-${fav.module}-${fav.id}`,
     id,
     platform,
+    baseUrl,
     title: fav.title,
     artists: fav.subtitle,
     cover: fav.cover
@@ -131,10 +143,21 @@ async function resolveSongUrl(
   const rawId = song.id.includes('|') ? song.id.split('|').slice(1).join('|') : song.id
   const prefix =
     song.platform ?? (song.id.includes('|') ? song.id.split('|')[0] : '') ?? 'mvmp3'
-  if (/^[0-9a-f]{32}$/i.test(rawId) && (!prefix || prefix === 'mvmp3' || prefix === 's33ve')) {
-    const res = await window.laozheng.resolveMusic(rawId, prefix || 'mvmp3')
-    if (!res.ok || !res.url) return null
-    return { url: res.url, lrc: res.lrc ?? '', cover: res.cover || song.cover || '' }
+  const isCmsId = /^[0-9a-f]{32}$/i.test(rawId)
+  const isHiId = rawId.startsWith('hi~')
+  if (isCmsId || isHiId || song.baseUrl) {
+    const res = await window.laozheng.resolveMusic(
+      rawId,
+      prefix || 'mvmp3',
+      song.baseUrl,
+      song.title,
+      song.artists
+    )
+    if (res.ok && res.url) {
+      return { url: res.url, lrc: res.lrc ?? '', cover: res.cover || song.cover || '' }
+    }
+    // 无损音乐的签名过期且刷新失败时，再按歌名回退搜一次
+    if (!isHiId) return null
   }
   const res = await window.laozheng.resolveLegacyMusic(song.title, song.artists)
   if (!res.ok || !res.url) return null

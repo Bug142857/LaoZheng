@@ -1,6 +1,8 @@
 import { BrowserWindow } from 'electron'
 import { parse } from 'node-html-parser'
 import type {
+  DoubanHotItem,
+  DoubanHotResponse,
   PersonAward,
   PersonFullResponse,
   PersonWork,
@@ -365,6 +367,47 @@ function dedupe(items: SubjectSearchItem[]): SubjectSearchItem[] {
     out.push(item)
   }
   return out
+}
+
+/**
+ * 观影首页榜单：公开接口 `j/search_subjects`（sort=recommend）。
+ * 每个分类只发 1 个请求，主进程按登录态缓存 1 小时，点海报再按片名搜片源。
+ */
+export async function fetchDoubanHot(
+  kind: 'movie' | 'tv',
+  tag: string,
+  pageStart: number,
+  pageLimit: number
+): Promise<DoubanHotResponse> {
+  const start = Math.max(0, Math.floor(pageStart) || 0)
+  const limit = Math.min(50, Math.max(1, Math.floor(pageLimit) || 20))
+  const url = `https://movie.douban.com/j/search_subjects?type=${kind}&tag=${encodeURIComponent(
+    tag
+  )}&sort=recommend&page_limit=${limit}&page_start=${start}`
+  try {
+    const body = await getText(url, 'https://movie.douban.com/')
+    const parsed = JSON.parse(body) as unknown
+    const root = asObject(parsed)
+    const items: DoubanHotItem[] = []
+    for (const raw of asArray(root?.subjects)) {
+      const o = asObject(raw)
+      if (!o) continue
+      const id = asText(o.id)
+      const title = normalizeSpace(asText(o.title))
+      if (!id || !title) continue
+      items.push({
+        id,
+        title,
+        cover: asText(o.cover),
+        rate: asText(o.rate),
+        episodes: asText(o.episodes_info),
+        kind
+      })
+    }
+    return { ok: true, items }
+  } catch (err) {
+    return { ok: false, items: [], error: errorText(err) }
+  }
 }
 
 /** 搜索入口：影视会同时查电影 / 剧集 / 网页搜索并合并去重 */

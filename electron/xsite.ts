@@ -107,8 +107,16 @@ async function ensureTags(): Promise<void> {
         (typeof o.name_zh_cn === 'string' && o.name_zh_cn) ||
         (typeof o.name === 'string' && o.name) ||
         code
+      // 站点标签带多语言名称；搜索时和站点一样按这些别名一起匹配
+      const aliases = Object.entries(o)
+        .filter(
+          ([key, value]) =>
+            (key === 'name' || key.startsWith('name_')) && typeof value === 'string'
+        )
+        .map(([, value]) => String(value).trim())
+        .filter(Boolean)
       if (id >= 0) names.set(id, name)
-      if (!o.is_language) categories.push({ id, name, code })
+      if (!o.is_language) categories.push({ id, name, code, aliases: [...new Set(aliases)] })
     }
     if (categories.length) {
       cachedCategories = categories

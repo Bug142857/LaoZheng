@@ -444,18 +444,6 @@ export function SearchPage({
         </header>
       )}
 
-      <div className="toolbar">
-        {SEARCH_CATEGORIES.map((c) => (
-          <button
-            key={c.key}
-            className={`chip ${category === c.key ? 'active' : ''}`}
-            onClick={() => switchCategory(c.key)}
-          >
-            {c.label}
-          </button>
-        ))}
-      </div>
-
       <SearchBar
         value={query}
         onChange={setQuery}
@@ -475,6 +463,20 @@ export function SearchPage({
           setWarning(null)
         }}
         searching={loading}
+        leading={
+          <select
+            className="select-inline"
+            value={category}
+            title="切换搜索分类"
+            onChange={(event) => switchCategory(event.target.value as SearchCategory)}
+          >
+            {SEARCH_CATEGORIES.map((c) => (
+              <option key={c.key} value={c.key}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        }
         placeholder={`在「${SEARCH_CATEGORIES.find((c) => c.key === category)?.label}」分类下搜索…`}
       />
 

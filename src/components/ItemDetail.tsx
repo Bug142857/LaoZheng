@@ -63,7 +63,7 @@ export function ItemDetail({
   actions?: ReactNode
   /** 没有传 actions 时（如人物作品详情）用来自动显示加入 / 移出清单 */
   onNotice?: (text: string) => void
-  /** 影视条目的「在线观看」：按片名进入观影搜索 */
+  /** 影视条目的「在线观看」：按片名进入影视搜索 */
   onWatch?: (title: string) => void
   /** 影视条目的「下载」：按片名跳到磁力页并自动搜索 */
   onMagnet?: (title: string) => void

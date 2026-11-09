@@ -1,10 +1,11 @@
-import { app } from 'electron'
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { cacheRoot } from './settings'
 
 /**
- * 接口响应磁盘缓存：列表 / 详情这类可重建的数据落 userData/api-cache。
+ * 接口响应磁盘缓存：列表 / 详情这类可重建的数据落 <cacheRoot>/api-cache
+ * （cacheRoot 默认 userData，可在设置里更换）。
  *
  * 策略（2026-10-30 用户要求「不要每次都重新加载，除非手动清了缓存」）：
  * - 只要磁盘里有缓存，就先返回上次结果，页面永远不出现加载态；
@@ -25,7 +26,7 @@ const memory = new Map<string, CacheEntry<unknown>>()
 const refreshing = new Set<string>()
 
 function dirOf(): string {
-  return join(app.getPath('userData'), 'api-cache')
+  return join(cacheRoot(), 'api-cache')
 }
 
 function fileOf(key: string): string {

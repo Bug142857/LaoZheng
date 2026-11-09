@@ -369,6 +369,17 @@ export function MelonPage({
                       <VideoPlayer
                         src={playing.url}
                         resumeKey={`melon|${detail.id}|${playing.title}`}
+                        onEnded={() => {
+                          // 找下一个视频类型的 block 自动播
+                          const blocks = detail.blocks
+                          for (let j = playing.blockIndex + 1; j < blocks.length; j++) {
+                            const b = blocks[j]
+                            if (b.type === 'video') {
+                              setPlaying({ url: b.url, title: b.title, blockIndex: j })
+                              return
+                            }
+                          }
+                        }}
                       />
                     </div>
                   ) : null}

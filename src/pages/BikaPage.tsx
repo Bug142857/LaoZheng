@@ -367,8 +367,10 @@ export function BikaPage({
           <button className="btn ghost" onClick={closeReader}>
             <ChevronLeft size={15} /> 返回章节
           </button>
-          <h1 className="page-title">{reader.comic.title}</h1>
-          <span className="page-desc">{reader.chapter.title}</span>
+          <h1 className="page-title">
+            {reader.comic.title}
+            {reader.chapter.title ? ` · ${reader.chapter.title}` : ''}
+          </h1>
           <div className="page-actions">
             <button className="btn" disabled={!reader.urls.length} onClick={() => void downloadChapter()}>
               <Download size={14} /> 下载本章

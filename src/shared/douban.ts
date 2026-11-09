@@ -39,6 +39,26 @@ export interface SubjectSearchItem {
   url: string
 }
 
+/** 影视首页榜单类型：电影 / 剧集 */
+export type DoubanHotKind = 'movie' | 'tv'
+
+/** 影视首页榜单条目（公开影视榜单，只用于展示与按片名搜索片源） */
+export interface DoubanHotItem {
+  id: string
+  title: string
+  cover: string
+  rate: string
+  /** 集数信息，如「29集全」，可能为空 */
+  episodes: string
+  kind: DoubanHotKind
+}
+
+export interface DoubanHotResponse {
+  ok: boolean
+  items: DoubanHotItem[]
+  error?: string
+}
+
 export interface SubjectDetail {
   title: string | null
   rating: number | null

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, Download, Heart } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import { EmptyState, LoadingBlock, ModuleShortcuts, Pagination } from '../components/ui'
+import { SearchBar } from '../components/SearchBar'
 import { VideoPlayer } from '../components/VideoPlayer'
 import { loadCache, saveCache } from '../utils/cache'
 import { requestDownload } from '../utils/download'
@@ -70,6 +71,8 @@ export function XSitePage({
   const [categories, setCategories] = useState<XCategory[]>([])
   const [catCounts, setCatCounts] = useState<Record<string, number>>({})
   const [pending, setPending] = useState<{ range: string; category: string } | null>(null)
+  const [tagInput, setTagInput] = useState('')
+  const [tagMatches, setTagMatches] = useState<XCategory[] | null>(null)
   const [playing, setPlaying] = useState<XPost | null>(null)
   /** 从收藏进入时先显示打开中，避免闪一下榜单界面 */
   const [opening, setOpening] = useState(false)
@@ -84,6 +87,8 @@ export function XSitePage({
     setPlaying(null)
     setOpening(false)
     setOpenError(null)
+    setTagInput('')
+    setTagMatches(null)
   }, [resetSignal])
 
   useEffect(() => {
@@ -121,6 +126,55 @@ export function XSitePage({
     if (nextRange === 'weekly' && !nextCategory && res.page.page === 1) {
       saveCache<XCache>('xsite', { ...cache })
     }
+  }
+
+  /** 站点只提供标签检索：先按 code / 多语言别名匹配标签，再按标签加载视频 */
+  const submitTagSearch = () => {
+    const query = tagInput.trim()
+    if (!query) return
+    const lower = query.toLowerCase()
+    const exact = categories.find((entry) => entry.code.toLowerCase() === lower)
+    if (exact) {
+      setTagMatches(null)
+      setTagInput(exact.name)
+      // 站点搜索默认按总榜找，避免「最新」周榜里没有该标签时显示空列表
+      void load('all', exact.code, 1)
+      return
+    }
+    const matches = categories
+      .filter((entry) =>
+        (entry.aliases ?? [entry.name]).some((alias) => alias.toLowerCase().includes(lower))
+      )
+      .slice(0, 20)
+    if (!matches.length) {
+      onNotice(`没有找到「${query}」相关的标签`)
+      return
+    }
+    if (matches.length === 1) {
+      setTagMatches(null)
+      setTagInput(matches[0].name)
+      void load('all', matches[0].code, 1)
+      return
+    }
+    setTagMatches(matches)
+  }
+
+  const pickCategory = (code: string) => {
+    setTagMatches(null)
+    setTagInput('')
+    void load(range, code, 1)
+  }
+
+  const pickTagMatch = (entry: XCategory) => {
+    setTagMatches(null)
+    setTagInput(entry.name)
+    void load('all', entry.code, 1)
+  }
+
+  const clearTagSearch = () => {
+    setTagInput('')
+    setTagMatches(null)
+    if (category) void load(range, '', 1)
   }
 
   useEffect(() => {
@@ -274,7 +328,6 @@ export function XSitePage({
             <ChevronLeft size={15} /> 返回
           </button>
           <h1 className="page-title">{playing.account ? `@${playing.account}` : 'X站视频'}</h1>
-          <span className="page-desc">X站 · {formatDuration(playing.durationSec)}</span>
           <div className="page-actions">
             <button className="btn" onClick={() => void download(playing)}>
               <Download size={15} /> 下载
@@ -304,6 +357,40 @@ export function XSitePage({
         </div>
       </header>
 
+      <SearchBar
+        value={tagInput}
+        onChange={setTagInput}
+        onSubmit={submitTagSearch}
+        onClear={clearTagSearch}
+        placeholder="搜索标签（如 jk / 女高中生 / cosplay）"
+        disabled={!categories.length}
+      />
+
+      {tagMatches && tagMatches.length > 0 ? (
+        <div className="toolbar">
+          <span className="settings-value" style={{ fontSize: 11 }}>
+            匹配标签
+          </span>
+          {tagMatches.map((entry) => {
+            const active = pending
+              ? pending.category === entry.code
+              : category === entry.code
+            return (
+              <button
+                key={entry.code}
+                className={`chip ${active ? 'active' : ''}`}
+                onClick={() => pickTagMatch(entry)}
+              >
+                {entry.name}
+                {catCounts[entry.code] > 0 ? (
+                  <span className="chip-count">{formatCount(catCounts[entry.code])}</span>
+                ) : null}
+              </button>
+            )
+          })}
+        </div>
+      ) : null}
+
       <div className="toolbar">
         <button
           className={`chip ${(pending ? pending.range : range) === 'weekly' ? 'active' : ''}`}
@@ -321,7 +408,7 @@ export function XSitePage({
           className={`chip ${
             (pending ? pending.category : category) === '' ? 'active' : ''
           }`}
-          onClick={() => void load(range, '', 1)}
+          onClick={() => pickCategory('')}
         >
           全部分类
         </button>
@@ -333,7 +420,7 @@ export function XSitePage({
             <button
               key={c.code}
               className={`chip ${active ? 'active' : ''}`}
-              onClick={() => void load(range, c.code, 1)}
+              onClick={() => pickCategory(c.code)}
             >
               {c.name}
               {catCounts[c.code] > 0 ? (

@@ -54,6 +54,15 @@ export function saveCache<T>(key: string, value: T): void {
   }
 }
 
+/** 删除单个模块的列表缓存（点页面标题刷新时回到真正的默认页） */
+export function clearCache(key: string): void {
+  try {
+    window.localStorage.removeItem(PREFIX + key)
+  } catch {
+    // localStorage 不可用时忽略
+  }
+}
+
 /** 清理缓存：把各模块落地的列表缓存一起清掉，下次进入重新请求 */
 export function clearModuleCaches(): void {
   try {

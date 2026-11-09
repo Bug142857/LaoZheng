@@ -263,7 +263,7 @@ export function GamePage({
         ) : (
           <>
             <div className="comic-detail">
-              <div className="comic-detail-cover">
+              <div className="comic-detail-cover game-detail-cover">
                 {game.cover ? <img src={game.cover} alt="" /> : null}
               </div>
               <div className="comic-detail-info">

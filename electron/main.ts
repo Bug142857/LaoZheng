@@ -25,9 +25,13 @@ import {
 } from './store'
 import {
   initSettings,
+  cacheRoot,
+  setCacheRoot,
   downloadRoot,
   lastDialogDir,
+  navOrderSettings,
   rememberDialogDir,
+  setNavOrder,
   setUiSettings,
   uiSettings,
   settingsSnapshot,
@@ -35,6 +39,7 @@ import {
 } from './settings'
 import { seedDefaultData } from './seed'
 import {
+  fetchDoubanHot,
   fetchPersonFull,
   fetchSubjectComments,
   fetchSubjectCredits,
@@ -58,7 +63,43 @@ import {
   saveLiveSources,
   testLiveSource
 } from './live'
-import { resolveMusic, resolveLegacyMusic, searchMusic } from './music'
+import { liveCategories, liveList, liveRoom } from './livePlatform'
+import {
+  bilibiliQrPoll,
+  bilibiliQrStart,
+  initLiveAuth,
+  liveLoginStatus,
+  logoutPlatform,
+  openPlatformLogin
+} from './livePlatform/auth'
+import { BILI_UA, DOUYU_UA, DOUYIN_UA } from './livePlatform/common'
+import {
+  isLivePlatformId,
+  type LiveListKind,
+  type LiveListParams
+} from '../src/shared/livePlatform'
+import {
+  isWallpaperDevice,
+  isWallpaperTemplate,
+  type WallpaperDevice,
+  type WallpaperSourceRef
+} from '../src/shared/wallpaper'
+import { wallpaperCategories, wallpaperList, wallpaperResolve } from './wallpaper'
+
+import { resolveMusic, resolveLegacyMusic, searchMusic, testMusicSource } from './music'
+import type { MusicSourceInput } from '../src/shared/music'
+import { collectSystemInfo } from './sysinfo'
+import {
+  deleteTrainer,
+  downloadTrainer,
+  openTrainerFolder,
+  runTrainer,
+  scanTrainerLibrary,
+  searchTrainers,
+  testTrainerSource,
+  trainerDetail
+} from './trainers'
+import type { TrainerDownloadInput, TrainerSourceInput } from '../src/shared/trainers'
 import {
   addComicBatchDownload,
   addDownload,
@@ -69,13 +110,17 @@ import {
   importDownloadRecords,
   listDownloads,
   openDownloadItem,
+  openDownloadFolder,
   openDownloadsDir,
   playDownloadItem,
   readDownloadItem,
   removeDownload,
+  runTrainerDownload,
+  saveMusicLyrics,
+  setDownloadWallpaper,
   startMediaServer
 } from './downloads'
-import type { ComicBatchDownloadInput, DownloadAddInput } from '../src/shared/downloads'
+import type { ComicBatchDownloadInput, DownloadAddInput, DownloadKind } from '../src/shared/downloads'
 import { xCategories, xDetail, xList } from './xsite'
 import { pCategoryCount, pList, pResolve } from './psite'
 import {
@@ -88,6 +133,15 @@ import {
   trackMelonImages
 } from './melon'
 import { dramaCatalog, dramaDetail, dramaPlay } from './drama'
+import {
+  novelChapter,
+  novelDetail,
+  novelDownload,
+  novelHome,
+  novelSearch,
+  novelCategory,
+  testNovelSource
+} from './novel'
 import { initAccounts, listAccounts } from './accounts'
 import {
   bikaCategories,
@@ -111,6 +165,15 @@ import {
   komiicRecent,
   komiicSearch
 } from './komiic'
+import {
+  yumanhuaCategory,
+  yumanhuaChapters,
+  yumanhuaDetail,
+  yumanhuaHot,
+  yumanhuaImages,
+  yumanhuaRecent,
+  yumanhuaSearch
+} from './yumanhua'
 import {
   openWygamerLogin,
   wygamerByCategory,
@@ -160,7 +223,14 @@ import { normalizeData, type AppData } from '../src/shared/types'
 import type { SearchCategory, SubjectKind } from '../src/shared/douban'
 import type { VodSourceInput } from '../src/shared/vod'
 import type { DramaSourceInput } from '../src/shared/drama'
-import type { CacheClearResult, CacheInfo, UiSettings } from '../src/shared/settings'
+import {
+  NOVEL_SOURCE_TEMPLATES,
+  type NovelDownloadInput,
+  type NovelDownloadProgress,
+  type NovelSourceInput,
+  type NovelSourceTemplate
+} from '../src/shared/novel'
+import type { CacheClearResult, CacheDirResult, CacheInfo, UiSettings } from '../src/shared/settings'
 
 const isDev = !app.isPackaged
 
@@ -367,6 +437,43 @@ function applyRequestHeaders(
     // 吃瓜镜像的图床有防盗链：补镜像 Referer + 站点同款移动 UA
     headers['Referer'] = melonAuth.referer
     headers['User-Agent'] = melonAuth.ua
+  } else if (/(^|\.)(mayiwsk\.info|biquges\.com)$/.test(host)) {
+    // 小说封面 / 站内图片：补站点 Referer，避免部分节点防盗链
+    headers['Referer'] = 'http://www.mayiwsk.info/'
+    headers['User-Agent'] = VOD_UA
+  } else if (/(^|\.)(95dushu\.info|jwdushu\.com)$/.test(host)) {
+    headers['Referer'] = 'http://www.95dushu.info/'
+    headers['User-Agent'] = VOD_UA
+  } else if (/(^|\.)(xuanhuange\.info|xuanhuange\.net|xuanhuange\.com)$/.test(host)) {
+    headers['Referer'] = 'http://www.xuanhuange.info/'
+    headers['User-Agent'] = VOD_UA
+  } else if (/(^|\.)(ecombdimg\.com|shimolife\.com)$/.test(host)) {
+    // 漫画客封面 / 章节图：图床按来源页做防盗链
+    headers['Referer'] = 'http://www.yumanhua.com/'
+    headers['User-Agent'] = VOD_UA
+  } else if (/(^|\.)haowallpaper\.com$/.test(host)) {
+    headers['Referer'] = 'https://haowallpaper.com/'
+  } else if (/(^|\.)wallspic\.com$/.test(host)) {
+    headers['Referer'] = 'https://wallspic.com/'
+  } else if (/(^|\.)bzee\.cn$/.test(host)) {
+    // 壁纸迷图床（xz / imgtu 等子域）按来源页做防盗链
+    headers['Referer'] = 'https://www.bizhimi.cn/'
+  } else if (/(^|\.)(hdslb\.com|bilivideo\.com|bilivideo\.cn|acgvideo\.com)$/.test(host)) {
+    // B站直播封面 / 直播流分片：CDN 校验来源页
+    headers['Referer'] = 'https://live.bilibili.com/'
+    headers['User-Agent'] = BILI_UA
+  } else if (/(^|\.)(douyucdn\.cn|douyucdn2\.cn|edgesrv\.com)$/.test(host)) {
+    // 斗鱼直播流：CDN 校验来源页
+    headers['Referer'] = 'https://www.douyu.com/'
+    headers['User-Agent'] = DOUYU_UA
+  } else if (
+    /(^|\.)(douyincdn\.com|douyinvod\.com|douyinpic\.com|douyinstatic\.com|ibytedtos\.com|zjcdn\.com|byteimg\.com|bytefcdnrd\.com|bytefcdn\.com)$/.test(
+      host
+    )
+  ) {
+    // 抖音直播流 / 封面：按直播间来源页取流
+    headers['Referer'] = 'https://live.douyin.com/'
+    headers['User-Agent'] = DOUYIN_UA
   } else if (
     resourceType === 'media' ||
     (resourceType === 'xhr' && /\.(m3u8|ts|key|mp4|flv)(\?|$)/i.test(rawUrl))
@@ -444,6 +551,17 @@ function isDramaSourceInput(value: unknown): value is DramaSourceInput {
     /^https?:\/\//i.test(o.baseUrl) &&
     o.baseUrl.length <= 300
   )
+}
+
+function isNovelSourceInput(value: unknown): value is NovelSourceInput {
+  if (!value || typeof value !== 'object') return false
+  const o = value as Record<string, unknown>
+  if (typeof o.id !== 'string' || !/^[a-zA-Z0-9_-]{1,200}$/.test(o.id)) return false
+  if (typeof o.name !== 'string' || o.name.length > 80) return false
+  if (typeof o.baseUrl !== 'string' || !/^https?:\/\//i.test(o.baseUrl) || o.baseUrl.length > 300) {
+    return false
+  }
+  return NOVEL_SOURCE_TEMPLATES.includes(o.template as NovelSourceTemplate)
 }
 
 const SEARCH_CATEGORIES = new Set<SearchCategory>(['video', 'book', 'game', 'person'])
@@ -630,18 +748,19 @@ async function cleanupUpdatesDir(): Promise<void> {
   }
 }
 
-/** Electron 网络 / 图片 / 代码缓存目录（不动 Local Storage，避免清掉网页登录态） */
-const CACHE_DIR_NAMES = [
+/** Electron 网络 / 代码缓存目录（固定放 userData，不动 Local Storage，避免清掉网页登录态） */
+const USER_DATA_CACHE_DIRS = [
   'Cache',
   'Code Cache',
   'GPUCache',
   'DawnCache',
   'DawnGraphiteCache',
   'DawnWebGPUCache',
-  'blob_storage',
-  'image-cache',
-  'api-cache'
+  'blob_storage'
 ]
+
+/** 图片 / 接口缓存目录：跟随设置里的缓存目录 */
+const DATA_CACHE_DIRS = ['image-cache', 'api-cache']
 
 async function dirSize(dir: string): Promise<number> {
   let total = 0
@@ -678,13 +797,52 @@ async function partFiles(dir: string): Promise<string[]> {
 
 async function cacheInfo(): Promise<CacheInfo> {
   let bytes = 0
-  for (const name of CACHE_DIR_NAMES) {
+  for (const name of USER_DATA_CACHE_DIRS) {
     bytes += await dirSize(join(app.getPath('userData'), name))
+  }
+  for (const name of DATA_CACHE_DIRS) {
+    bytes += await dirSize(join(cacheRoot(), name))
   }
   bytes += await dirSize(updatesDir())
   const parts = await partFiles(downloadRoot())
   for (const file of parts) bytes += await stat(file).then((s) => s.size).catch(() => 0)
-  return { bytes, parts: parts.length }
+  return { bytes, parts: parts.length, dir: cacheRoot() }
+}
+
+/** 清掉指定根目录下的图片 / 接口缓存 */
+async function clearDataCache(root: string): Promise<number> {
+  let freed = 0
+  for (const name of DATA_CACHE_DIRS) {
+    const dir = join(root, name)
+    freed += await dirSize(dir)
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined)
+  }
+  return freed
+}
+
+/** 更换缓存目录：先验证新目录可用，再清空旧目录缓存并切换 */
+async function chooseCacheDir(): Promise<CacheDirResult> {
+  const picked = await dialog.showOpenDialog({
+    title: '选择缓存目录',
+    defaultPath: cacheRoot(),
+    properties: ['openDirectory', 'createDirectory']
+  })
+  if (picked.canceled || !picked.filePaths[0]) return { canceled: true }
+  const next = picked.filePaths[0]
+  const current = cacheRoot()
+  const same = resolve(next).toLowerCase() === resolve(current).toLowerCase()
+  try {
+    // 先在新目录建好子目录：不可写时直接报错，避免旧缓存已经清掉却切换失败
+    await mkdir(join(next, 'image-cache'), { recursive: true })
+    await mkdir(join(next, 'api-cache'), { recursive: true })
+    if (same) return { canceled: false, dir: current, freed: 0 }
+    const freed = await clearDataCache(current)
+    clearApiCacheMemory()
+    const dir = await setCacheRoot(next)
+    return { canceled: false, dir, freed }
+  } catch (err) {
+    return { canceled: false, error: (err as Error).message }
+  }
 }
 
 /** 清理缓存：图片 / 网络缓存、已下载的更新安装包、下载临时文件；不影响收藏、清单、登录态 */
@@ -692,11 +850,12 @@ async function clearCache(): Promise<CacheClearResult> {
   try {
     const before = await cacheInfo()
     await session.defaultSession.clearCache()
-    for (const name of CACHE_DIR_NAMES) {
+    for (const name of USER_DATA_CACHE_DIRS) {
       await rm(join(app.getPath('userData'), name), { recursive: true, force: true }).catch(
         () => undefined
       )
     }
+    await clearDataCache(cacheRoot())
     // apiCache 还有内存副本：不清掉的话，删了磁盘仍会命中旧数据
     clearApiCacheMemory()
     await cleanupUpdatesDir()
@@ -741,6 +900,26 @@ function imageHeaders(url: string): Record<string, string> {
   } else if (/(^|\.)picacomic\.com$|(^|\.)go2778\.com$/.test(host)) {
     headers['User-Agent'] = BIKA_UA
     headers['Referer'] = 'https://picaapi.picacomic.com/'
+  } else if (/(^|\.)(mayiwsk\.info|biquges\.com)$/.test(host)) {
+    headers['Referer'] = 'http://www.mayiwsk.info/'
+    headers['User-Agent'] = VOD_UA
+  } else if (/(^|\.)(95dushu\.info|jwdushu\.com)$/.test(host)) {
+    headers['Referer'] = 'http://www.95dushu.info/'
+    headers['User-Agent'] = VOD_UA
+  } else if (/(^|\.)(xuanhuange\.info|xuanhuange\.net|xuanhuange\.com)$/.test(host)) {
+    headers['Referer'] = 'http://www.xuanhuange.info/'
+    headers['User-Agent'] = VOD_UA
+  } else if (/(^|\.)(ecombdimg\.com|shimolife\.com)$/.test(host)) {
+    // 漫画客封面 / 章节图：图床按来源页做防盗链
+    headers['Referer'] = 'http://www.yumanhua.com/'
+    headers['User-Agent'] = VOD_UA
+  } else if (/(^|\.)haowallpaper\.com$/.test(host)) {
+    headers['Referer'] = 'https://haowallpaper.com/'
+  } else if (/(^|\.)wallspic\.com$/.test(host)) {
+    headers['Referer'] = 'https://wallspic.com/'
+  } else if (/(^|\.)bzee\.cn$/.test(host)) {
+    // 壁纸迷图床（xz / imgtu 等子域）按来源页做防盗链
+    headers['Referer'] = 'https://www.bizhimi.cn/'
   }
   return headers
 }
@@ -755,13 +934,17 @@ function sniffImageExt(contentType: string, fallback: string): string {
   return fallback
 }
 
-async function saveImageToFile(rawUrl: string): Promise<{ canceled: boolean; path?: string; error?: string }> {
+async function saveImageToFile(
+  rawUrl: string,
+  nameHint?: string
+): Promise<{ canceled: boolean; path?: string; error?: string }> {
   try {
     const url = rawUrl.trim()
     if (!url) return { canceled: false, error: '图片地址为空' }
     let buffer: Buffer
     let ext = '.jpg'
-    let base = `老郑分享图片-${stamp()}`
+    const customName = typeof nameHint === 'string' && nameHint.trim().length > 0
+    let base = customName ? nameHint.trim().slice(0, 80) : `老郑分享图片-${stamp()}`
     if (url.startsWith('data:')) {
       const match = url.match(/^data:([^;,]+)?(;base64)?,(.*)$/s)
       if (!match) return { canceled: false, error: '图片数据无效' }
@@ -789,13 +972,15 @@ async function saveImageToFile(rawUrl: string): Promise<{ canceled: boolean; pat
       if (!res.ok) return { canceled: false, error: `图片下载失败：HTTP ${res.status}` }
       buffer = Buffer.from(await res.arrayBuffer())
       ext = sniffImageExt(res.headers.get('content-type') ?? '', ext)
-      try {
-        const name = decodeURIComponent(new URL(url).pathname.split('/').pop() ?? '')
-        if (name && name.length <= 80) {
-          base = name.replace(/\.[a-z0-9]+$/i, '') || base
+      if (!customName) {
+        try {
+          const name = decodeURIComponent(new URL(url).pathname.split('/').pop() ?? '')
+          if (name && name.length <= 80) {
+            base = name.replace(/\.[a-z0-9]+$/i, '') || base
+          }
+        } catch {
+          // 用默认文件名
         }
-      } catch {
-        // 用默认文件名
       }
     }
     const picked = await dialog.showSaveDialog({
@@ -1005,6 +1190,8 @@ function registerIpc(): void {
 
   const HOUR = 60 * 60 * 1000
   const DAY = 24 * HOUR
+  /** 修改器解析逻辑变更时递增，旧的搜索 / 详情缓存立即失效 */
+  const TRAINER_CACHE_VERSION = 2
 
   ipcMain.handle('subject:search', (_e, category: SearchCategory, query: string) => {
     if (!SEARCH_CATEGORIES.has(category) || typeof query !== 'string' || query.length > 100) {
@@ -1014,6 +1201,32 @@ function registerIpc(): void {
       searchSubjects(category, query)
     )
   })
+
+  // 观影首页榜单：每个分类 1 个请求，静默刷新间隔 1 小时（与参考站一致）
+  ipcMain.handle(
+    'douban:hot',
+    (_e, kind: 'movie' | 'tv', tag: string, pageStart: number, pageLimit: number) => {
+      if (kind !== 'movie' && kind !== 'tv') {
+        return { ok: false, items: [], error: '榜单类型无效' }
+      }
+      if (typeof tag !== 'string' || !tag.trim() || tag.length > 30) {
+        return { ok: false, items: [], error: '榜单标签无效' }
+      }
+      const start =
+        typeof pageStart === 'number' && Number.isFinite(pageStart)
+          ? Math.max(0, Math.floor(pageStart))
+          : 0
+      const limit =
+        typeof pageLimit === 'number' && Number.isFinite(pageLimit)
+          ? Math.min(50, Math.max(1, Math.floor(pageLimit)))
+          : 20
+      return cachedResponse(
+        `douban:hot|${doubanCacheScope()}|${kind}|${tag}|${start}|${limit}`,
+        HOUR,
+        () => fetchDoubanHot(kind, tag, start, limit)
+      )
+    }
+  )
 
   ipcMain.handle('subject:detail', (_e, kind: SubjectKind, id: string) => {
     if (!SUBJECT_KINDS.has(kind) || typeof id !== 'string') {
@@ -1178,6 +1391,184 @@ function registerIpc(): void {
     }
   )
 
+  // ---------- 小说（笔趣阁系书源） ----------
+  ipcMain.handle('novel:home', (_e, source: NovelSourceInput) => {
+    if (!isNovelSourceInput(source)) return { ok: false, items: [], error: '书源参数无效' }
+    return cachedResponse(
+      `novel:home|${source.id}|${source.baseUrl}|${source.template}`,
+      10 * 60 * 1000,
+      () => novelHome(source)
+    )
+  })
+
+  ipcMain.handle('novel:search', (_e, source: NovelSourceInput, keyword: string) => {
+    if (!isNovelSourceInput(source) || typeof keyword !== 'string' || keyword.length > 80) {
+      return { ok: false, items: [], error: '搜索参数无效' }
+    }
+    return cachedResponse(
+      `novel:search|${source.id}|${source.baseUrl}|${source.template}|${keyword}`,
+      10 * 60 * 1000,
+      () => novelSearch(source, keyword)
+    )
+  })
+
+  ipcMain.handle(
+    'novel:category',
+    (_e, source: NovelSourceInput, categoryId: string, page: number) => {
+      if (
+        !isNovelSourceInput(source) ||
+        typeof categoryId !== 'string' ||
+        !/^[a-zA-Z0-9_-]{1,20}$/.test(categoryId) ||
+        typeof page !== 'number' ||
+        !Number.isFinite(page) ||
+        page < 1 ||
+        page > 999
+      ) {
+        return { ok: false, items: [], error: '分类参数无效' }
+      }
+      return cachedResponse(
+        `novel:category|${source.id}|${source.baseUrl}|${source.template}|${categoryId}|${page}`,
+        10 * 60 * 1000,
+        () => novelCategory(source, categoryId, page)
+      )
+    }
+  )
+
+  ipcMain.handle('novel:detail', (_e, source: NovelSourceInput, bookId: string) => {
+    if (
+      !isNovelSourceInput(source) ||
+      typeof bookId !== 'string' ||
+      !/^[a-zA-Z0-9_-]{1,80}$/.test(bookId)
+    ) {
+      return { ok: false, error: '书籍参数无效' }
+    }
+    return cachedResponse(
+      `novel:detail|${source.id}|${source.baseUrl}|${source.template}|${bookId}`,
+      10 * 60 * 1000,
+      () => novelDetail(source, bookId)
+    )
+  })
+
+  ipcMain.handle(
+    'novel:chapter',
+    (_e, source: NovelSourceInput, bookId: string, chapterId: string) => {
+      if (
+        !isNovelSourceInput(source) ||
+        typeof bookId !== 'string' ||
+        !/^[a-zA-Z0-9_-]{1,80}$/.test(bookId) ||
+        typeof chapterId !== 'string' ||
+        !/^\d{1,20}$/.test(chapterId)
+      ) {
+        return { ok: false, error: '章节参数无效' }
+      }
+      return cachedResponse(
+        `novel:chapter|${source.id}|${source.baseUrl}|${source.template}|${bookId}|${chapterId}`,
+        60 * 60 * 1000,
+        () => novelChapter(source, bookId, chapterId)
+      )
+    }
+  )
+
+  ipcMain.handle('novel:test', (_e, source: NovelSourceInput) => {
+    if (!isNovelSourceInput(source)) return { ok: false, error: '书源参数无效' }
+    return testNovelSource(source)
+  })
+
+  // 整本下载：主进程抓全部章节并合并成一个 TXT，进度通过事件推给页面
+  ipcMain.handle('novel:download', (event, input: NovelDownloadInput) => {
+    if (
+      !input ||
+      typeof input !== 'object' ||
+      !isNovelSourceInput(input.source) ||
+      typeof input.bookId !== 'string' ||
+      !/^[a-zA-Z0-9_]{1,60}$/.test(input.bookId) ||
+      typeof input.title !== 'string' ||
+      !input.title.trim() ||
+      input.title.length > 160 ||
+      !Array.isArray(input.chapters) ||
+      input.chapters.length === 0 ||
+      input.chapters.length > 20000
+    ) {
+      return { ok: false, error: '下载参数无效' }
+    }
+    let lastAt = 0
+    const onProgress = (progress: NovelDownloadProgress): void => {
+      const now = Date.now()
+      if (progress.done < progress.total && now - lastAt < 300) return
+      lastAt = now
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('novel:downloadProgress', progress)
+      }
+    }
+    return novelDownload(input, onProgress)
+  })
+
+  // 导出漫画源为 JSON（名称 / 地址 / 模板 / 启用状态）
+  ipcMain.handle('comic:exportSources', async (_e, sources: unknown) => {
+    const list = Array.isArray(sources) ? sources : []
+    const picked = await dialog.showSaveDialog({
+      title: '导出漫画源',
+      defaultPath: join(
+        lastDialogDir('comic', app.getPath('documents')),
+        `老郑分享-漫画源-${stamp()}.json`
+      ),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('comic', picked.filePath)
+    try {
+      const rows = list
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          template: s.template === 'komiic' ? 'komiic' : 'yumanhua',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl))
+      await writeFile(picked.filePath, JSON.stringify(rows, null, 2), 'utf8')
+      return { canceled: false, path: picked.filePath, count: rows.length }
+    } catch (err) {
+      return { canceled: false, error: (err as Error).message }
+    }
+  })
+
+  // 导出小说书源为 JSON（名称 / 地址 / 解析模板 / 启用状态）
+  ipcMain.handle('novel:exportSources', async (_e, sources: unknown) => {
+    const list = Array.isArray(sources) ? sources : []
+    const picked = await dialog.showSaveDialog({
+      title: '导出小说书源',
+      defaultPath: join(
+        lastDialogDir('novel', app.getPath('documents')),
+        `老郑分享-小说书源-${stamp()}.json`
+      ),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('novel', picked.filePath)
+    try {
+      const rows = list
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          template: typeof s.template === 'string' ? s.template : '',
+          enabled: s.enabled !== false
+        }))
+        .filter(
+          (s) =>
+            /^https?:\/\//i.test(s.baseUrl) &&
+            NOVEL_SOURCE_TEMPLATES.includes(s.template as NovelSourceTemplate)
+        )
+      await writeFile(picked.filePath, JSON.stringify(rows, null, 2), 'utf8')
+      return { canceled: false, path: picked.filePath, count: rows.length }
+    } catch (err) {
+      return { canceled: false, error: (err as Error).message }
+    }
+  })
+
   // ---------- 磁力搜索（第三方索引站） ----------
   ipcMain.handle('magnet:state', () => loadMagnetState())
   ipcMain.handle('magnet:saveSources', (_e, sources: MagnetSource[]) =>
@@ -1243,6 +1634,36 @@ function registerIpc(): void {
       const rows = list
         .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
         .map((s) => ({
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl))
+      await writeFile(picked.filePath, JSON.stringify(rows, null, 2), 'utf8')
+      return { canceled: false, path: picked.filePath, count: rows.length }
+    } catch (err) {
+      return { canceled: false, error: (err as Error).message }
+    }
+  })
+
+  // 导出番号源为 JSON（默认四个外网采集站 + 用户添加的）
+  ipcMain.handle('h1:exportSources', async (_e, sources: unknown) => {
+    const list = Array.isArray(sources) ? sources : []
+    const picked = await dialog.showSaveDialog({
+      title: '导出番号源',
+      defaultPath: join(
+        lastDialogDir('h1', app.getPath('documents')),
+        `老郑分享-番号源-${stamp()}.json`
+      ),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('h1', picked.filePath)
+    try {
+      const rows = list
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
           name: typeof s.name === 'string' ? s.name : '',
           baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
           enabled: s.enabled !== false
@@ -1334,19 +1755,107 @@ function registerIpc(): void {
         testMsg: null,
         testAt: 0
       }))
+      const trainerSources = rowsOf('trainerSources')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          type:
+            s.type === 'fling' ||
+            s.type === '3dm' ||
+            s.type === 'gamersky' ||
+            s.type === 'ali213'
+              ? s.type
+              : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => !!s.type && /^https?:\/\//i.test(s.baseUrl))
+      const musicSources = rowsOf('musicSources')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl))
+      const novelSources = rowsOf('novelSources')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          template: typeof s.template === 'string' ? s.template : '',
+          enabled: s.enabled !== false
+        }))
+        .filter(
+          (s) =>
+            /^https?:\/\//i.test(s.baseUrl) &&
+            NOVEL_SOURCE_TEMPLATES.includes(s.template as NovelSourceTemplate)
+        )
+      const comicSources = rowsOf('comicSources')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          template: s.template === 'yumanhua' || s.template === 'komiic' ? s.template : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl) && !!s.template)
+      const h1Sources = rowsOf('h1Sources')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl))
+      const livePlatformSources = rowsOf('livePlatformSources')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl))
+      const wallpaperSources = rowsOf('wallpaperSources')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          template: isWallpaperTemplate(s.template) ? s.template : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl) && !!isWallpaperTemplate(s.template))
       const payload = {
         version: 1,
         exportedAt: new Date().toISOString(),
         vodSources,
         dramaSources,
         liveSources,
-        magnetSources
+        magnetSources,
+        trainerSources,
+        musicSources,
+        novelSources,
+        comicSources,
+        h1Sources,
+        livePlatformSources,
+        wallpaperSources
       }
       await writeFile(picked.filePath, JSON.stringify(payload, null, 2), 'utf8')
       return {
         canceled: false,
         path: picked.filePath,
-        count: vodSources.length + dramaSources.length + liveSources.length + magnetSources.length
+        count:
+          vodSources.length +
+          dramaSources.length +
+          liveSources.length +
+          magnetSources.length +
+          trainerSources.length +
+          musicSources.length +
+          novelSources.length +
+          comicSources.length +
+          h1Sources.length +
+          livePlatformSources.length +
+          wallpaperSources.length
       }
     } catch (err) {
       return { canceled: false, error: (err as Error).message }
@@ -1371,13 +1880,27 @@ function registerIpc(): void {
         vodSources: rowsOf('vodSources'),
         dramaSources: rowsOf('dramaSources'),
         liveSources: normalizeLiveSources(rowsOf('liveSources')),
-        magnetSources: rowsOf('magnetSources')
+        magnetSources: rowsOf('magnetSources'),
+        trainerSources: rowsOf('trainerSources'),
+        musicSources: rowsOf('musicSources'),
+        novelSources: rowsOf('novelSources'),
+        comicSources: rowsOf('comicSources'),
+        h1Sources: rowsOf('h1Sources'),
+        livePlatformSources: rowsOf('livePlatformSources'),
+        wallpaperSources: rowsOf('wallpaperSources')
       }
       if (
         !data.vodSources.length &&
         !data.dramaSources.length &&
         !data.liveSources.length &&
-        !data.magnetSources.length
+        !data.magnetSources.length &&
+        !data.trainerSources.length &&
+        !data.musicSources.length &&
+        !data.novelSources.length &&
+        !data.comicSources.length &&
+        !data.h1Sources.length &&
+        !data.livePlatformSources.length &&
+        !data.wallpaperSources.length
       ) {
         return { canceled: false, error: '文件里没有可导入的源' }
       }
@@ -1520,18 +2043,241 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('music:search', (_e, keyword: string, page: number) => {
+  // 平台直播（B站 / 斗鱼 / 抖音）：与上面的「电视」M3U 模块分开
+  ipcMain.handle('livePlatform:categories', (_e, platform: unknown) => {
+    if (!isLivePlatformId(platform)) {
+      return { groups: [], error: '平台参数无效' }
+    }
+    return liveCategories(platform)
+  })
+
+  ipcMain.handle(
+    'livePlatform:list',
+    (_e, platform: unknown, kind: unknown, params: unknown) => {
+      if (!isLivePlatformId(platform)) {
+        return { items: [], hasMore: false, error: '平台参数无效' }
+      }
+      const mode: LiveListKind =
+        kind === 'category' || kind === 'search' ? kind : 'recommend'
+      const input = (params ?? {}) as LiveListParams
+      return liveList(platform, mode, {
+        page: typeof input.page === 'number' ? input.page : 1,
+        parentId: typeof input.parentId === 'string' ? input.parentId : '',
+        areaId: typeof input.areaId === 'string' ? input.areaId : '',
+        keyword: typeof input.keyword === 'string' ? input.keyword.slice(0, 60) : ''
+      })
+    }
+  )
+
+  ipcMain.handle(
+    'livePlatform:room',
+    (_e, platform: unknown, input: unknown, qualityId: unknown) => {
+      if (!isLivePlatformId(platform)) {
+        return {
+          detail: {
+            platform: 'bilibili',
+            roomId: '',
+            title: '',
+            anchor: '',
+            cover: '',
+            area: '',
+            watching: '',
+            status: 'unknown'
+          },
+          qualities: [],
+          lines: [],
+          error: '平台参数无效'
+        }
+      }
+      const roomInput = typeof input === 'string' ? input.slice(0, 300) : ''
+      const quality = typeof qualityId === 'string' ? qualityId : undefined
+      return liveRoom(platform, roomInput, quality)
+    }
+  )
+
+  ipcMain.handle('livePlatform:loginStatus', (_e, platform: unknown) => {
+    if (!isLivePlatformId(platform)) return { platform: 'bilibili', loggedIn: false }
+    return liveLoginStatus(platform)
+  })
+
+  ipcMain.handle('livePlatform:qrStart', () => bilibiliQrStart())
+
+  ipcMain.handle('livePlatform:qrPoll', (_e, key: unknown) => {
+    return bilibiliQrPoll(typeof key === 'string' ? key : '')
+  })
+
+  ipcMain.handle('livePlatform:openLogin', (_e, platform: unknown) => {
+    if (!isLivePlatformId(platform)) return { canceled: true, error: '平台参数无效' }
+    return openPlatformLogin(platform)
+  })
+
+  ipcMain.handle('livePlatform:logout', (_e, platform: unknown) => {
+    if (!isLivePlatformId(platform)) return { platform: 'bilibili', loggedIn: false }
+    return logoutPlatform(platform)
+  })
+
+  ipcMain.handle('livePlatform:testSource', async (_e, source: unknown) => {
+    const input = source && typeof source === 'object' ? (source as Record<string, unknown>) : {}
+    const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl.trim() : ''
+    if (!/^https?:\/\//i.test(baseUrl)) {
+      return { ok: false, status: 'dead', message: '地址无效', testAt: Date.now(), region: 'cn' }
+    }
+    try {
+      const res = await fetch(baseUrl, {
+        headers: { 'User-Agent': DOUYIN_UA, Referer: baseUrl },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(12_000)
+      })
+      return {
+        ok: res.ok,
+        status: res.ok ? 'ok' : 'dead',
+        message: res.ok ? `可用（HTTP ${res.status}）` : `HTTP ${res.status}`,
+        testAt: Date.now(),
+        region: 'cn'
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        status: 'dead',
+        message: (err as Error).message || '连接失败',
+        testAt: Date.now(),
+        region: 'cn'
+      }
+    }
+  })
+
+  ipcMain.handle('livePlatform:exportSources', async (_e, sources: unknown) => {
+    const list = Array.isArray(sources) ? sources : []
+    const picked = await dialog.showSaveDialog({
+      title: '导出直播源',
+      defaultPath: join(
+        lastDialogDir('live-platform', app.getPath('documents')),
+        `老郑分享-直播源-${stamp()}.json`
+      ),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('live-platform', picked.filePath)
+    try {
+      const rows = list
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl))
+      await writeFile(picked.filePath, JSON.stringify(rows, null, 2), 'utf8')
+      return { canceled: false, path: picked.filePath, count: rows.length }
+    } catch (err) {
+      return { canceled: false, error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle('music:search', (_e, sources: unknown, keyword: string, page: number) => {
+    const list: MusicSourceInput[] = (Array.isArray(sources) ? sources : [])
+      .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+      .map((s) => ({
+        id: typeof s.id === 'string' ? s.id : '',
+        name: typeof s.name === 'string' ? s.name : '',
+        baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl.trim() : ''
+      }))
+      .filter((s) => !!s.id && /^https?:\/\//i.test(s.baseUrl))
+      .slice(0, 20)
     if (typeof keyword !== 'string' || keyword.length > 80 || !Number.isInteger(page)) {
       return { ok: false, items: [], error: '搜索参数无效' }
     }
-    return cachedResponse(`music:search|${keyword}|${page}`, 6 * HOUR, () =>
-      searchMusic(keyword, page)
-    )
+    const key = `music:search|${list.map((s) => `${s.id}@${s.baseUrl}`).join(',')}|${keyword}|${page}`
+    return cachedResponse(key, 6 * HOUR, () => searchMusic(list, keyword, page))
   })
 
-  ipcMain.handle('music:resolve', (_e, songId: string, platform: string) => {
-    if (typeof songId !== 'string') return { ok: false, error: '歌曲参数无效' }
-    return resolveMusic(songId, typeof platform === 'string' ? platform : 'mvmp3')
+  ipcMain.handle(
+    'music:resolve',
+    (
+      _e,
+      songId: string,
+      platform: string,
+      baseUrl?: string,
+      title?: string,
+      artists?: string,
+      quality?: unknown
+    ) => {
+      if (typeof songId !== 'string') return { ok: false, error: '歌曲参数无效' }
+      const base =
+        typeof baseUrl === 'string' && /^https?:\/\//i.test(baseUrl.trim())
+          ? baseUrl.trim()
+          : undefined
+      const rawQuality =
+        quality && typeof quality === 'object' ? (quality as Record<string, unknown>) : null
+      const format = typeof rawQuality?.format === 'string' ? rawQuality.format.trim() : ''
+      const bitrate = typeof rawQuality?.bitrate === 'string' ? rawQuality.bitrate.trim() : ''
+      return resolveMusic(
+        songId,
+        typeof platform === 'string' ? platform : 'mvmp3',
+        base,
+        typeof title === 'string' ? title.slice(0, 200) : undefined,
+        typeof artists === 'string' ? artists.slice(0, 200) : undefined,
+        format && bitrate && /^[a-z0-9]+$/i.test(format) && /^\d+$/.test(bitrate)
+          ? { format: format.toLowerCase(), bitrate }
+          : undefined
+      )
+    }
+  )
+
+  ipcMain.handle('music:testSource', (_e, source: unknown) => {
+    if (!source || typeof source !== 'object') return { ok: false, error: '参数无效' }
+    const input = source as Partial<MusicSourceInput>
+    const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl.trim() : ''
+    if (!/^https?:\/\//i.test(baseUrl)) return { ok: false, error: '音源地址无效' }
+    return testMusicSource({
+      id: typeof input.id === 'string' && input.id ? input.id : 'custom',
+      name: typeof input.name === 'string' ? input.name : '',
+      baseUrl
+    })
+  })
+
+  ipcMain.handle('music:saveLyrics', (_e, input: { title?: unknown; artists?: unknown; lrc?: unknown }) => {
+    if (!input || typeof input !== 'object') return { ok: false, error: '参数无效' }
+    const title = typeof input.title === 'string' ? input.title.trim() : ''
+    const artists = typeof input.artists === 'string' ? input.artists.trim() : ''
+    const lrc = typeof input.lrc === 'string' ? input.lrc : ''
+    if (!title || !lrc.trim()) return { ok: false, error: '歌词内容为空' }
+    return saveMusicLyrics({
+      title: title.slice(0, 200),
+      artists: artists.slice(0, 200),
+      lrc: lrc.slice(0, 200_000)
+    })
+  })
+
+  // 导出音乐源为 JSON（名称 / 地址 / 启用状态）
+  ipcMain.handle('music:exportSources', async (_e, sources: unknown) => {
+    const list = Array.isArray(sources) ? sources : []
+    const picked = await dialog.showSaveDialog({
+      title: '导出音乐源',
+      defaultPath: join(
+        lastDialogDir('music', app.getPath('documents')),
+        `老郑分享-音乐源-${stamp()}.json`
+      ),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('music', picked.filePath)
+    try {
+      const rows = list
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl))
+      await writeFile(picked.filePath, JSON.stringify(rows, null, 2), 'utf8')
+      return { canceled: false, path: picked.filePath, count: rows.length }
+    } catch (err) {
+      return { canceled: false, error: (err as Error).message }
+    }
   })
 
   ipcMain.handle('downloads:list', () => listDownloads())
@@ -1544,7 +2290,9 @@ function registerIpc(): void {
       title.length > 200 ||
       typeof url !== 'string' ||
       !/^https?:\/\//i.test(url) ||
-      !['video', 'music', 'file'].includes(kind)
+      !['video', 'music', 'comic', 'book', 'novel', 'wallpaper', 'trainer', 'file'].includes(
+        kind
+      )
     ) {
       return { ok: false, error: '下载参数无效' }
     }
@@ -1572,7 +2320,7 @@ function registerIpc(): void {
     return undefined
   })
 
-  ipcMain.handle('downloads:openDir', () => openDownloadsDir())
+  ipcMain.handle('downloads:openDir', (_e, kind?: DownloadKind) => openDownloadsDir(kind))
 
   ipcMain.handle('downloads:root', () => downloadRoot())
 
@@ -1596,11 +2344,17 @@ function registerIpc(): void {
 
   ipcMain.handle('app:cacheInfo', () => cacheInfo())
   ipcMain.handle('app:clearCache', () => clearCache())
+  ipcMain.handle('app:chooseCacheDir', () => chooseCacheDir())
 
   ipcMain.handle('settings:getUi', () => uiSettings())
   ipcMain.handle('settings:setUi', (_e, input: Partial<UiSettings>) => {
     if (!input || typeof input !== 'object') throw new Error('参数无效')
     return setUiSettings(input)
+  })
+  ipcMain.handle('settings:getNavOrder', () => navOrderSettings())
+  ipcMain.handle('settings:setNavOrder', async (_e, order: unknown) => {
+    if (!order || typeof order !== 'object') throw new Error('参数无效')
+    await setNavOrder(order as Record<string, string[]>)
   })
 
   ipcMain.handle('douban:status', () => doubanAuthStatus())
@@ -1690,6 +2444,112 @@ function registerIpc(): void {
   ipcMain.handle('melon:trackImages', (_e, urls: unknown) => {
     if (!Array.isArray(urls)) return
     trackMelonImages(urls.filter((u): u is string => typeof u === 'string'))
+  })
+
+  // ---------- 壁纸（Wallspic / 壁纸迷） ----------
+  const sanitizeWallpaperSource = (raw: unknown): WallpaperSourceRef | null => {
+    if (!raw || typeof raw !== 'object') return null
+    const record = raw as Record<string, unknown>
+    const template = isWallpaperTemplate(record.template) ? record.template : null
+    const baseUrl =
+      typeof record.baseUrl === 'string' ? record.baseUrl.trim().slice(0, 300) : ''
+    if (!template || !/^https?:\/\//i.test(baseUrl)) return null
+    return {
+      id:
+        typeof record.id === 'string' && record.id
+          ? record.id.slice(0, 80)
+          : template,
+      template,
+      baseUrl
+    }
+  }
+
+  ipcMain.handle(
+    'wallpaper:list',
+    (_e, rawSource: unknown, category: string, page: number, keyword: string) => {
+      const source = sanitizeWallpaperSource(rawSource)
+      if (
+        !source ||
+        typeof category !== 'string' ||
+        category.length > 80 ||
+        !Number.isFinite(page) ||
+        typeof keyword !== 'string' ||
+        keyword.length > 80
+      ) {
+        return { ok: false, error: '参数无效' }
+      }
+      const safeKeyword = keyword.trim()
+      return cachedResponse(
+        `wallpaper:list:v3|${source.id}|${source.template}|${source.baseUrl}|${category}|${Math.round(page)}|${safeKeyword}`,
+        30 * 60 * 1000,
+        () => wallpaperList(source, category, page, safeKeyword)
+      )
+    }
+  )
+
+  ipcMain.handle(
+    'wallpaper:categories',
+    (_e, rawSource: unknown, device: WallpaperDevice) => {
+      const source = sanitizeWallpaperSource(rawSource)
+      if (!source || !isWallpaperDevice(device)) {
+        return { ok: false, error: '参数无效' }
+      }
+      return cachedResponse(
+        `wallpaper:categories:v5|${source.id}|${source.template}|${source.baseUrl}|${device}`,
+        12 * 60 * 60 * 1000,
+        () => wallpaperCategories(source, device)
+      )
+    }
+  )
+
+  ipcMain.handle(
+    'wallpaper:resolve',
+    (_e, rawSource: unknown, pageUrl: string, width: number, height: number) => {
+      const source = sanitizeWallpaperSource(rawSource)
+      if (
+        !source ||
+        typeof pageUrl !== 'string' ||
+        pageUrl.length > 600 ||
+        !Number.isFinite(width) ||
+        !Number.isFinite(height)
+      ) {
+        return { ok: false, error: '参数无效' }
+      }
+      // 原图地址可能是带时效签名的直链，不做长时间缓存
+      return wallpaperResolve(source, pageUrl, width, height)
+    }
+  )
+
+  ipcMain.handle('wallpaper:exportSources', async (_e, sources: unknown) => {
+    const list = Array.isArray(sources) ? sources : []
+    const picked = await dialog.showSaveDialog({
+      title: '导出壁纸源',
+      defaultPath: join(
+        lastDialogDir('wallpaper', app.getPath('documents')),
+        `老郑分享-壁纸源-${stamp()}.json`
+      ),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('wallpaper', picked.filePath)
+    try {
+      const rows = list
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          template: isWallpaperTemplate(s.template) ? s.template : '',
+          enabled: s.enabled !== false
+        }))
+        .filter(
+          (s) => s.name && /^https?:\/\//i.test(s.baseUrl) && !!isWallpaperTemplate(s.template)
+        )
+      await writeFile(picked.filePath, JSON.stringify(rows, null, 2), 'utf8')
+      return { canceled: false, path: picked.filePath, count: rows.length }
+    } catch (err) {
+      return { canceled: false, error: (err as Error).message }
+    }
   })
 
   ipcMain.handle('melon:image', (_e, url: string) => {
@@ -1880,9 +2740,114 @@ function registerIpc(): void {
     return komiicImages(comicId, chapterId)
   })
 
+  // ---------- 漫画客（yumanhua） ----------
+  ipcMain.handle('yumanhua:recent', (_e, baseUrl?: string, sourceId?: string) =>
+    cachedResponse(`yumanhua:recent|${baseUrl ?? ''}|${sourceId ?? ''}`, 15 * 60 * 1000, () =>
+      yumanhuaRecent(baseUrl, sourceId)
+    )
+  )
+
+  ipcMain.handle('yumanhua:hot', (_e, baseUrl?: string, sourceId?: string) =>
+    cachedResponse(`yumanhua:hot|${baseUrl ?? ''}|${sourceId ?? ''}`, 15 * 60 * 1000, () =>
+      yumanhuaHot(baseUrl, sourceId)
+    )
+  )
+
+  ipcMain.handle('yumanhua:category', (_e, categoryId: string, baseUrl?: string, sourceId?: string) => {
+    if (typeof categoryId !== 'string' || !/^\d{1,3}$/.test(categoryId)) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    return cachedResponse(
+      `yumanhua:category|${categoryId}|${baseUrl ?? ''}|${sourceId ?? ''}`,
+      15 * 60 * 1000,
+      () => yumanhuaCategory(categoryId, baseUrl, sourceId)
+    )
+  })
+
+  ipcMain.handle('yumanhua:search', (_e, keyword: string, baseUrl?: string, sourceId?: string) => {
+    if (typeof keyword !== 'string' || !keyword.trim() || keyword.length > 40) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    return cachedResponse(
+      `yumanhua:search|${keyword.trim()}|${baseUrl ?? ''}|${sourceId ?? ''}`,
+      30 * 60 * 1000,
+      () => yumanhuaSearch(keyword.trim(), baseUrl, sourceId)
+    )
+  })
+
+  ipcMain.handle('yumanhua:detail', (_e, id: string, baseUrl?: string) => {
+    if (typeof id !== 'string' || !id || id.length > 80) {
+      return { ok: false, comic: null, error: '参数无效' }
+    }
+    return cachedResponse(`yumanhua:detail|${id}|${baseUrl ?? ''}`, 12 * HOUR, () =>
+      yumanhuaDetail(id, baseUrl)
+    )
+  })
+
+  ipcMain.handle('yumanhua:chapters', (_e, id: string, baseUrl?: string) => {
+    if (typeof id !== 'string' || !id || id.length > 80) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    // 章节列表不落缓存：站点更新后要立刻能看到最新集数
+    return yumanhuaChapters(id, baseUrl)
+  })
+
+  ipcMain.handle('yumanhua:images', (_e, comicId: string, chapterId: string, baseUrl?: string) => {
+    if (
+      typeof comicId !== 'string' ||
+      !comicId ||
+      comicId.length > 80 ||
+      typeof chapterId !== 'string' ||
+      !chapterId ||
+      chapterId.length > 80
+    ) {
+      return { ok: false, urls: [], error: '参数无效' }
+    }
+    return yumanhuaImages(comicId, chapterId, baseUrl)
+  })
+
+  ipcMain.handle('comic:testSource', async (_e, source: unknown) => {
+    const input = source as {
+      id?: unknown
+      name?: unknown
+      baseUrl?: unknown
+      template?: unknown
+    }
+    if (!input || typeof input !== 'object') return { ok: false, error: '漫画源参数无效' }
+    const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl.trim() : ''
+    const id = typeof input.id === 'string' ? input.id.trim() : ''
+    const template = input.template === 'komiic' ? 'komiic' : 'yumanhua'
+    if (!id || !/^https?:\/\//i.test(baseUrl)) return { ok: false, error: '漫画源地址无效' }
+    try {
+      const res =
+        template === 'komiic'
+          ? await komiicRecent(0, '')
+          : await yumanhuaRecent(baseUrl, id)
+      if (!res.ok || !res.items.length) return { ok: false, error: res.error ?? '没有返回漫画' }
+      return { ok: true, count: res.items.length, message: `可用，返回 ${res.items.length} 部` }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : '测试失败' }
+    }
+  })
+
   ipcMain.handle('downloads:openItem', (_e, id: string) => {
     if (typeof id !== 'string') throw new Error('参数无效')
     return openDownloadItem(id)
+  })
+
+  ipcMain.handle('downloads:openFolder', (_e, id: string) => {
+    if (typeof id !== 'string') throw new Error('参数无效')
+    return openDownloadFolder(id)
+  })
+
+  ipcMain.handle('downloads:setWallpaper', (_e, id: string) => {
+    if (typeof id !== 'string' || !id) throw new Error('参数无效')
+    return setDownloadWallpaper(id)
+  })
+
+  ipcMain.handle('downloads:runTrainer', (_e, id: string) => {
+    if (typeof id !== 'string') throw new Error('参数无效')
+    return runTrainerDownload(id)
   })
 
   ipcMain.handle('downloads:playItem', (_e, id: string) => {
@@ -2100,6 +3065,115 @@ function registerIpc(): void {
 
   ipcMain.handle('app:version', () => displayVersion())
 
+  ipcMain.handle('app:systemInfo', (_e, force: unknown) => collectSystemInfo(force === true))
+
+  // ---------- 游戏修改（多源训练器） ----------
+  ipcMain.handle(
+    'trainers:search',
+    (_e, sources: TrainerSourceInput[], keyword: string, page: number) => {
+      if (
+        !Array.isArray(sources) ||
+        sources.length === 0 ||
+        sources.length > 8 ||
+        typeof keyword !== 'string' ||
+        keyword.length > 80 ||
+        !Number.isInteger(page) ||
+        page < 1 ||
+        page > 500
+      ) {
+        return { ok: false, items: [], page: 1, hasMore: false, error: '参数无效' }
+      }
+      const key = sources
+        .map((source) => `${source?.id ?? ''}:${source?.type ?? ''}:${source?.baseUrl ?? ''}`)
+        .join(',')
+      return cachedResponse(
+        `trainers:v${TRAINER_CACHE_VERSION}:search|${key}|${keyword.trim()}|${page}`,
+        30 * 60 * 1000,
+        () => searchTrainers(sources, keyword, page)
+      )
+    }
+  )
+
+  ipcMain.handle('trainers:detail', (_e, source: TrainerSourceInput, url: string) => {
+    if (!source || typeof source !== 'object' || typeof url !== 'string' || url.length > 500) {
+      return { ok: false, trainer: null, error: '参数无效' }
+    }
+    const key = `${source.type ?? ''}|${source.baseUrl ?? ''}|${url}`
+    return cachedResponse(
+      `trainers:v${TRAINER_CACHE_VERSION}:detail|${key}`,
+      12 * 60 * 60 * 1000,
+      () => trainerDetail(source, url)
+    )
+  })
+
+  ipcMain.handle('trainers:test', (_e, source: TrainerSourceInput) => {
+    if (!source || typeof source !== 'object') return { ok: false, error: '参数无效' }
+    return testTrainerSource(source)
+  })
+
+  // 导出修改器源为 JSON（名称 / 类型 / 地址 / 启用状态）
+  ipcMain.handle('trainers:exportSources', async (_e, sources: unknown) => {
+    const list = Array.isArray(sources) ? sources : []
+    const picked = await dialog.showSaveDialog({
+      title: '导出修改器源',
+      defaultPath: join(
+        lastDialogDir('trainer', app.getPath('documents')),
+        `老郑分享-修改器源-${stamp()}.json`
+      ),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('trainer', picked.filePath)
+    try {
+      const rows = list
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          type:
+            s.type === 'fling' ||
+            s.type === '3dm' ||
+            s.type === 'gamersky' ||
+            s.type === 'ali213'
+              ? s.type
+              : 'fling',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl))
+      await writeFile(picked.filePath, JSON.stringify(rows, null, 2), 'utf8')
+      return { canceled: false, path: picked.filePath, count: rows.length }
+    } catch (err) {
+      return { canceled: false, error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle('trainers:download', (_e, input: TrainerDownloadInput) => {
+    if (!input || typeof input !== 'object') return { ok: false, error: '参数无效' }
+    return downloadTrainer(input)
+  })
+
+  ipcMain.handle('trainers:scan', () => scanTrainerLibrary())
+
+  ipcMain.handle('trainers:run', (_e, folder: string, exe: string) => {
+    if (typeof folder !== 'string' || typeof exe !== 'string') {
+      return { ok: false, error: '参数无效' }
+    }
+    return runTrainer(folder, exe)
+  })
+
+  ipcMain.handle('trainers:openFolder', (_e, folder?: string) => {
+    if (folder !== undefined && typeof folder !== 'string') {
+      return { ok: false, error: '参数无效' }
+    }
+    return openTrainerFolder(folder)
+  })
+
+  ipcMain.handle('trainers:delete', (_e, folder: string) => {
+    if (typeof folder !== 'string') return { ok: false, error: '参数无效' }
+    return deleteTrainer(folder)
+  })
+
   ipcMain.handle('data:dir', () => app.getPath('userData'))
 
   ipcMain.handle('data:openDir', async () => {
@@ -2171,10 +3245,15 @@ if (!gotLock) {
     await initSettings()
     await seedDefaultData()
     initAccounts()
+    initLiveAuth()
     initDoubanAuth()
     setupRequestRules()
     setupImageCacheHandler((url) => {
-      const headers: Record<string, string> = { Accept: 'image/*,*/*;q=0.8' }
+      // 兜底 UA 必须带上：部分图床（如 chaoxing）对没有 UA 的请求直接 403 / 404
+      const headers: Record<string, string> = {
+        Accept: 'image/*,*/*;q=0.8',
+        'User-Agent': VOD_UA
+      }
       applyRequestHeaders(url, 'image', headers)
       return headers
     })

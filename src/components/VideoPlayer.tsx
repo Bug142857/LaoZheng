@@ -17,19 +17,24 @@ export function VideoPlayer({
   src,
   resumeKey,
   fallbackSrc,
-  onFail
+  onFail,
+  onEnded
 }: {
   src: string
   resumeKey?: string
   fallbackSrc?: string
   /** 主线路与备用线路都失败时通知调用方（可用于自动换集 / 提示） */
   onFail?: (message: string) => void
+  /** 视频播放到结尾时触发（可用于自动下一集 / 播下一个视频） */
+  onEnded?: () => void
 }) {
   const { data, update } = useData()
   const videoRef = useRef<HTMLVideoElement>(null)
   const lastSavedRef = useRef(-1)
   const onFailRef = useRef(onFail)
+  const onEndedRef = useRef(onEnded)
   onFailRef.current = onFail
+  onEndedRef.current = onEnded
   const [error, setError] = useState<string | null>(null)
   const [resumeHint, setResumeHint] = useState('')
   const [fallbackActive, setFallbackActive] = useState(false)
@@ -102,15 +107,21 @@ export function VideoPlayer({
     }
 
     const onError = (): void => fail('播放失败，可能是线路失效或需要外网环境')
+    const handleEnded = (): void => {
+      if (disposed) return
+      onEndedRef.current?.()
+    }
     video.addEventListener('loadedmetadata', onLoaded)
     video.addEventListener('timeupdate', save)
     video.addEventListener('error', onError)
+    video.addEventListener('ended', handleEnded)
     return () => {
       disposed = true
       save()
       video.removeEventListener('loadedmetadata', onLoaded)
       video.removeEventListener('timeupdate', save)
       video.removeEventListener('error', onError)
+      video.removeEventListener('ended', handleEnded)
       // 关闭播放页 / 切走页面时必须彻底停掉：只销毁 hls 有时会留下后台声音
       try {
         video.pause()
