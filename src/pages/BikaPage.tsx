@@ -574,6 +574,11 @@ export function BikaPage({
         }}
         searching={loading && !!query}
         placeholder="搜索漫画关键词…"
+        onRefresh={() => {
+          void window.laozheng.forceRefresh('comic').catch(() => {})
+          void load(category, sort, query, page)
+        }}
+        refreshing={loading}
       />
 
       {!query && (

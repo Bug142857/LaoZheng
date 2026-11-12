@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Search, X } from 'lucide-react'
+import { RefreshCw, Search, X } from 'lucide-react'
 
 /**
  * 统一的搜索栏：
@@ -17,7 +17,10 @@ export function SearchBar({
   disabled = false,
   submitLabel = '搜索',
   leading,
-  extra
+  extra,
+  onRefresh,
+  refreshing = false,
+  refreshDisabled = false
 }: {
   value: string
   onChange: (value: string) => void
@@ -31,6 +34,10 @@ export function SearchBar({
   /** 搜索框前面的附加控件，例如片源 / 资源库选择 */
   leading?: ReactNode
   extra?: ReactNode
+  /** 搜索栏右侧的刷新按钮：重新拉取当前页面的最新资源 */
+  onRefresh?: () => void
+  refreshing?: boolean
+  refreshDisabled?: boolean
 }) {
   return (
     <form
@@ -73,6 +80,18 @@ export function SearchBar({
       >
         {searching ? (onCancel ? '取消搜索' : '搜索中…') : submitLabel}
       </button>
+      {onRefresh ? (
+        <button
+          className="btn btn-sq"
+          type="button"
+          title="刷新到最新资源"
+          aria-label="刷新到最新资源"
+          disabled={refreshing || refreshDisabled}
+          onClick={onRefresh}
+        >
+          <RefreshCw size={15} className={refreshing ? 'spin' : ''} />
+        </button>
+      ) : null}
       {extra}
     </form>
   )

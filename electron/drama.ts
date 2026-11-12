@@ -1,11 +1,12 @@
-import type {
-  DramaCatalogResponse,
-  DramaCategory,
-  DramaDetailResponse,
-  DramaEpisode,
-  DramaItem,
-  DramaPlayResponse,
-  DramaSourceInput
+import {
+  ROU07_DRAMA_SOURCE_ID,
+  type DramaCatalogResponse,
+  type DramaCategory,
+  type DramaDetailResponse,
+  type DramaEpisode,
+  type DramaItem,
+  type DramaPlayResponse,
+  type DramaSourceInput
 } from '../src/shared/drama'
 import {
   fetchVodCategories,
@@ -13,6 +14,13 @@ import {
   listVodSource,
   searchVodSource
 } from './vod'
+import { parse as parseHtml } from 'node-html-parser'
+import {
+  shuangkanCatalog,
+  shuangkanDetail,
+  shuangkanPlay,
+  shuangkanSeriesSearch
+} from './shuangkan'
 
 /**
  * 短剧数据源：
@@ -917,6 +925,324 @@ async function customPlay(
   return { ok: true, url: episode.url }
 }
 
+// ---------------- 五五短剧（duanju55） ----------------
+// 该站苹果 CMS 接口已关闭（api.php 返回 closed），改为直接解析网页：
+// 列表 / 搜索 / 详情 / 播放页都是标准苹果 CMS 模板，接口挂掉也不影响使用；
+// 同时保留备用域名，主域名失效时自动切换，避免整源不可用。
+
+const DJ55_SOURCE_ID = 'duanju55'
+const DJ55_ORIGINS = ['https://www.duanju55.com', 'https://duanju55.com']
+const DJ55_CATEGORIES: DramaCategory[] = [
+  { slug: '6', label: '女频恋爱' },
+  { slug: '7', label: '反转爽剧' },
+  { slug: '8', label: '古装仙侠' },
+  { slug: '9', label: '年代穿越' },
+  { slug: '10', label: '脑洞悬疑' },
+  { slug: '11', label: '现代都市' }
+]
+const dj55OriginCache = new Map<string, string>()
+
+type HtmlRoot = ReturnType<typeof parseHtml>
+
+function isDuanju55Source(source: DramaSourceInput): boolean {
+  if (source.id === DJ55_SOURCE_ID) return true
+  try {
+    return /(^|\.)duanju55\.(com|cc|net|vip|top)$/i.test(new URL(source.baseUrl ?? '').host)
+  } catch {
+    return false
+  }
+}
+
+function dj55CleanText(value: string): string {
+  return plain(value).replace(/\u200b/g, '').replace(/\s+/g, ' ').trim()
+}
+
+function dj55Origins(source: DramaSourceInput): string[] {
+  const cacheKey = (source.baseUrl ?? '').trim().toLowerCase() || 'default'
+  const origins: string[] = []
+  try {
+    const base = new URL(source.baseUrl ?? '')
+    if (base.protocol === 'http:' || base.protocol === 'https:') origins.push(base.origin)
+  } catch {
+    // 没配 baseUrl 时只用内置备用域名
+  }
+  for (const origin of DJ55_ORIGINS) if (!origins.includes(origin)) origins.push(origin)
+  const preferred = dj55OriginCache.get(cacheKey)
+  return preferred && origins.includes(preferred)
+    ? [preferred, ...origins.filter((origin) => origin !== preferred)]
+    : origins
+}
+
+async function dj55Request(source: DramaSourceInput, path: string): Promise<string> {
+  let lastError: Error | null = null
+  const cacheKey = (source.baseUrl ?? '').trim().toLowerCase() || 'default'
+  for (const origin of dj55Origins(source)) {
+    try {
+      const text = await requestText(`${origin}${path}`, {
+        headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml,*/*' }
+      })
+      dj55OriginCache.set(cacheKey, origin)
+      return text
+    } catch (err) {
+      lastError = err as Error
+    }
+  }
+  throw lastError ?? new Error('五五短剧暂时无法访问')
+}
+
+function dj55MaxPage(root: HtmlRoot, fallback: number): number {
+  let max = fallback
+  for (const anchor of root.querySelectorAll('a')) {
+    const matched = /\/page\/(\d+)(?:\/|\.html|$)/.exec(anchor.getAttribute('href') ?? '')
+    if (matched) max = Math.max(max, num(matched[1]))
+  }
+  return max
+}
+
+function dj55Items(root: HtmlRoot, source: DramaSourceInput): DramaItem[] {
+  const cards = [
+    ...root.querySelectorAll('.BrowseList_itemBox'),
+    ...root.querySelectorAll('.TagBookList_tagItem')
+  ]
+  const items: DramaItem[] = []
+  const seen = new Set<string>()
+  for (const card of cards) {
+    const link = card.querySelector('a[href*="/vod/detail/id/"]')
+    const matched = /\/vod\/detail\/id\/(\d+)\.html/.exec(link?.getAttribute('href') ?? '')
+    if (!matched || seen.has(matched[1])) continue
+    const image = card.querySelector('img')
+    const titleEl = card.querySelector('.BrowseList_bookName') ?? card.querySelector('.TagBookList_bookName')
+    // 列表标题里夹着「367人在追」的火苗徽标，先去掉再取标题；搜索页标题里的高亮 <font> 保留文本
+    titleEl?.querySelector('.BrowseList_bookRate')?.remove()
+    const title = dj55CleanText(titleEl?.text ?? '') || dj55CleanText(image?.getAttribute('alt') ?? '')
+    if (!title) continue
+    seen.add(matched[1])
+    const rawCover = image?.getAttribute('src') ?? ''
+    const remarks = dj55CleanText(
+      card.querySelector('.BrowseList_totalChapterNum')?.text ??
+        card.querySelector('.TagBookList_totalChapterNum')?.text ??
+        ''
+    )
+    items.push({
+      seriesId: matched[1],
+      title,
+      cover: /^https?:\/\//i.test(rawCover) ? rawCover : rawCover.startsWith('//') ? `https:${rawCover}` : '',
+      episodeCount: 0,
+      tags: [],
+      remarks,
+      sourceId: source.id,
+      sourceName: source.name
+    })
+  }
+  return items
+}
+
+async function dj55Catalog(
+  source: DramaSourceInput,
+  genre: string,
+  page: number,
+  keyword: string
+): Promise<DramaCatalogResponse> {
+  const typeId = /^\d{1,4}$/.test(genre) ? genre : '1'
+  const path = keyword
+    ? `/index.php/vod/search/page/${page}/wd/${encodeURIComponent(keyword)}.html`
+    : page > 1
+      ? `/index.php/vod/type/id/${typeId}/page/${page}.html`
+      : `/index.php/vod/type/id/${typeId}.html`
+  const root = parseHtml(await dj55Request(source, path))
+  const items = dj55Items(root, source)
+  const pageCount = dj55MaxPage(root, page)
+  return {
+    ok: true,
+    items,
+    page,
+    pageCount,
+    hasMore: items.length > 0 && page < pageCount,
+    categories: DJ55_CATEGORIES
+  }
+}
+
+async function dj55Detail(source: DramaSourceInput, seriesId: string): Promise<DramaDetailResponse> {
+  if (!/^\d{1,30}$/.test(seriesId)) return { ok: false, error: '五五短剧剧集编号无效' }
+  const root = parseHtml(await dj55Request(source, `/index.php/vod/detail/id/${seriesId}.html`))
+  const title =
+    dj55CleanText(root.querySelector('h1')?.text ?? '') ||
+    dj55CleanText(root.querySelector('title')?.text ?? '')
+  let cover = ''
+  for (const image of root.querySelectorAll('img')) {
+    const src = image.getAttribute('src') ?? ''
+    if (!/\/upload\/vod\//.test(src)) continue
+    cover = /^https?:\/\//i.test(src) ? src : src.startsWith('//') ? `https:${src}` : ''
+    if (cover) break
+  }
+  const introEl = root
+    .querySelectorAll('[class]')
+    .find((el) => /introduction/i.test(el.getAttribute('class') ?? ''))
+  const desc = root.querySelector('meta[name="description"]')?.getAttribute('content') ?? ''
+  const intro = dj55CleanText(introEl?.text ?? '') || dj55CleanText(desc)
+  // 详情页可能同时有「线路 / 全集」等多组播放列表，取分集最多的那一组，避免混入全集条目
+  const groups = new Map<string, DramaEpisode[]>()
+  const seen = new Set<string>()
+  const episodeRe = new RegExp(`/vod/play/id/${seriesId}/sid/(\\d+)/nid/(\\d+)\\.html`)
+  for (const anchor of root.querySelectorAll('a')) {
+    const matched = episodeRe.exec(anchor.getAttribute('href') ?? '')
+    if (!matched) continue
+    const [, sid, nid] = matched
+    const id = `${sid}:${nid}`
+    if (seen.has(id)) continue
+    seen.add(id)
+    const list = groups.get(sid) ?? []
+    const label = dj55CleanText(anchor.text)
+    const index = list.length + 1
+    list.push({
+      id,
+      index,
+      name: /^\d+$/.test(nid) ? `第${num(nid)}集` : label || `第${index}集`,
+      locked: false
+    })
+    groups.set(sid, list)
+  }
+  const episodes = [...groups.values()].sort((a, b) => b.length - a.length)[0] ?? []
+  episodes.forEach((episode, i) => {
+    episode.index = i + 1
+  })
+  if (!episodes.length) return { ok: false, error: '五五短剧没有返回可播放分集' }
+  return {
+    ok: true,
+    detail: {
+      seriesId,
+      title: title || `五五短剧 ${seriesId}`,
+      cover,
+      intro,
+      tags: [],
+      episodes,
+      sourceId: source.id,
+      sourceName: source.name
+    }
+  }
+}
+
+/** 从页面里截取 `player_aaaa = {...}`（括号配对，不执行远端脚本） */
+function readJsObject(html: string, marker: RegExp): Record<string, unknown> | null {
+  const matched = marker.exec(html)
+  if (!matched) return null
+  const start = matched.index + matched[0].length - 1
+  let depth = 0
+  let quoted = false
+  let escaped = false
+  for (let i = start; i < html.length; i += 1) {
+    const char = html[i]
+    if (quoted) {
+      if (escaped) escaped = false
+      else if (char === '\\') escaped = true
+      else if (char === '"') quoted = false
+    } else if (char === '"') quoted = true
+    else if (char === '{') depth += 1
+    else if (char === '}' && (depth -= 1) === 0) {
+      try {
+        return JSON.parse(html.slice(start, i + 1)) as Record<string, unknown>
+      } catch {
+        return null
+      }
+    }
+  }
+  return null
+}
+
+async function dj55Play(
+  source: DramaSourceInput,
+  seriesId: string,
+  episodeId: string
+): Promise<DramaPlayResponse> {
+  const matched = /^(\d{1,4}):(\d{1,5})$/.exec(episodeId)
+  if (!matched) return { ok: false, error: '五五短剧分集编号无效' }
+  const html = await dj55Request(
+    source,
+    `/index.php/vod/play/id/${seriesId}/sid/${matched[1]}/nid/${matched[2]}.html`
+  )
+  let url = str(readJsObject(html, /player_aaaa\s*=\s*\{/)?.url)
+  if (!url) {
+    const fallback = /https?:\\?\/\\?\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i.exec(html)
+    url = fallback ? fallback[0].replace(/\\\//g, '/') : ''
+  }
+  if (!url) return { ok: false, error: '五五短剧没有返回播放地址' }
+  if (url.startsWith('//')) url = `https:${url}`
+  return { ok: true, url }
+}
+
+// ---------------- 肉视频（rou07，与爽看同源的短剧库） ----------------
+
+function rou07EpisodeCount(duration: string): number {
+  const matched = /^全\s*(\d+)\s*集$/.exec(duration)
+  return matched ? num(matched[1]) : 0
+}
+
+async function rou07Catalog(
+  source: DramaSourceInput,
+  genre: string,
+  page: number,
+  keyword: string
+): Promise<DramaCatalogResponse> {
+  const res = keyword
+    ? await shuangkanSeriesSearch(keyword, page, source.baseUrl)
+    : await shuangkanCatalog('series', genre, page, source.baseUrl)
+  if (!res.ok) throw new Error(res.error || '肉视频短剧加载失败')
+  return {
+    ok: true,
+    items: res.items.map((item) => ({
+      seriesId: item.id,
+      title: item.title,
+      cover: item.cover,
+      episodeCount: rou07EpisodeCount(item.duration),
+      tags: [],
+      remarks: /^全\s*\d+\s*集$/.test(item.duration) ? '' : item.duration,
+      sourceId: ROU07_DRAMA_SOURCE_ID,
+      sourceName: source.name
+    })),
+    page: res.page,
+    pageCount: res.lastPage,
+    hasMore: res.page < res.lastPage,
+    categories: res.categories.map((category) => ({
+      slug: category.slug,
+      label: category.label,
+      count: category.count
+    }))
+  }
+}
+
+async function rou07Detail(
+  source: DramaSourceInput,
+  seriesId: string
+): Promise<DramaDetailResponse> {
+  const res = await shuangkanDetail('series', seriesId, source.baseUrl)
+  if (!res.ok || !res.detail) return { ok: false, error: res.error ?? '肉视频没有返回该剧集' }
+  if (!res.detail.episodes.length) return { ok: false, error: '这部剧还没有可播放的集数' }
+  return {
+    ok: true,
+    detail: {
+      seriesId,
+      title: res.detail.title,
+      cover: res.detail.cover,
+      intro: res.detail.intro,
+      tags: res.detail.tags,
+      episodes: res.detail.episodes.map((episode) => ({
+        id: episode.id,
+        index: episode.index,
+        name: episode.name,
+        locked: false
+      })),
+      sourceId: ROU07_DRAMA_SOURCE_ID,
+      sourceName: source.name
+    }
+  }
+}
+
+async function rou07Play(episodeId: string, baseUrl?: string): Promise<DramaPlayResponse> {
+  const res = await shuangkanPlay(episodeId, baseUrl)
+  if (!res.ok || !res.url) return { ok: false, error: res.error ?? '取播放地址失败' }
+  return { ok: true, url: res.url }
+}
+
 // ---------------- 对外入口 ----------------
 
 function sourceNameOf(source: DramaSourceInput): string {
@@ -924,6 +1250,8 @@ function sourceNameOf(source: DramaSourceInput): string {
     hongguo: '红果短剧',
     xifan: '西饭短剧',
     hema: '河马短剧',
+    rou07: '肉视频短剧',
+    duanju55: '免费五五短剧',
     custom: '自定义源'
   }
   return source.name.trim() || fallback[source.id] || (source.baseUrl ? hostOf(source.baseUrl) : '短剧源')
@@ -960,6 +1288,12 @@ export async function dramaCatalog(
     if (source.id === 'hema') {
       return kw ? await hemaSearch(source, kw, pg) : await hemaCatalog(source, genre, pg)
     }
+    if (source.id === ROU07_DRAMA_SOURCE_ID) {
+      return await rou07Catalog(source, genre, pg, kw)
+    }
+    if (isDuanju55Source(source)) {
+      return await dj55Catalog(source, genre, pg, kw)
+    }
     if (source.id === 'custom' || source.baseUrl) {
       return await customCatalog(source, genre, pg, kw)
     }
@@ -994,6 +1328,8 @@ export async function dramaDetail(
     if (source.id === 'hongguo') return await hgDetail(source, seriesId)
     if (source.id === 'xifan') return await xifanDetail(source, seriesId)
     if (source.id === 'hema') return await hemaDetail(source, seriesId)
+    if (source.id === ROU07_DRAMA_SOURCE_ID) return await rou07Detail(source, seriesId)
+    if (isDuanju55Source(source)) return await dj55Detail(source, seriesId)
     if (source.id === 'custom' || source.baseUrl) return await customDetail(source, seriesId)
     return { ok: false, error: '未知短剧源' }
   } catch (err) {
@@ -1011,6 +1347,8 @@ export async function dramaPlay(
     if (source.id === 'hongguo') return await hgPlay(seriesId, episodeId)
     if (source.id === 'xifan') return await xifanPlay(source, seriesId, episodeId)
     if (source.id === 'hema') return await hemaPlay(seriesId, episodeId)
+    if (source.id === ROU07_DRAMA_SOURCE_ID) return await rou07Play(episodeId, source.baseUrl)
+    if (isDuanju55Source(source)) return await dj55Play(source, seriesId, episodeId)
     if (source.id === 'custom' || source.baseUrl) return await customPlay(source, seriesId, episodeId)
     return { ok: false, error: '未知短剧源' }
   } catch (err) {

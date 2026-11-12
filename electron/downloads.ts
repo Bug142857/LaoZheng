@@ -1,4 +1,4 @@
-import { app, BrowserWindow, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, nativeImage, session, shell } from 'electron'
 import { existsSync, createReadStream, createWriteStream } from 'node:fs'
 import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type ServerResponse } from 'node:http'
@@ -22,9 +22,13 @@ import type {
   DownloadTask
 } from '../src/shared/downloads'
 import { komiicImageAuth } from './komiic'
+import { decryptBikahubImage } from './bikahubImage'
+import { descrambleJmImage, jmImageNeedsDescramble } from './jmcomicImage'
+import { sniffImageMime } from './imageCache'
 import { melonImageAuth, melonReferer } from './melon'
 import { downloadRoot, setDownloadRoot } from './settings'
 import { runElevatedProcess, runPowerShell } from './powershell'
+import { shuangkanMediaAuth } from './gohome'
 import type { MusicLyricsSaveResult } from '../src/shared/music'
 
 /**
@@ -36,13 +40,34 @@ import type { MusicLyricsSaveResult } from '../src/shared/music'
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
+/**
+ * 下载统一走 Chromium 网络栈：部分爽看网关按 TLS/HTTP2 指纹校验，
+ * Node 的 fetch 会被判成异常客户端，直接 410 或只返回几秒提示片。
+ */
+function netFetch(url: string, init: RequestInit): Promise<Response> {
+  return session.defaultSession.fetch(url, init)
+}
+
 /** P站 CDN 校验 Referer / 年龄 Cookie，吃瓜视频 CDN 校验镜像 Referer：下载与切片请求都要带上，否则 403 */
 function downloadHeaders(url: string, referer?: string): Record<string, string> {
   const headers: Record<string, string> = { 'User-Agent': UA, Accept: '*/*' }
   try {
     const parsed = new URL(url)
     const host = parsed.host.toLowerCase()
-    if (/(^|\.)phncdn\.com$/.test(host)) {
+    // 爽看：站点与 CDN 网关都按「站点 Referer + Cookie + UA」鉴权，漏了只会拿到提示片（10 秒）
+    let skAuth = shuangkanMediaAuth(parsed)
+    if (!skAuth && referer) {
+      try {
+        skAuth = shuangkanMediaAuth(new URL(referer))
+      } catch {
+        // 非法 Referer 忽略
+      }
+    }
+    if (skAuth) {
+      headers['User-Agent'] = skAuth.ua || UA
+      if (skAuth.referer) headers.Referer = skAuth.referer
+      if (skAuth.cookie) headers.Cookie = skAuth.cookie
+    } else if (/(^|\.)phncdn\.com$/.test(host)) {
       headers.Referer = 'https://www.pornhub.com/'
       headers.Origin = 'https://www.pornhub.com'
       headers.Cookie = 'accessAgeDisclaimerPH=1; age_verified=1; accessPH=1'
@@ -63,10 +88,32 @@ function downloadHeaders(url: string, referer?: string): Record<string, string> 
 
 type StoredItem = DownloadRecord
 
+/**
+ * 图片 / 视频 CDN 的防盗链策略不统一：壁纸迷等站点的图床（chaoxing、lf127）
+ * 只要带 Referer 就回 403，不带反而正常。遇到 401 / 403 时去掉 Referer / Cookie 重试一次。
+ */
+async function netFetchWithFallback(
+  url: string,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+  redirect: RequestRedirect = 'follow'
+): Promise<Response> {
+  const res = await netFetch(url, { headers, redirect, signal })
+  if (res.status !== 401 && res.status !== 403) return res
+  if (!headers.Referer && !headers.Cookie) return res
+  const fallback = { ...headers }
+  delete fallback.Referer
+  delete fallback.Cookie
+  return netFetch(url, { headers: fallback, redirect, signal })
+}
+
 let items: StoredItem[] = []
 let libraryLoaded = false
+let meituDirMigrated = false
 const tasks = new Map<string, DownloadTask>()
 const controllers = new Map<string, AbortController>()
+/** 每个任务当前这一轮的标识：暂停后重新开始会换新标识，避免旧一轮的收尾误删新任务 */
+const runs = new Map<string, symbol>()
 /** 每个任务本次新写出的文件 / 目录：取消或失败时一并清理，不留半成品 */
 const artifacts = new Map<string, { files: Set<string>; dirs: Set<string> }>()
 let notifyTimer: NodeJS.Timeout | null = null
@@ -289,6 +336,7 @@ function kindDir(kind: DownloadKind): string {
   if (kind === 'book') return '图书'
   if (kind === 'novel') return '小说'
   if (kind === 'wallpaper') return '壁纸'
+  if (kind === 'meitu') return '套图'
   if (kind === 'trainer') return '修改器'
   return '其他'
 }
@@ -316,6 +364,34 @@ async function loadLibrary(): Promise<void> {
       console.error('[downloads] 读取下载记录失败', err)
     }
   }
+  await migrateMeituDir()
+}
+
+/** 「美图」分区已改名「套图」：旧下载目录与记录路径一次性迁移，避免打开目录看不到旧文件 */
+async function migrateMeituDir(): Promise<void> {
+  if (meituDirMigrated) return
+  meituDirMigrated = true
+  const root = resolve(downloadsRoot())
+  const oldDir = join(root, '美图')
+  const newDir = join(root, '套图')
+  if (!existsSync(oldDir) || existsSync(newDir)) return
+  try {
+    await rename(oldDir, newDir)
+  } catch {
+    return
+  }
+  let changed = false
+  for (const item of items) {
+    if (item.playPath !== '美图' && !item.playPath.startsWith('美图/')) continue
+    const suffix = item.playPath.slice('美图'.length)
+    item.playPath = `套图${suffix}`
+    item.displayPath =
+      item.displayPath === '美图' || item.displayPath.startsWith('美图/')
+        ? `套图${item.displayPath.slice('美图'.length)}`
+        : item.playPath
+    changed = true
+  }
+  if (changed) await saveLibrary()
 }
 
 async function saveLibrary(): Promise<void> {
@@ -445,10 +521,10 @@ function toPublicItem(item: StoredItem): DownloadItem {
   }
 }
 
-/** 是否有下载任务在跑（清理 .part 缓存前判断，避免删掉正在写入的文件） */
+/** 是否有未结束的下载任务（暂停也算，避免迁移下载目录时断开续传文件） */
 export function hasRunningDownloads(): boolean {
   for (const task of tasks.values()) {
-    if (task.state === 'running') return true
+    if (task.state !== 'failed') return true
   }
   return false
 }
@@ -475,6 +551,35 @@ export async function listDownloads(): Promise<DownloadListResponse> {
   }
 }
 
+/**
+ * 手动刷新下载列表：重新核对磁盘文件，清掉本地已被手动删除、但仍留在记录里的条目。
+ * 只清理失效记录，不移动 / 删除任何文件。
+ */
+export async function refreshDownloads(): Promise<{ removed: number; total: number }> {
+  await loadLibrary()
+  await loadDeletedRecords()
+  const root = resolve(downloadsRoot())
+  const keep: StoredItem[] = []
+  const missing: StoredItem[] = []
+  for (const item of items) {
+    const abs = resolve(root, item.playPath)
+    if (!abs.startsWith(root + sep) || existsSync(abs)) keep.push(item)
+    else missing.push(item)
+  }
+  if (!missing.length) return { removed: 0, total: items.length }
+  items = keep
+  await saveLibrary()
+  // 手动删掉的文件不再保留墓碑，避免下次读取列表时又被恢复回来
+  const gone = new Set(missing.map((item) => item.playPath))
+  const nextDeleted = deletedRecords.filter((entry) => !gone.has(entry.record.playPath))
+  if (nextDeleted.length !== deletedRecords.length) {
+    deletedRecords = nextDeleted
+    await saveDeletedRecords()
+  }
+  notify()
+  return { removed: missing.length, total: items.length }
+}
+
 /** 备份导出：下载记录（相对路径，跨机器恢复后文件在对应目录即可继续用） */
 export async function exportDownloadRecords(): Promise<DownloadRecord[]> {
   await loadLibrary()
@@ -494,6 +599,7 @@ function normalizeRecord(raw: unknown): DownloadRecord | null {
     'book',
     'novel',
     'wallpaper',
+    'meitu',
     'trainer',
     'file'
   ]
@@ -643,6 +749,92 @@ async function repairLegacyHls(): Promise<void> {
   }
 }
 
+/** 单个任务的可续传上下文：暂停 / 继续时复用同一份输入与半成品路径 */
+interface TaskJob {
+  kind: 'direct' | 'hls' | 'comic'
+  input: DownloadAddInput
+  comic?: ComicBatchDownloadInput
+  /** 直链断点续传：目标文件与 .part，暂停后继续用 Range 续传 */
+  direct?: { target: string; tmp: string }
+}
+
+const jobs = new Map<string, TaskJob>()
+
+/** 启动（或继续）一个下载任务：暂停后重新调用会换新的 run 标识 */
+function startTask(task: DownloadTask, job: TaskJob): void {
+  const run = Symbol('download-run')
+  runs.set(task.id, run)
+  const controller = new AbortController()
+  controllers.set(task.id, controller)
+  task.state = 'running'
+  task.error = undefined
+  void (async () => {
+    try {
+      const item =
+        job.kind === 'comic'
+          ? await runComicBatch(job.comic!, task, controller.signal)
+          : job.kind === 'hls'
+            ? await downloadHls(job.input, task, controller.signal)
+            : await downloadDirect(job.input, task, controller.signal, job)
+      // 暂停 / 取消后旧一轮的结果直接丢弃
+      if (runs.get(task.id) !== run) return
+      const existing = items.find((row) => row.playPath === item.playPath)
+      if (existing) {
+        existing.sizeBytes = item.sizeBytes
+        existing.createdAt = item.createdAt
+        existing.coverUrl = item.coverUrl || existing.coverUrl
+      } else {
+        items.push(item)
+      }
+      await saveLibrary()
+      tasks.delete(task.id)
+      controllers.delete(task.id)
+      runs.delete(task.id)
+      jobs.delete(task.id)
+      artifacts.delete(task.id)
+    } catch (err) {
+      if (runs.get(task.id) !== run) return
+      controllers.delete(task.id)
+      if (controller.signal.aborted) {
+        // 暂停：保留任务、半成品和续传上下文，等用户点「继续」
+        if (task.state !== 'paused') {
+          tasks.delete(task.id)
+          runs.delete(task.id)
+          jobs.delete(task.id)
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 120))
+          await cleanupArtifacts(task.id)
+        }
+      } else {
+        task.state = 'failed'
+        task.error = err instanceof Error ? err.message : '下载失败'
+        jobs.delete(task.id)
+        // 失败清掉半成品，避免留下 .part / 半个切片目录
+        await cleanupArtifacts(task.id)
+      }
+    }
+    notify()
+  })()
+  notify()
+}
+
+/** 暂停：中止当前请求，保留已下载的分片 / .part，任务标记为 paused */
+export async function pauseTask(id: string): Promise<void> {
+  const task = tasks.get(id)
+  if (!task || task.state !== 'running') return
+  task.state = 'paused'
+  controllers.get(id)?.abort()
+  controllers.delete(id)
+  notify()
+}
+
+/** 继续：从暂停处继续下载（直链 Range 续传、HLS / 漫画跳过已下内容） */
+export function resumeTask(id: string): void {
+  const task = tasks.get(id)
+  const job = jobs.get(id)
+  if (!task || !job || task.state !== 'paused') return
+  startTask(task, job)
+}
+
 export async function addDownload(input: DownloadAddInput): Promise<DownloadAddResult> {
   await loadLibrary()
   const url = input.url.trim()
@@ -656,7 +848,8 @@ export async function addDownload(input: DownloadAddInput): Promise<DownloadAddR
     input.referer?.trim() || (input.sourceName === '吃瓜' ? melonReferer() : '')
   const payload: DownloadAddInput = referer ? { ...input, referer } : input
 
-  const isHls = /\.m3u8(\?|$)/i.test(url)
+  // 爽看（肉视频）的 m3u8 地址是 /api/hls/<id>，不带 .m3u8 后缀
+  const isHls = /\.m3u8(\?|$)/i.test(url) || /\/api\/hls\//i.test(url)
   const task: DownloadTask = {
     id: hashUrl(url),
     title: input.title.trim() || '未命名下载',
@@ -669,35 +862,10 @@ export async function addDownload(input: DownloadAddInput): Promise<DownloadAddR
     bytes: 0,
     totalBytes: 0
   }
-  const controller = new AbortController()
-  controllers.set(task.id, controller)
   tasks.set(task.id, task)
-
-  void (async () => {
-    try {
-      const item = isHls
-        ? await downloadHls(payload, task, controller.signal)
-        : await downloadDirect(payload, task, controller.signal)
-      items.push(item)
-      await saveLibrary()
-      tasks.delete(task.id)
-      controllers.delete(task.id)
-      artifacts.delete(task.id)
-    } catch (err) {
-      controllers.delete(task.id)
-      if (controller.signal.aborted) {
-        tasks.delete(task.id)
-      } else {
-        task.state = 'failed'
-        task.error = err instanceof Error ? err.message : '下载失败'
-      }
-      // 取消或失败都清掉半成品，避免留下 .part / 半个切片目录
-      await cleanupArtifacts(task.id)
-    }
-    notify()
-  })()
-
-  notify()
+  const job: TaskJob = { kind: isHls ? 'hls' : 'direct', input: payload }
+  jobs.set(task.id, job)
+  startTask(task, job)
   return { ok: true }
 }
 
@@ -740,7 +908,7 @@ async function readComicMeta(dir: string): Promise<ComicMetaFile | null> {
 }
 
 /** 同一本书固定一个目录；标题撞车时用 id 后缀区分，便于断点续传 */
-async function resolveComicDir(comic: ComicMetaInput): Promise<string> {
+async function resolveComicDir(comic: ComicMetaInput): Promise<{ dir: string; created: boolean }> {
   const parent = join(downloadsRoot(), '漫画')
   await mkdir(parent, { recursive: true })
   const base = safeName(comic.title) || '漫画'
@@ -749,8 +917,12 @@ async function resolveComicDir(comic: ComicMetaInput): Promise<string> {
   if (existing && (existing.comicId !== comic.id || existing.source !== comic.source)) {
     dir = join(parent, `${base} (${safeName(comic.id)})`)
   }
+  const existed = await stat(dir).then(
+    () => true,
+    () => false
+  )
   await mkdir(dir, { recursive: true })
-  return dir
+  return { dir, created: !existed }
 }
 
 async function writeComicMeta(
@@ -817,10 +989,24 @@ async function downloadChapterImages(
       } catch {
         // 非 Komiic 图片走默认头
       }
-      const res = await fetch(url, { headers, signal })
+      const res = await netFetch(url, { headers, signal })
       if (!res.ok) throw new Error(`第 ${index + 1} 张图片下载失败 HTTP ${res.status}`)
-      const buf = Buffer.from(await res.arrayBuffer())
-      const ext = guessImageExt(url, res.headers.get('content-type') ?? '')
+      let buf: Buffer = Buffer.from(await res.arrayBuffer())
+      // 哔咔图床是加密字节：按站点同款算法还原，避免下载到无法预览的图片
+      if (!sniffImageMime(buf)) {
+        const plain = decryptBikahubImage(buf)
+        if (plain && sniffImageMime(plain)) buf = plain
+      }
+      // 禁漫天堂章节图纵向分段倒序存储：还原后再写盘
+      let descrambled = false
+      if (jmImageNeedsDescramble(url)) {
+        const plain = await descrambleJmImage(url, buf)
+        if (plain && sniffImageMime(plain)) {
+          buf = plain
+          descrambled = true
+        }
+      }
+      const ext = descrambled ? '.jpg' : guessImageExt(url, res.headers.get('content-type') ?? '')
       const filePath = join(folder, `${prefix}${ext}`)
       await writeFile(filePath, buf)
       artifactsOf(task.id).files.add(filePath)
@@ -841,7 +1027,12 @@ export async function addComicBatchDownload(
   const comic = input.comic
   if (
     !comic ||
-    (comic.source !== 'komiic' && comic.source !== 'bika' && comic.source !== 'yumanhua') ||
+    (comic.source !== 'komiic' &&
+      comic.source !== 'bika' &&
+      comic.source !== 'yumanhua' &&
+      comic.source !== 'bikahub' &&
+      comic.source !== 'tptoon' &&
+      comic.source !== 'jmcomic') ||
     typeof comic.id !== 'string' ||
     !comic.id ||
     typeof comic.title !== 'string' ||
@@ -866,7 +1057,7 @@ export async function addComicBatchDownload(
   if (totalImages > 5000) return { ok: false, error: '一次最多下载 5000 张，请分批' }
   if (
     [...tasks.values()].some(
-      (t) => t.kind === 'comic' && t.title === comic.title && t.state === 'running'
+      (t) => t.kind === 'comic' && t.title === comic.title && t.state !== 'failed'
     )
   ) {
     return { ok: false, error: '这本书正在下载中' }
@@ -884,78 +1075,80 @@ export async function addComicBatchDownload(
     bytes: 0,
     totalBytes: 0
   }
-  const controller = new AbortController()
-  controllers.set(task.id, controller)
   tasks.set(task.id, task)
-
-  void (async () => {
-    try {
-      const dir = await resolveComicDir(comic)
-      const progress: ImageProgress = { total: totalImages, done: 0 }
-      for (const chapter of chapters) {
-        const chapterDir = join(dir, safeName(chapter.name) || chapter.key)
-        const existed = await stat(chapterDir).then(
-          () => true,
-          () => false
-        )
-        if (!existed) artifactsOf(task.id).dirs.add(chapterDir)
-        await downloadChapterImages(
-          chapterDir,
-          chapter.urls,
-          task,
-          controller.signal,
-          input.referer,
-          progress
-        )
-        await writeComicMeta(dir, comic, {
-          key: chapter.key,
-          name: chapter.name || chapter.key,
-          count: chapter.urls.length
-        })
-        artifactsOf(task.id).files.add(join(dir, 'meta.json'))
-      }
-
-      const rel = relative(downloadsRoot(), dir).replace(/\\/g, '/')
-      const existing = items.find((i) => i.playPath === rel)
-      if (existing) {
-        existing.sizeBytes = await dirSize(dir)
-        existing.createdAt = Date.now()
-        existing.coverUrl = comic.cover ?? existing.coverUrl
-      } else {
-        items.push({
-          id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          title: task.title,
-          kind: 'comic',
-          sourceUrl: '',
-          playPath: rel,
-          displayPath: rel,
-          sizeBytes: await dirSize(dir),
-          createdAt: Date.now(),
-          coverUrl: comic.cover ?? '',
-          sourceName: input.sourceName ?? '',
-          hls: false,
-          folder: true
-        })
-      }
-      await saveLibrary()
-      tasks.delete(task.id)
-      controllers.delete(task.id)
-      artifacts.delete(task.id)
-    } catch (err) {
-      controllers.delete(task.id)
-      if (controller.signal.aborted) {
-        tasks.delete(task.id)
-      } else {
-        task.state = 'failed'
-        task.error = err instanceof Error ? err.message : '下载失败'
-      }
-      await cleanupArtifacts(task.id)
-    }
-    notify()
-  })()
-
-  notify()
+  const job: TaskJob = {
+    kind: 'comic',
+    input: {
+      title: comic.title,
+      url: chapters[0].urls[0],
+      kind: 'comic',
+      coverUrl: comic.cover,
+      sourceName: input.sourceName,
+      referer: input.referer
+    },
+    comic: { ...input, comic, chapters }
+  }
+  jobs.set(task.id, job)
+  startTask(task, job)
   return { ok: true }
+}
+
+/** 整本 / 单章批量下载的实际执行：按章串行、章内 5 并发，完成后写 meta.json 供离线识别 */
+async function runComicBatch(
+  input: ComicBatchDownloadInput,
+  task: DownloadTask,
+  signal: AbortSignal
+): Promise<StoredItem> {
+  const comic = input.comic
+  const chapters = input.chapters
+  const totalImages = chapters.reduce((sum, c) => sum + c.urls.length, 0)
+  const { dir, created } = await resolveComicDir(comic)
+  if (created) artifactsOf(task.id).dirs.add(dir)
+  // 只登记本次新建的 meta.json：取消这次追加下载时不能把上次已下载的章节信息删掉
+  const metaFile = join(dir, 'meta.json')
+  const metaExisted = await stat(metaFile).then(
+    () => true,
+    () => false
+  )
+  if (!metaExisted) artifactsOf(task.id).files.add(metaFile)
+  const progress: ImageProgress = { total: totalImages, done: 0 }
+  for (const chapter of chapters) {
+    const chapterDir = join(dir, safeName(chapter.name) || chapter.key)
+    const existed = await stat(chapterDir).then(
+      () => true,
+      () => false
+    )
+    if (!existed) artifactsOf(task.id).dirs.add(chapterDir)
+    await downloadChapterImages(
+      chapterDir,
+      chapter.urls,
+      task,
+      signal,
+      input.referer,
+      progress
+    )
+    await writeComicMeta(dir, comic, {
+      key: chapter.key,
+      name: chapter.name || chapter.key,
+      count: chapter.urls.length
+    })
+  }
+
+  const rel = relative(downloadsRoot(), dir).replace(/\\/g, '/')
+  return {
+    id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    title: task.title,
+    kind: 'comic',
+    sourceUrl: '',
+    playPath: rel,
+    displayPath: rel,
+    sizeBytes: await dirSize(dir),
+    createdAt: Date.now(),
+    coverUrl: comic.cover ?? '',
+    sourceName: input.sourceName ?? '',
+    hls: false,
+    folder: true
+  }
 }
 
 async function dirSize(dir: string): Promise<number> {
@@ -1069,7 +1262,7 @@ export async function setDownloadWallpaper(id: string): Promise<void> {
   await loadLibrary()
   const item = items.find((i) => i.id === id)
   if (!item) throw new Error('下载记录不存在')
-  if (item.kind !== 'wallpaper') throw new Error('不是壁纸下载')
+  if (item.kind !== 'wallpaper' && item.kind !== 'meitu') throw new Error('不是图片下载')
   if (item.folder) throw new Error('这是一组图片，不能直接设为桌面壁纸')
   const root = resolve(downloadsRoot())
   const abs = resolve(root, item.playPath)
@@ -1314,18 +1507,23 @@ export async function removeDownload(
 }
 
 export async function cancelTask(id: string): Promise<void> {
+  runs.delete(id)
   controllers.get(id)?.abort()
   controllers.delete(id)
   tasks.delete(id)
+  jobs.delete(id)
   // 等一小会儿让写文件的流退出，再清掉本次产生的半成品
   await new Promise((resolveDelay) => setTimeout(resolveDelay, 120))
+  // 任务 id 由下载地址哈希得到：这期间重新下载同一地址会复用 id，不能把新任务的产物删掉
+  if (tasks.has(id) || runs.has(id)) return
   await cleanupArtifacts(id)
+  notify()
 }
 
 /** 打开下载目录：带 kind 时直接打开对应子目录（视频 / 音乐 / 漫画 / 图书 / 小说 / 修改器） */
 export async function openDownloadsDir(kind?: DownloadKind): Promise<void> {
   const target =
-    kind && ['video', 'music', 'comic', 'book', 'novel', 'wallpaper', 'trainer', 'file'].includes(kind)
+    kind && ['video', 'music', 'comic', 'book', 'novel', 'wallpaper', 'meitu', 'trainer', 'file'].includes(kind)
       ? join(downloadsRoot(), kindDir(kind))
       : downloadsRoot()
   await mkdir(target, { recursive: true })
@@ -1455,34 +1653,71 @@ async function uniqueDir(dir: string, base: string): Promise<string> {
 async function downloadDirect(
   input: DownloadAddInput,
   task: DownloadTask,
-  signal: AbortSignal
+  signal: AbortSignal,
+  job: TaskJob
 ): Promise<StoredItem> {
   const dirName = kindDir(input.kind)
   const dir = join(downloadsRoot(), dirName)
   await mkdir(dir, { recursive: true })
 
-  const res = await fetch(input.url, {
-    headers: downloadHeaders(input.url, input.referer),
-    redirect: 'follow',
-    signal
-  })
-  if (!res.ok || !res.body) throw new Error(`下载失败 HTTP ${res.status}`)
-  // 壁纸站点经常用 .png 地址返回 webp / mp4，按响应类型决定扩展名，避免存错格式
-  const contentType = res.headers.get('content-type') ?? ''
-  const ext =
-    input.kind === 'wallpaper'
-      ? contentType.includes('mp4')
-        ? '.mp4'
-        : contentType.includes('webm')
-          ? '.webm'
-          : guessImageExt(input.url, contentType)
-      : guessExt(input.url, input.kind)
-  const target = await uniqueTarget(dir, safeName(input.title), ext)
-  const tmp = `${target}.part`
-  artifactsOf(task.id).files.add(tmp)
+  // 续传：.part 还在就按已下载字节数发 Range；文件被清理过则从头开始
+  let resume = job.direct
+  let offset = 0
+  if (resume) {
+    offset = await stat(resume.tmp).then((info) => info.size, () => -1)
+    if (offset < 0) {
+      resume = job.direct = undefined
+      offset = 0
+    }
+  }
 
-  const total = Number(res.headers.get('content-length') ?? 0)
-  task.totalBytes = Number.isFinite(total) ? total : 0
+  let target: string
+  let tmp: string
+  let res: Response
+  if (resume && offset > 0) {
+    const headers = downloadHeaders(input.url, input.referer)
+    headers.Range = `bytes=${offset}-`
+    res = await netFetchWithFallback(input.url, headers, signal)
+    // 服务端不支持断点（200）或范围无效（416）：丢掉半成品重新下载
+    if (res.status === 416 || (res.ok && res.status === 200)) {
+      await res.body?.cancel().catch(() => undefined)
+      await rm(resume.tmp, { force: true }).catch(() => undefined)
+      job.direct = undefined
+      return downloadDirect(input, task, signal, job)
+    }
+    if (!res.ok || !res.body) throw new Error(`下载失败 HTTP ${res.status}`)
+    target = resume.target
+    tmp = resume.tmp
+    artifactsOf(task.id).files.add(tmp)
+    const remaining = Number(res.headers.get('content-length') ?? 0)
+    task.bytes = offset
+    task.totalBytes = Number.isFinite(remaining) && remaining > 0 ? offset + remaining : 0
+    if (task.totalBytes > 0) task.progress = task.bytes / task.totalBytes
+  } else {
+    res = await netFetchWithFallback(
+      input.url,
+      downloadHeaders(input.url, input.referer),
+      signal
+    )
+    if (!res.ok || !res.body) throw new Error(`下载失败 HTTP ${res.status}`)
+    // 壁纸站点经常用 .png 地址返回 webp / mp4，按响应类型决定扩展名，避免存错格式
+    const contentType = res.headers.get('content-type') ?? ''
+    const ext =
+      input.kind === 'wallpaper' || input.kind === 'meitu'
+        ? contentType.includes('mp4')
+          ? '.mp4'
+          : contentType.includes('webm')
+            ? '.webm'
+            : guessImageExt(input.url, contentType)
+        : guessExt(input.url, input.kind)
+    target = await uniqueTarget(dir, safeName(input.title), ext)
+    tmp = `${target}.part`
+    artifactsOf(task.id).files.add(tmp)
+    job.direct = { target, tmp }
+    const total = Number(res.headers.get('content-length') ?? 0)
+    task.bytes = 0
+    task.totalBytes = Number.isFinite(total) ? total : 0
+  }
 
   const meter = new Transform({
     transform(chunk, _enc, cb) {
@@ -1492,7 +1727,12 @@ async function downloadDirect(
       cb(null, chunk)
     }
   })
-  await pipeline(Readable.fromWeb(res.body as never), meter, createWriteStream(tmp))
+  const append = !!(resume && offset > 0)
+  await pipeline(
+    Readable.fromWeb(res.body as never),
+    meter,
+    createWriteStream(tmp, append ? { flags: 'a' } : undefined)
+  )
   await rename(tmp, target)
 
   const info = await stat(target)
@@ -1619,7 +1859,7 @@ function parseMediaPlaylist(text: string, baseUrl: string): MediaPlaylist {
 }
 
 async function fetchText(url: string, signal: AbortSignal, referer?: string): Promise<string> {
-  const res = await fetch(url, { headers: downloadHeaders(url, referer), signal })
+  const res = await netFetchWithFallback(url, downloadHeaders(url, referer), signal)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.text()
 }
@@ -1628,7 +1868,7 @@ async function fetchBuffer(url: string, signal: AbortSignal, referer?: string): 
   let last: unknown
   for (let i = 0; i < 3; i++) {
     try {
-      const res = await fetch(url, { headers: downloadHeaders(url, referer), signal })
+      const res = await netFetchWithFallback(url, downloadHeaders(url, referer), signal)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       return Buffer.from(await res.arrayBuffer())
     } catch (err) {
@@ -1665,8 +1905,25 @@ async function downloadHls(
   await mkdir(folder, { recursive: true })
   artifactsOf(task.id).dirs.add(folder)
   const keyCache = new Map<string, Buffer>()
+  const segmentName = (index: number): string =>
+    `seg-${String(index + 1).padStart(5, '0')}${segmentExt}`
+  // 断点续传：已经下好的切片直接跳过（暂停后继续 / 重新开始都适用）
+  const existing = new Set(
+    (await readdirSafe(folder)).filter((entry) => entry.isFile()).map((entry) => entry.name)
+  )
   let done = 0
-  task.progress = 0
+  let existingBytes = 0
+  for (let index = 0; index < playlist.segments.length; index++) {
+    const name = segmentName(index)
+    if (!existing.has(name)) continue
+    done += 1
+    existingBytes += (await stat(join(folder, name)).catch(() => ({ size: 0 }))).size
+  }
+  if (existing.has('init.mp4')) {
+    existingBytes += (await stat(join(folder, 'init.mp4')).catch(() => ({ size: 0 }))).size
+  }
+  task.bytes = existingBytes
+  task.progress = playlist.segments.length > 0 ? done / playlist.segments.length : 0
   task.totalBytes = 0
 
   const getKey = async (uri: string): Promise<Buffer> => {
@@ -1678,9 +1935,11 @@ async function downloadHls(
   }
 
   if (playlist.mapUri) {
-    const init = await fetchBuffer(playlist.mapUri, signal, input.referer)
-    await writeFile(join(folder, 'init.mp4'), init)
-    task.bytes += init.length
+    if (!existing.has('init.mp4')) {
+      const init = await fetchBuffer(playlist.mapUri, signal, input.referer)
+      await writeFile(join(folder, 'init.mp4'), init)
+      task.bytes += init.length
+    }
   }
 
   const concurrency = 5
@@ -1716,6 +1975,9 @@ async function downloadHls(
     for (;;) {
       const index = cursor++
       if (!segments[index]) return
+      const name = segmentName(index)
+      // 续传时这一片已经在磁盘上
+      if (existing.has(name)) continue
       let segment = segments[index]
       let data: Buffer
       try {
@@ -1739,7 +2001,6 @@ async function downloadHls(
         const decipher = createDecipheriv('aes-128-cbc', key, iv)
         data = Buffer.concat([decipher.update(data), decipher.final()])
       }
-      const name = `seg-${String(index + 1).padStart(5, '0')}${segmentExt}`
       await writeFile(join(folder, name), data)
       task.bytes += data.length
       done += 1

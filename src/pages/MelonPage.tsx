@@ -127,7 +127,8 @@ export function MelonPage({
       .map((item) => item.cover)
       .filter((url): url is string => !!url)
     if (covers.length) void window.laozheng.trackMelonImages(covers)
-    if (!initialCache.page) void load('/')
+    // 有缓存也请求一次：点标题刷新会重挂载本页，缓存只是先用旧数据占位
+    void load('/')
     if (!melonCountsRequested) {
       melonCountsRequested = true
       void window.laozheng.melonCategoryCounts().then((res) => {
@@ -421,6 +422,11 @@ export function MelonPage({
         }}
         searching={loading && !!keyword}
         placeholder="搜索吃瓜内容…"
+        onRefresh={() => {
+          void window.laozheng.forceRefresh('melon').catch(() => {})
+          void load(pagePath(basePath, pageNum))
+        }}
+        refreshing={loading}
       />
 
       <div className="toolbar">

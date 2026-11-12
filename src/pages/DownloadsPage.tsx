@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  BookHeart,
   BookOpen,
   BookText,
+  Camera,
   ChevronLeft,
   ChevronRight,
   ExternalLink,
@@ -11,7 +11,9 @@ import {
   ImageIcon,
   Images,
   Music as MusicIcon,
+  Pause,
   Play,
+  RefreshCw,
   Trash2,
   Wallpaper,
   Wand2,
@@ -29,35 +31,35 @@ import {
   type DownloadListResponse
 } from '../shared/downloads'
 
-/** 下载分区（与手机端下载管理一致：视频 / 漫画 / 本子 / 音乐 / 壁纸 / 书籍 / 小说 / 修改器） */
+/** 下载分区（视频置顶，其余按侧栏导航顺序：音乐 / 漫画 / 小说 / 书籍 / 修改器 / 壁纸 / 套图） */
 export type DownloadSection =
   | 'video'
   | 'comic'
-  | 'h2'
   | 'music'
   | 'wallpaper'
+  | 'meitu'
   | 'book'
   | 'novel'
   | 'trainer'
 
 const SECTIONS: { key: DownloadSection; label: string; icon: LucideIcon }[] = [
   { key: 'video', label: '视频', icon: Film },
-  { key: 'comic', label: '漫画', icon: Images },
-  { key: 'h2', label: '本子', icon: BookHeart },
   { key: 'music', label: '音乐', icon: MusicIcon },
-  { key: 'wallpaper', label: '壁纸', icon: ImageIcon },
-  { key: 'book', label: '书籍', icon: BookOpen },
+  { key: 'comic', label: '漫画', icon: Images },
   { key: 'novel', label: '小说', icon: BookText },
-  { key: 'trainer', label: '修改器', icon: Wand2 }
+  { key: 'book', label: '书籍', icon: BookOpen },
+  { key: 'trainer', label: '修改器', icon: Wand2 },
+  { key: 'wallpaper', label: '壁纸', icon: ImageIcon },
+  { key: 'meitu', label: '套图', icon: Camera }
 ]
 
-/** 分区 → 磁盘子目录（漫画与本子共用「漫画」目录） */
+/** 分区 → 磁盘子目录 */
 const SECTION_KIND: Record<DownloadSection, DownloadKind> = {
   video: 'video',
   comic: 'comic',
-  h2: 'comic',
   music: 'music',
   wallpaper: 'wallpaper',
+  meitu: 'meitu',
   book: 'book',
   novel: 'novel',
   trainer: 'trainer'
@@ -76,19 +78,22 @@ function kindLabel(kind: DownloadItem['kind']): string {
             ? '小说'
             : kind === 'wallpaper'
               ? '壁纸'
-              : kind === 'trainer'
-                ? '修改器'
-                : '文件'
+              : kind === 'meitu'
+                ? '套图'
+                : kind === 'trainer'
+                  ? '修改器'
+                  : '文件'
 }
 
-/** 漫画与本子共用 kind=comic，用来源名区分 */
+/** 漫画（含旧版本子记录）统一归到漫画分区 */
 function sectionOf(item: DownloadItem): DownloadSection {
   if (item.kind === 'music') return 'music'
   if (item.kind === 'book') return 'book'
   if (item.kind === 'novel') return 'novel'
   if (item.kind === 'wallpaper') return 'wallpaper'
+  if (item.kind === 'meitu') return 'meitu'
   if (item.kind === 'trainer') return 'trainer'
-  if (item.kind === 'comic') return item.sourceName === '本子' ? 'h2' : 'comic'
+  if (item.kind === 'comic') return 'comic'
   return 'video'
 }
 
@@ -122,6 +127,10 @@ export function DownloadsPage({
   const player = useMusicPlayer()
   const [data, setData] = useState<DownloadListResponse | null>(null)
   const [removing, setRemoving] = useState<DownloadItem | null>(null)
+  const [batchRemoving, setBatchRemoving] = useState<DownloadItem[] | null>(null)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [refreshing, setRefreshing] = useState(false)
   const [section, setSection] = useState<DownloadSection | null>(initialSection ?? null)
   const [musicSort, setMusicSort] = useState<'recent' | 'artist'>('recent')
   const [reading, setReading] = useState<ReadingState | null>(null)
@@ -130,6 +139,40 @@ export function DownloadsPage({
   useEffect(() => {
     setSection(initialSection ?? null)
   }, [initialSection])
+
+  // 切换分区时退出批量模式，避免把别的分区记录一起选中
+  useEffect(() => {
+    setSelectMode(false)
+    setSelected(new Set())
+  }, [section])
+
+  const toggleSelect = (id: string) => {
+    setSelected((previous) => {
+      const next = new Set(previous)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  /** 刷新：先让主进程核对磁盘，清掉本地已手动删除的失效记录，再重读列表 */
+  const refreshFromDisk = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    try {
+      const res = await window.laozheng.refreshDownloads()
+      await refresh()
+      onNotice(
+        res.removed > 0
+          ? `已刷新，清理了 ${res.removed} 条本地文件已不存在的记录`
+          : '已刷新下载列表，没有发现失效记录'
+      )
+    } catch (err) {
+      onNotice(`刷新失败：${(err as Error).message}`)
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   const refresh = async () => {
     const next = await window.laozheng.listDownloads()
@@ -149,9 +192,9 @@ export function DownloadsPage({
     const map: Record<DownloadSection, { count: number; bytes: number }> = {
       video: { count: 0, bytes: 0 },
       comic: { count: 0, bytes: 0 },
-      h2: { count: 0, bytes: 0 },
       music: { count: 0, bytes: 0 },
       wallpaper: { count: 0, bytes: 0 },
+      meitu: { count: 0, bytes: 0 },
       book: { count: 0, bytes: 0 },
       novel: { count: 0, bytes: 0 },
       trainer: { count: 0, bytes: 0 }
@@ -183,6 +226,16 @@ export function DownloadsPage({
 
   const cancel = async (id: string) => {
     await window.laozheng.cancelDownload(id)
+    void refresh()
+  }
+
+  const pause = async (id: string) => {
+    await window.laozheng.pauseDownload(id)
+    void refresh()
+  }
+
+  const resume = async (id: string) => {
+    await window.laozheng.resumeDownload(id)
     void refresh()
   }
 
@@ -280,6 +333,32 @@ export function DownloadsPage({
     void refresh()
   }
 
+  const doBatchRemove = async (deleteFile: boolean) => {
+    const list = batchRemoving
+    if (!list?.length) return
+    const failed: string[] = []
+    for (const item of list) {
+      try {
+        const res = await window.laozheng.removeDownload(item.id, deleteFile)
+        if (!res?.ok) failed.push(item.title)
+      } catch {
+        failed.push(item.title)
+      }
+    }
+    const done = list.length - failed.length
+    onNotice(
+      failed.length
+        ? `已删除 ${done} 项，${failed.length} 项失败（文件可能被占用）：${failed.slice(0, 3).join('、')}`
+        : deleteFile
+          ? `已批量移到回收站并删除 ${done} 条记录`
+          : `已移除 ${done} 条下载记录`
+    )
+    setBatchRemoving(null)
+    setSelected(new Set())
+    setSelectMode(false)
+    void refresh()
+  }
+
   if (reading) {
     const chapter = reading.chapters[reading.index]
     return (
@@ -332,19 +411,56 @@ export function DownloadsPage({
         >
           <ChevronLeft size={15} /> {section && !initialSection ? '下载管理' : '返回'}
         </button>
-        <h1 className="page-title">{activeSection ? activeSection.label : '下载'}</h1>
+        <h1 className="page-title">{activeSection ? activeSection.label : '下载管理'}</h1>
         <div className="page-actions">
+          {section ? (
+            <button
+              className={`btn ${selectMode ? 'primary' : ''}`}
+              onClick={() => {
+                setSelectMode((value) => !value)
+                setSelected(new Set())
+              }}
+            >
+              {selectMode ? '完成' : '批量管理'}
+            </button>
+          ) : null}
+          <button className="btn" disabled={refreshing} onClick={() => void refreshFromDisk()}>
+            <RefreshCw size={15} className={refreshing ? 'spin' : ''} />
+            {refreshing ? '刷新中…' : '刷新'}
+          </button>
           <button className="btn" onClick={() => void openDir()}>
             <FolderOpen size={15} /> 打开目录
           </button>
         </div>
       </header>
 
+      {section && selectMode && items.length > 0 ? (
+        <div className="toolbar batch-bar">
+          <button
+            className="chip"
+            onClick={() => {
+              const allSelected = items.every((item) => selected.has(item.id))
+              setSelected(allSelected ? new Set() : new Set(items.map((item) => item.id)))
+            }}
+          >
+            {items.every((item) => selected.has(item.id)) ? '取消全选' : '全选'}
+          </button>
+          <span className="page-desc">已选 {selected.size} 项</span>
+          <button
+            className="btn danger"
+            disabled={!selected.size}
+            onClick={() => setBatchRemoving(items.filter((item) => selected.has(item.id)))}
+          >
+            <Trash2 size={14} /> 删除所选
+          </button>
+        </div>
+      ) : null}
+
       {!section ? (
         <>
           {tasks.length > 0 && (
             <section className="settings-card" style={{ marginBottom: 16 }}>
-              <h3>正在下载</h3>
+              <h3>下载任务</h3>
               {tasks.map((task) => (
                 <div key={task.id} className="download-task">
                   <div className="download-task-head">
@@ -352,10 +468,22 @@ export function DownloadsPage({
                     <span className="page-desc">
                       {task.state === 'failed'
                         ? `失败：${task.error ?? '未知错误'}`
-                        : task.progress >= 0
-                          ? `${Math.round(task.progress * 100)}%`
-                          : formatBytes(task.bytes)}
+                        : task.state === 'paused'
+                          ? `已暂停${task.progress >= 0 ? ` · ${Math.round(task.progress * 100)}%` : ''}`
+                          : task.progress >= 0
+                            ? `${Math.round(task.progress * 100)}%`
+                            : formatBytes(task.bytes)}
                     </span>
+                    {task.state === 'running' ? (
+                      <button className="icon-btn" title="暂停下载" onClick={() => void pause(task.id)}>
+                        <Pause size={14} />
+                      </button>
+                    ) : null}
+                    {task.state === 'paused' ? (
+                      <button className="icon-btn" title="继续下载" onClick={() => void resume(task.id)}>
+                        <Play size={14} />
+                      </button>
+                    ) : null}
                     <button
                       className="icon-btn"
                       title={task.state === 'failed' ? '清除失败任务与残留文件' : '取消下载'}
@@ -417,7 +545,21 @@ export function DownloadsPage({
       ) : section === 'video' ? (
         <div className="download-grid">
           {items.map((item) => (
-            <div key={item.id} className="download-card">
+            <div
+              key={item.id}
+              className={`download-card${selectMode ? ' select-mode' : ''}${
+                selected.has(item.id) ? ' selected' : ''
+              }`}
+            >
+              {selectMode ? (
+                <label className="select-check" onClick={(event) => event.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(item.id)}
+                    onChange={() => toggleSelect(item.id)}
+                  />
+                </label>
+              ) : null}
               <span className="download-card-cover">
                 {item.coverUrl ? (
                   item.sourceName === '吃瓜' ? (
@@ -459,7 +601,21 @@ export function DownloadsPage({
       ) : section === 'wallpaper' ? (
         <div className="download-grid">
           {items.map((item) => (
-            <div key={item.id} className="download-card">
+            <div
+              key={item.id}
+              className={`download-card${selectMode ? ' select-mode' : ''}${
+                selected.has(item.id) ? ' selected' : ''
+              }`}
+            >
+              {selectMode ? (
+                <label className="select-check" onClick={(event) => event.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(item.id)}
+                    onChange={() => toggleSelect(item.id)}
+                  />
+                </label>
+              ) : null}
               <span className="download-card-cover">
                 {item.coverUrl ? (
                   <img src={item.coverUrl} alt="" loading="lazy" />
@@ -496,10 +652,77 @@ export function DownloadsPage({
             </div>
           ))}
         </div>
+      ) : section === 'meitu' ? (
+        <div className="download-grid">
+          {items.map((item) => (
+            <div
+              key={item.id}
+              className={`download-card${selectMode ? ' select-mode' : ''}${
+                selected.has(item.id) ? ' selected' : ''
+              }`}
+            >
+              {selectMode ? (
+                <label className="select-check" onClick={(event) => event.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(item.id)}
+                    onChange={() => toggleSelect(item.id)}
+                  />
+                </label>
+              ) : null}
+              <span className="download-card-cover">
+                {item.playUrl || item.coverUrl ? (
+                  <img src={item.playUrl || item.coverUrl} alt="" loading="lazy" />
+                ) : (
+                  <div className="row-cover">套图</div>
+                )}
+              </span>
+              <div className="download-card-main">
+                <div className="download-card-title" title={item.title}>
+                  {item.title}
+                </div>
+                <div className="download-card-meta">
+                  {[formatBytes(item.sizeBytes), item.sourceName, formatTime(item.createdAt)]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </div>
+              </div>
+              <div className="download-card-actions">
+                <button
+                  className="btn primary"
+                  disabled={settingWallpaper === item.id}
+                  onClick={() => void applyWallpaper(item)}
+                >
+                  <Wallpaper size={13} />{' '}
+                  {settingWallpaper === item.id ? '设置中…' : '设为壁纸'}
+                </button>
+                <button className="btn" onClick={() => void openLocal(item)}>
+                  <ExternalLink size={13} /> 打开
+                </button>
+                <button className="btn danger" onClick={() => setRemoving(item)}>
+                  <Trash2 size={13} /> 删除
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       ) : section === 'trainer' ? (
         <div className="rows">
           {items.map((item) => (
-            <div key={item.id} className="row">
+            <div
+              key={item.id}
+              className={`row${selectMode ? ' select-mode' : ''}${
+                selected.has(item.id) ? ' selected' : ''
+              }`}
+            >
+              {selectMode ? (
+                <input
+                  type="checkbox"
+                  className="row-check"
+                  checked={selected.has(item.id)}
+                  onChange={() => toggleSelect(item.id)}
+                />
+              ) : null}
               <div className="row-cover">
                 {item.coverUrl ? (
                   <img src={item.coverUrl} alt="" loading="lazy" />
@@ -550,7 +773,20 @@ export function DownloadsPage({
           </div>
           <div className="rows compact">
             {items.map((item) => (
-              <div key={item.id} className="row">
+              <div
+                key={item.id}
+                className={`row${selectMode ? ' select-mode' : ''}${
+                  selected.has(item.id) ? ' selected' : ''
+                }`}
+              >
+                {selectMode ? (
+                  <input
+                    type="checkbox"
+                    className="row-check"
+                    checked={selected.has(item.id)}
+                    onChange={() => toggleSelect(item.id)}
+                  />
+                ) : null}
                 <div className="row-cover">
                   {item.coverUrl ? (
                     <img src={item.coverUrl} alt="" loading="lazy" />
@@ -584,7 +820,20 @@ export function DownloadsPage({
       ) : (
         <div className="rows">
           {items.map((item) => (
-            <div key={item.id} className="row">
+            <div
+              key={item.id}
+              className={`row${selectMode ? ' select-mode' : ''}${
+                selected.has(item.id) ? ' selected' : ''
+              }`}
+            >
+              {selectMode ? (
+                <input
+                  type="checkbox"
+                  className="row-check"
+                  checked={selected.has(item.id)}
+                  onChange={() => toggleSelect(item.id)}
+                />
+              ) : null}
               <div className="row-cover">
                 {item.coverUrl ? (
                   <img src={item.coverUrl} alt="" loading="lazy" />
@@ -615,6 +864,32 @@ export function DownloadsPage({
             </div>
           ))}
         </div>
+      )}
+
+      {batchRemoving && (
+        <Modal
+          title={`批量删除 ${batchRemoving.length} 项`}
+          onClose={() => setBatchRemoving(null)}
+          footer={
+            <>
+              <button className="btn ghost" onClick={() => setBatchRemoving(null)}>
+                取消
+              </button>
+              <button className="btn" onClick={() => void doBatchRemove(false)}>
+                仅移除记录
+              </button>
+              <button className="btn danger" onClick={() => void doBatchRemove(true)}>
+                移到回收站
+              </button>
+            </>
+          }
+        >
+          <p>
+            确定删除选中的 {batchRemoving.length} 项下载吗？
+            {'\n'}
+            移到回收站仍可还原；被播放器占用的文件会跳过并保留记录，可以关闭播放器后用「刷新」再清理。
+          </p>
+        </Modal>
       )}
 
       {removing && (

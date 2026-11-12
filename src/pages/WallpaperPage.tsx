@@ -82,8 +82,9 @@ function readInitialCache(sources: WallpaperSource[]): WallpaperCache {
   }
 }
 
-/** 下载原图时补上站点 Referer，避免 CDN 防盗链 */
+/** 下载原图时补上站点 Referer，避免 CDN 防盗链；壁纸迷的图床反而拒绝带 Referer，直接留空 */
 function sourceReferer(source: WallpaperSource): string {
+  if (source.template === 'bizhimi') return ''
   try {
     return `${new URL(source.baseUrl).origin}/`
   } catch {
@@ -573,6 +574,11 @@ export function WallpaperPage({
         onSubmit={submitSearch}
         onClear={clearSearch}
         placeholder={`在 ${activeSource.name} · ${wallpaperDeviceLabel(device)} 搜索壁纸…`}
+        onRefresh={() => {
+          void window.laozheng.forceRefresh('wallpaper').catch(() => {})
+          void load({ page: 1 })
+        }}
+        refreshing={loading}
         leading={
           <select
             className="select-inline wallpaper-select"

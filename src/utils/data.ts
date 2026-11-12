@@ -140,21 +140,19 @@ export type FavModule = { key: string; label: string }
 
 export const FAV_MODULE_LABELS: Record<string, string> = {
   melon: '吃瓜',
-  xsite: 'X站',
-  psite: 'P站',
-  h1: '番号',
-  h2: '本子',
   comic: '漫画',
   tv: '电视',
   music: '音乐',
   watch: '影视',
   drama: '短剧',
+  shuangkan: '皇片',
   novel: '小说',
   book: '图书',
   game: '游戏',
   trainer: '补丁',
   live: '直播',
-  wallpaper: '壁纸'
+  wallpaper: '壁纸',
+  meitu: '套图'
 }
 
 export function favModuleLabel(key: string): string {

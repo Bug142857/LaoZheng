@@ -1668,6 +1668,10 @@ export async function runTrainer(folder: string, exe: string): Promise<TrainerAc
   if (!target.startsWith(dir + sep) || !existsSync(target)) {
     return { ok: false, error: '没有找到修改器主程序，请打开目录手动启动' }
   }
+  // 只允许启动 exe：解压出来的 bat / cmd / lnk 不参与，避免提权执行任意脚本
+  if (extname(target).toLowerCase() !== '.exe') {
+    return { ok: false, error: '修改器主程序不是 exe，请打开目录手动启动' }
+  }
   try {
     await runElevatedProcess(target, dir)
     return { ok: true, message: '已请求管理员权限启动修改器' }

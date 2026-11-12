@@ -48,12 +48,12 @@ export function SysInfoPage({
       .systemInfo(force)
       .then((value) => {
         setResult(value)
-        if (!value.ok) onNotice(`读取电脑信息失败：${value.error ?? '未知错误'}`)
+        if (!value.ok) onNotice(`读取硬件信息失败：${value.error ?? '未知错误'}`)
       })
       .catch((err: unknown) => {
         const message = (err as Error).message
         setResult({ ok: false, entries: [], error: message, collectedAt: Date.now() })
-        onNotice(`读取电脑信息失败：${message}`)
+        onNotice(`读取硬件信息失败：${message}`)
       })
       .finally(() => setLoading(false))
   }
@@ -68,14 +68,14 @@ export function SysInfoPage({
   return (
     <>
       <header className="page-header">
-        <h1 className="page-title">电脑信息</h1>
+        <h1 className="page-title">硬件</h1>
       </header>
 
       {loading ? (
         <LoadingBlock text="正在读取本机硬件信息…" />
       ) : !result?.ok ? (
         <EmptyState
-          title="读取电脑信息失败"
+          title="读取硬件信息失败"
           desc={result?.error ?? '请稍后重试'}
           action={
             <button className="btn" onClick={() => load(true)}>

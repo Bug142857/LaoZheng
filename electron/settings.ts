@@ -30,7 +30,27 @@ interface AppSettings {
 
 const THEME_MODES: ThemeMode[] = ['system', 'light', 'dark']
 const ACCENT_KEYS = ['purple', 'green', 'blue', 'cyan', 'orange', 'pink']
-const NAV_ORDER_VERSION = 1
+const NAV_ORDER_VERSION = 3
+
+/** 当前默认导航顺序：旧版保存的顺序升到 v3 时按它重排 */
+const SHARE_NAV_ORDER = [
+  'lists',
+  'watch',
+  'drama',
+  'live',
+  'liveRooms',
+  'music',
+  'comic',
+  'novel',
+  'book',
+  'game',
+  'gamecheat',
+  'magnet',
+  'wallpaper',
+  'meitu',
+  'melon',
+  'shuangkan'
+]
 
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
@@ -71,21 +91,18 @@ export function navOrderSettings(): Record<string, string[]> {
   return current.navOrder ? { ...current.navOrder } : {}
 }
 
-/** 旧版保存的顺序把「图书」排在「漫画 / 本子」上面：一次性把漫画、本子挪到图书前面 */
+/**
+ * 导航顺序升级（v3）：顺序口径改为
+ * 清单 → 影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 图书 → 游戏 → 补丁 → 磁力 → 壁纸 → 美图 → 吃瓜 → 皇片。
+ * 已下线模块等未知 key 保留在末尾，不丢数据。
+ */
 function upgradeNavOrder(order: Record<string, string[]>): Record<string, string[]> {
   const share = order.share
   if (!share?.length) return order
-  const bookAt = share.indexOf('book')
-  const comics = ['comic', 'bika'].filter((key) => share.includes(key))
-  if (bookAt < 0 || !comics.length || comics.every((key) => share.indexOf(key) < bookAt)) {
-    return order
-  }
-  const rest = share.filter((key) => key !== 'comic' && key !== 'bika')
-  const insertAt = rest.indexOf('book')
-  return {
-    ...order,
-    share: [...rest.slice(0, insertAt), ...comics, ...rest.slice(insertAt)]
-  }
+  const present = new Set(share)
+  const next = SHARE_NAV_ORDER.filter((key) => present.has(key))
+  const extras = share.filter((key) => !SHARE_NAV_ORDER.includes(key))
+  return { ...order, share: [...next, ...extras] }
 }
 
 /** 保存某个导航树的顺序；只接受字符串数组，避免把坏数据写进设置 */
@@ -218,7 +235,9 @@ export async function initSettings(): Promise<void> {
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      console.error('[settings] 读取本机设置失败，使用默认下载目录', err)
+      console.error('[settings] 读取本机设置失败，已备份损坏文件并使用默认设置', err)
+      // 文件损坏时先另存一份，避免默认值直接覆盖用户的下载目录 / 缓存目录 / 导航顺序
+      await rename(settingsPath(), `${settingsPath()}.broken-${Date.now()}`).catch(() => undefined)
     }
     await saveSettings()
     return

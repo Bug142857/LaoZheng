@@ -1,14 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  BookHeart,
   BookOpen,
   BookText,
+  Camera,
   ChevronLeft,
   ChevronRight,
   Clapperboard,
-  Film,
   Gamepad2,
-  Globe,
   Heart,
   ImageIcon,
   Images,
@@ -34,29 +32,31 @@ import {
 } from '../shared/livePlatformSources'
 import type { InnerFav } from '../shared/types'
 
-/** 收藏管理按模块整理（顺序与手机端模块宫格一致） */
+/** 收藏管理按模块整理（顺序与侧栏导航一致） */
 const FAV_MODULE_ORDER = [
   'watch',
   'drama',
-  'music',
-  'game',
-  'trainer',
   'tv',
-  'melon',
+  'live',
+  'music',
+  'comic',
   'novel',
   'book',
-  'comic',
-  'h2',
-  'h1',
-  'psite',
-  'xsite',
-  'live',
-  'wallpaper'
+  'game',
+  'trainer',
+  'wallpaper',
+  'meitu',
+  'melon',
+  'shuangkan'
 ] as const
+
+/** 已移除模块的旧收藏不再展示，但数据仍保留在备份里 */
+const HIDDEN_FAV_MODULES = new Set(['h2', 'h1', 'psite', 'xsite'])
 
 const MODULE_ICONS: Record<string, LucideIcon> = {
   watch: MonitorPlay,
   drama: Clapperboard,
+  shuangkan: PlayCircle,
   music: Music,
   game: Gamepad2,
   trainer: Wand2,
@@ -65,12 +65,9 @@ const MODULE_ICONS: Record<string, LucideIcon> = {
   novel: BookText,
   book: BookOpen,
   comic: Images,
-  h2: BookHeart,
-  h1: Film,
-  psite: PlayCircle,
-  xsite: Globe,
   live: Radio,
-  wallpaper: ImageIcon
+  wallpaper: ImageIcon,
+  meitu: Camera
 }
 
 export function FavoritesPage({
@@ -138,7 +135,13 @@ export function FavoritesPage({
     })
   }, [data.liveFavorites, data.livePlatformSources])
 
-  const allFavs = useMemo(() => [...data.innerFavs, ...liveFavs], [data.innerFavs, liveFavs])
+  const allFavs = useMemo(
+    () =>
+      [...data.innerFavs, ...liveFavs].filter(
+        (fav) => !HIDDEN_FAV_MODULES.has(fav.module)
+      ),
+    [data.innerFavs, liveFavs]
+  )
 
   const counts = useMemo(() => {
     const map = new Map<string, number>()
@@ -186,17 +189,58 @@ export function FavoritesPage({
       : `${m}:${String(s).padStart(2, '0')}`
   }
 
-  /** 番号 / 短剧 / P站 / X站 / 直播 / 壁纸用网格展示，其余模块保持列表 */
+  /** 短剧 / 皇片 / 直播 / 壁纸用网格展示，其余模块保持列表 */
   const gridModule =
-    moduleKey === 'h1' ||
     moduleKey === 'drama' ||
-    moduleKey === 'psite' ||
-    moduleKey === 'xsite' ||
+    moduleKey === 'shuangkan' ||
     moduleKey === 'live' ||
     moduleKey === 'wallpaper'
 
   /** 删除前先确认，避免误点垃圾桶直接删掉收藏 */
   const [removing, setRemoving] = useState<InnerFav | null>(null)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [batchRemoving, setBatchRemoving] = useState(false)
+
+  const favKey = (fav: InnerFav): string => `${fav.module}-${fav.id}`
+
+  useEffect(() => {
+    setSelectMode(false)
+    setSelected(new Set())
+  }, [moduleKey, query])
+
+  const toggleSelect = (key: string) => {
+    setSelected((previous) => {
+      const next = new Set(previous)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const removeSelected = () => {
+    const ids = new Set(selected)
+    const targets = favs.filter((fav) => ids.has(favKey(fav)))
+    const liveIds = new Set(
+      targets.filter((fav) => fav.module === 'live').map((fav) => fav.id)
+    )
+    const innerKeys = new Set(
+      targets
+        .filter((fav) => fav.module !== 'live')
+        .map((fav) => `${fav.module}|${fav.id}`)
+    )
+    update((d) => ({
+      ...d,
+      innerFavs: d.innerFavs.filter((fav) => !innerKeys.has(`${fav.module}|${fav.id}`)),
+      liveFavorites: d.liveFavorites.filter(
+        (item) => !liveIds.has(`${item.platform}:${item.roomId}`)
+      )
+    }))
+    onNotice?.(`已删除 ${targets.length} 条收藏`)
+    setBatchRemoving(false)
+    setSelectMode(false)
+    setSelected(new Set())
+  }
 
   const removeFav = (fav: InnerFav) => {
     if (fav.module === 'live') {
@@ -269,6 +313,17 @@ export function FavoritesPage({
         <h1 className="page-title">
           {moduleKey === 'all' ? '全部收藏' : favModuleLabel(moduleKey)}
         </h1>
+        <div className="page-actions">
+          <button
+            className={`btn ${selectMode ? 'primary' : ''}`}
+            onClick={() => {
+              setSelectMode((value) => !value)
+              setSelected(new Set())
+            }}
+          >
+            {selectMode ? '完成' : '批量管理'}
+          </button>
+        </div>
       </header>
 
       <div className="toolbar">
@@ -291,6 +346,28 @@ export function FavoritesPage({
           ) : null}
         </label>
       </div>
+
+      {selectMode ? (
+        <div className="toolbar batch-bar">
+          <button
+            className="chip"
+            onClick={() => {
+              const allSelected = favs.every((fav) => selected.has(favKey(fav)))
+              setSelected(allSelected ? new Set() : new Set(favs.map(favKey)))
+            }}
+          >
+            {favs.every((fav) => selected.has(favKey(fav))) ? '取消全选' : '全选'}
+          </button>
+          <span className="page-desc">已选 {selected.size} 项</span>
+          <button
+            className="btn danger"
+            disabled={!selected.size}
+            onClick={() => setBatchRemoving(true)}
+          >
+            <Trash2 size={14} /> 删除所选
+          </button>
+        </div>
+      ) : null}
 
       {moduleKey === 'music' ? (
         <div className="toolbar" style={{ marginTop: -4 }}>
@@ -317,33 +394,50 @@ export function FavoritesPage({
       ) : gridModule ? (
         <div className="media-grid">
           {favs.map((f) => {
+            const key = favKey(f)
             const open = (): void => onOpen(f)
+            const activate = (): void => {
+              if (selectMode) toggleSelect(key)
+              else open()
+            }
             const duration = videoDuration(f)
             return (
               <div
-                key={`${f.module}-${f.id}`}
-                className="media-card"
+                key={key}
+                className={`media-card${selectMode ? ' select-mode' : ''}${
+                  selected.has(key) ? ' selected' : ''
+                }`}
                 role="button"
                 tabIndex={0}
-                title="打开对应模块"
-                onClick={open}
+                title={selectMode ? '选择收藏' : '打开对应模块'}
+                onClick={activate}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') open()
+                  if (e.key === 'Enter' || e.key === ' ') activate()
                 }}
               >
                 <span className="media-thumb">
                   {f.cover ? <img src={f.cover} alt="" loading="lazy" /> : null}
                   {duration ? <span className="media-duration">{duration}</span> : null}
-                  <button
-                    className="fav-remove"
-                    title="删除收藏"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setRemoving(f)
-                    }}
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  {selectMode ? (
+                    <label className="select-check" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={selected.has(key)}
+                        onChange={() => toggleSelect(key)}
+                      />
+                    </label>
+                  ) : (
+                    <button
+                      className="fav-remove"
+                      title="删除收藏"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setRemoving(f)
+                      }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
                 </span>
                 <span className="media-title" style={{ WebkitLineClamp: 2 }}>
                   {f.title}
@@ -359,22 +453,36 @@ export function FavoritesPage({
         <div className={`rows ${moduleKey === 'music' ? 'compact' : ''}`}>
           {favs.map((f, index) => {
             const isMusic = f.module === 'music'
+            const key = favKey(f)
             const open = (): void => {
               if (isMusic) player.playFavs(favs, index)
               else onOpen(f)
             }
+            const activate = (): void => {
+              if (selectMode) toggleSelect(key)
+              else open()
+            }
             return (
               <div
-                key={`${f.module}-${f.id}`}
-                className="row clickable"
+                key={key}
+                className={`row clickable${selected.has(key) ? ' selected' : ''}`}
                 role="button"
                 tabIndex={0}
-                title={isMusic ? '用内置播放器播放，并播放当前列表' : '打开对应模块'}
-                onClick={open}
+                title={selectMode ? '选择收藏' : isMusic ? '用内置播放器播放，并播放当前列表' : '打开对应模块'}
+                onClick={activate}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') open()
+                  if (e.key === 'Enter' || e.key === ' ') activate()
                 }}
               >
+                {selectMode ? (
+                  <input
+                    type="checkbox"
+                    className="row-check"
+                    checked={selected.has(key)}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={() => toggleSelect(key)}
+                  />
+                ) : null}
                 <div className="row-cover">
                   {f.cover ? (
                     f.module === 'melon' ? (
@@ -397,22 +505,35 @@ export function FavoritesPage({
                   </div>
                 </div>
                 <span className="badge brand">{isMusic ? '播放' : favModuleLabel(f.module)}</span>
-                <button
-                  className="icon-btn danger"
-                  title="删除收藏"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setRemoving(f)
-                  }}
-                >
-                  <Trash2 size={15} />
-                </button>
+                {selectMode ? null : (
+                  <button
+                    className="icon-btn danger"
+                    title="删除收藏"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setRemoving(f)
+                    }}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                )}
                 <ChevronRight size={15} className="row-arrow" />
               </div>
             )
           })}
         </div>
       )}
+
+      {batchRemoving ? (
+        <ConfirmDialog
+          title={`批量删除 ${selected.size} 条收藏`}
+          message={`确定删除选中的 ${selected.size} 条收藏吗？删除后可在对应模块重新收藏。`}
+          confirmText="删除"
+          danger
+          onConfirm={removeSelected}
+          onCancel={() => setBatchRemoving(false)}
+        />
+      ) : null}
 
       {removing ? (
         <ConfirmDialog

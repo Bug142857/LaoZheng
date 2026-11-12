@@ -63,6 +63,21 @@ export function clearCache(key: string): void {
   }
 }
 
+/** 按前缀删除某个模块的全部列表缓存（如 h1_ / watch_ / shuangkan_） */
+export function clearCachePrefix(prefix: string): void {
+  try {
+    const full = PREFIX + prefix
+    const keys: string[] = []
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const key = window.localStorage.key(i)
+      if (key?.startsWith(full)) keys.push(key)
+    }
+    for (const key of keys) window.localStorage.removeItem(key)
+  } catch {
+    // localStorage 不可用时忽略
+  }
+}
+
 /** 清理缓存：把各模块落地的列表缓存一起清掉，下次进入重新请求 */
 export function clearModuleCaches(): void {
   try {

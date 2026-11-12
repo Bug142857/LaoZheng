@@ -19,7 +19,6 @@ import {
   type VodSourceInput
 } from '../shared/vod'
 import { DEFAULT_VOD_SOURCES } from '../shared/vodDefaults'
-import { DEFAULT_H1_SOURCES, type H1Source } from '../shared/h1'
 import {
   DEFAULT_LIVE_PLATFORM_SOURCES,
   livePlatformOfSource,
@@ -64,6 +63,20 @@ import {
   type WallpaperSourceInput,
   type WallpaperSourceTemplate
 } from '../shared/wallpaper'
+import {
+  SK_DEFAULT_BASE,
+  toShuangkanSourceRef,
+  type ShuangkanSource
+} from '../shared/shuangkan'
+import {
+  MEITU_SOURCE_TEMPLATES,
+  inferMeituTemplate,
+  meituTemplateLabel,
+  toMeituSourceRef,
+  type MeituSource,
+  type MeituSourceInput,
+  type MeituSourceTemplate
+} from '../shared/meitu'
 import { MagnetSettings } from './MagnetSettings'
 
 function toInput(source: VodSource): VodSourceInput {
@@ -80,6 +93,14 @@ function toDramaInput(source: DramaSource): DramaSourceInput {
 
 function newDramaSourceId(baseUrl: string, taken: { id: string }[]): string {
   const baseId = `drama_${genSourceId(baseUrl)}`
+  let id = baseId
+  let n = 2
+  while (taken.some((s) => s.id === id)) id = `${baseId}_${n++}`
+  return id
+}
+
+function newShuangkanSourceId(baseUrl: string, taken: { id: string }[]): string {
+  const baseId = `sk_${genSourceId(baseUrl)}`
   let id = baseId
   let n = 2
   while (taken.some((s) => s.id === id)) id = `${baseId}_${n++}`
@@ -113,6 +134,7 @@ function toComicInput(source: ComicSource): ComicSourceInput {
 
 /** 批量导入小说源时按地址猜解析模板，猜不到按蚂蚁文学处理 */
 function inferNovelTemplate(baseUrl: string): NovelSourceTemplate {
+  if (/bikahub\.net|bikago\.net|mlaridyo\.cc|dojqybrcm\.com/i.test(baseUrl)) return 'bikahub'
   if (/95dushu|jwdushu/i.test(baseUrl)) return '95dushu'
   if (/xuanhuange/i.test(baseUrl)) return 'xuanhuange'
   if (/5wa\.net|qishu/i.test(baseUrl)) return 'qishu5wa'
@@ -196,6 +218,20 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   const [deletingWallpaper, setDeletingWallpaper] = useState<WallpaperSource | null>(null)
   const [testingWallpaperId, setTestingWallpaperId] = useState<string | null>(null)
   const [testingWallpaperAll, setTestingWallpaperAll] = useState(false)
+  const [meituOpen, setMeituOpen] = useState(false)
+  const [editingMeitu, setEditingMeitu] = useState<MeituSource | 'new' | null>(null)
+  const [importingMeitu, setImportingMeitu] = useState(false)
+  const [deletingMeitu, setDeletingMeitu] = useState<MeituSource | null>(null)
+  const [testingMeituId, setTestingMeituId] = useState<string | null>(null)
+  const [testingMeituAll, setTestingMeituAll] = useState(false)
+  const [shuangkanOpen, setShuangkanOpen] = useState(false)
+  const [editingShuangkan, setEditingShuangkan] = useState<ShuangkanSource | 'new' | null>(
+    null
+  )
+  const [importingShuangkan, setImportingShuangkan] = useState(false)
+  const [deletingShuangkan, setDeletingShuangkan] = useState<ShuangkanSource | null>(null)
+  const [testingShuangkanId, setTestingShuangkanId] = useState<string | null>(null)
+  const [testingShuangkanAll, setTestingShuangkanAll] = useState(false)
 
   const [editing, setEditing] = useState<VodSource | 'new' | null>(null)
   const [importing, setImporting] = useState(false)
@@ -230,13 +266,6 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   const [deletingComic, setDeletingComic] = useState<ComicSource | null>(null)
   const [testingComicId, setTestingComicId] = useState<string | null>(null)
   const [testingComicAll, setTestingComicAll] = useState(false)
-
-  const [h1Open, setH1Open] = useState(false)
-  const [editingH1, setEditingH1] = useState<H1Source | 'new' | null>(null)
-  const [importingH1, setImportingH1] = useState(false)
-  const [deletingH1, setDeletingH1] = useState<H1Source | null>(null)
-  const [testingH1Id, setTestingH1Id] = useState<string | null>(null)
-  const [testingH1All, setTestingH1All] = useState(false)
 
   const [livePlatformOpen, setLivePlatformOpen] = useState(false)
   const [editingLivePlatform, setEditingLivePlatform] = useState<LivePlatformSource | 'new' | null>(
@@ -803,7 +832,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     setDeletingNovel(null)
   }
 
-  // ---------- 漫画源（漫画客 / Komiic） ----------
+  // ---------- 漫画源（漫画客 / Komiic / 哔咔） ----------
 
   const saveComicSource = (input: ComicSourceInput) => {
     const baseUrl = input.baseUrl.trim().replace(/\/+$/, '')
@@ -1327,187 +1356,6 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     setDeletingMusic(null)
   }
 
-  // ---------- 番号源（默认四个外网采集站） ----------
-  const patchH1 = (id: string, patch: Partial<H1Source>) => {
-    update((d) => ({
-      ...d,
-      h1Sources: d.h1Sources.map((source) =>
-        source.id === id ? { ...source, ...patch } : source
-      )
-    }))
-  }
-
-  const saveH1Source = (input: VodSourceInput) => {
-    const baseUrl = normalizeBaseUrl(input.baseUrl)
-    if (!input.name.trim() || !/^https?:\/\//i.test(baseUrl)) {
-      onNotice('番号源名称和地址不能为空')
-      return
-    }
-    if (!(editingH1 === 'new' || editingH1)) return
-    if (editingH1 === 'new') {
-      if (data.h1Sources.some((s) => s.baseUrl === baseUrl)) {
-        onNotice('该番号源已经存在')
-        return
-      }
-      update((d) => {
-        const baseId = input.id || `h1_${genSourceId(baseUrl)}`
-        let id = baseId
-        let n = 2
-        while (d.h1Sources.some((s) => s.id === id)) id = `${baseId}_${n++}`
-        return {
-          ...d,
-          h1Sources: [
-            ...d.h1Sources,
-            {
-              id,
-              name: input.name.trim(),
-              baseUrl,
-              enabled: true,
-              region: 'proxy',
-              regionManual: true,
-              testStatus: 'ok',
-              testMsg: '可用',
-              testAt: Date.now()
-            }
-          ]
-        }
-      })
-      onNotice(`已添加番号源「${input.name.trim()}」`)
-    } else {
-      const current = editingH1
-      if (data.h1Sources.some((s) => s.id !== current.id && s.baseUrl === baseUrl)) {
-        onNotice('该番号源地址已经存在')
-        return
-      }
-      const changed = current.baseUrl !== baseUrl
-      update((d) => ({
-        ...d,
-        h1Sources: d.h1Sources.map((source) =>
-          source.id === current.id
-            ? {
-                ...source,
-                name: input.name.trim(),
-                baseUrl,
-                ...(changed ? { testStatus: null, testMsg: null, testAt: 0 } : {})
-              }
-            : source
-        )
-      }))
-      onNotice(`已保存番号源「${input.name.trim()}」`)
-    }
-    setEditingH1(null)
-  }
-
-  const testH1 = async (source: H1Source) => {
-    setTestingH1Id(source.id)
-    try {
-      const res = await window.laozheng.testVodSource(toInput(source))
-      patchH1(source.id, {
-        testStatus: res.status,
-        testMsg: res.message,
-        testAt: res.testAt
-      })
-      onNotice(`${source.name}：${res.message}`)
-    } catch (err) {
-      patchH1(source.id, {
-        testStatus: 'bad',
-        testMsg: (err as Error).message,
-        testAt: Date.now()
-      })
-    } finally {
-      setTestingH1Id(null)
-    }
-  }
-
-  const testAllH1 = async () => {
-    if (testingH1All || data.h1Sources.length === 0) return
-    setTestingH1All(true)
-    const queue = [...data.h1Sources]
-    let ok = 0
-    let bad = 0
-    const worker = async (): Promise<void> => {
-      for (;;) {
-        const source = queue.shift()
-        if (!source) return
-        setTestingH1Id(source.id)
-        const res = await window.laozheng.testVodSource(toInput(source))
-        if (res.status === 'ok') ok += 1
-        else bad += 1
-        patchH1(source.id, { testStatus: res.status, testMsg: res.message, testAt: res.testAt })
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker))
-    setTestingH1Id(null)
-    setTestingH1All(false)
-    onNotice(`番号源测试完成：有效 ${ok} 个 · 无效 ${bad} 个`)
-  }
-
-  const importH1Sources = (inputs: VodSourceInput[]) => {
-    const existing = new Set(data.h1Sources.map((s) => s.baseUrl))
-    const taken = new Set(data.h1Sources.map((s) => s.id))
-    const fresh: H1Source[] = []
-    for (const input of inputs) {
-      const baseUrl = normalizeBaseUrl(input.baseUrl)
-      if (!/^https?:\/\//i.test(baseUrl) || existing.has(baseUrl)) continue
-      existing.add(baseUrl)
-      const baseId = `h1_${genSourceId(baseUrl)}`
-      let id = baseId
-      let n = 2
-      while (taken.has(id)) id = `${baseId}_${n++}`
-      taken.add(id)
-      fresh.push({
-        id,
-        name: input.name.trim() || vodHost(baseUrl),
-        baseUrl,
-        enabled: true,
-        region: 'proxy',
-        regionManual: true,
-        testStatus: 'ok',
-        testMsg: '可用',
-        testAt: Date.now()
-      })
-    }
-    if (!fresh.length) {
-      onNotice('这些番号源已存在')
-      setImportingH1(false)
-      return
-    }
-    update((d) => ({ ...d, h1Sources: [...d.h1Sources, ...fresh] }))
-    onNotice(`已导入 ${fresh.length} 个番号源`)
-    setImportingH1(false)
-  }
-
-  const exportH1 = async (): Promise<void> => {
-    if (!data.h1Sources.length) {
-      onNotice('还没有可导出的番号源')
-      return
-    }
-    const res = await window.laozheng.exportH1Sources(
-      data.h1Sources.map((source) => ({
-        id: source.id,
-        name: source.name,
-        baseUrl: source.baseUrl,
-        enabled: source.enabled
-      }))
-    )
-    if (res.canceled) return
-    if (res.error) {
-      onNotice(`导出失败：${res.error}`)
-      return
-    }
-    onNotice(`已导出 ${res.count ?? 0} 个番号源到 ${res.path}`)
-  }
-
-  const removeH1Source = () => {
-    if (!deletingH1) return
-    update((d) => ({
-      ...d,
-      h1Sources: d.h1Sources.filter((s) => s.id !== deletingH1.id)
-    }))
-    onNotice(`已删除番号源「${deletingH1.name}」`)
-    setDeletingH1(null)
-  }
-
   // ---------- 平台直播源（B站 / 斗鱼 / 抖音） ----------
 
   const patchLivePlatform = (id: string, patch: Partial<LivePlatformSource>) => {
@@ -1911,12 +1759,6 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         template: s.template,
         enabled: s.enabled
       })),
-      h1Sources: data.h1Sources.map((s) => ({
-        id: s.id,
-        name: s.name,
-        baseUrl: s.baseUrl,
-        enabled: s.enabled
-      })),
       livePlatformSources: data.livePlatformSources.map((s) => ({
         id: s.id,
         name: s.name,
@@ -1924,6 +1766,19 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         enabled: s.enabled
       })),
       wallpaperSources: data.wallpaperSources.map((s) => ({
+        id: s.id,
+        name: s.name,
+        baseUrl: s.baseUrl,
+        template: s.template,
+        enabled: s.enabled
+      })),
+      shuangkanSources: data.shuangkanSources.map((s) => ({
+        id: s.id,
+        name: s.name,
+        baseUrl: s.baseUrl,
+        enabled: s.enabled
+      })),
+      meituSources: data.meituSources.map((s) => ({
         id: s.id,
         name: s.name,
         baseUrl: s.baseUrl,
@@ -1955,9 +1810,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     let musicAdded = 0
     let novelAdded = 0
     let comicAdded = 0
-    let h1Added = 0
     let livePlatformAdded = 0
     let wallpaperAdded = 0
+    let meituAdded = 0
+    let shuangkanAdded = 0
     update((d) => {
       const vodUrls = new Set(d.vodSources.map((s) => s.baseUrl))
       const vodRows: VodSource[] = []
@@ -2146,7 +2002,11 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         const baseUrl = normalizeBaseUrl(String(raw.baseUrl ?? ''))
         if (!/^https?:\/\//i.test(baseUrl)) continue
         const template: ComicSourceTemplate =
-          raw.template === 'komiic' || raw.template === 'yumanhua'
+          raw.template === 'komiic' ||
+          raw.template === 'yumanhua' ||
+          raw.template === 'bikahub' ||
+          raw.template === 'tptoon' ||
+          raw.template === 'jmcomic'
             ? raw.template
             : inferComicTemplate(baseUrl)
         const id = typeof raw.id === 'string' ? raw.id : ''
@@ -2173,42 +2033,12 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         comicAddedCount += 1
       }
 
-      const nextH1Sources = [...d.h1Sources]
-      let h1AddedCount = 0
-      for (const raw of bundle.h1Sources ?? []) {
-        if (!raw || typeof raw !== 'object') continue
-        const baseUrl = normalizeBaseUrl(String(raw.baseUrl ?? ''))
-        if (!/^https?:\/\//i.test(baseUrl)) continue
-        const id = typeof raw.id === 'string' ? raw.id : ''
-        const exists = nextH1Sources.some((s) => (id && s.id === id) || s.baseUrl === baseUrl)
-        if (exists) continue
-        let newId =
-          id && !nextH1Sources.some((s) => s.id === id) ? id : `h1_${Date.now().toString(36)}`
-        let n = 2
-        while (nextH1Sources.some((s) => s.id === newId)) {
-          newId = `h1_${Date.now().toString(36)}_${n++}`
-        }
-        nextH1Sources.push({
-          id: newId,
-          name: String(raw.name ?? '').trim() || vodHost(baseUrl),
-          baseUrl,
-          enabled: raw.enabled !== false,
-          region: 'proxy',
-          regionManual: true,
-          testStatus: 'ok',
-          testMsg: '可用',
-          testAt: Date.now()
-        })
-        h1AddedCount += 1
-      }
-
       vodAdded = vodRows.length
       dramaAdded = dramaAddedCount
       trainerAdded = trainerAddedCount
       musicAdded = musicAddedCount
       novelAdded = novelAddedCount
       comicAdded = comicAddedCount
-      h1Added = h1AddedCount
 
       const nextLivePlatformSources = [...d.livePlatformSources]
       let livePlatformAddedCount = 0
@@ -2275,6 +2105,59 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       }
       wallpaperAdded = wallpaperAddedCount
 
+      const nextMeituSources = [...d.meituSources]
+      let meituAddedCount = 0
+      const meituUrls = new Set(nextMeituSources.map((s) => s.baseUrl))
+      for (const raw of bundle.meituSources ?? []) {
+        if (!raw || typeof raw !== 'object') continue
+        const baseUrl = normalizeBaseUrl(String(raw.baseUrl ?? ''))
+        if (!/^https?:\/\//i.test(baseUrl) || meituUrls.has(baseUrl)) continue
+        const template = inferMeituTemplate(baseUrl)
+        if (!template) continue
+        meituUrls.add(baseUrl)
+        const baseId = `mt_${genSourceId(baseUrl)}`
+        let id = baseId
+        let n = 2
+        while (nextMeituSources.some((s) => s.id === id)) id = `${baseId}_${n++}`
+        nextMeituSources.push({
+          id,
+          name: String(raw.name ?? '').trim() || vodHost(baseUrl),
+          baseUrl,
+          template,
+          enabled: raw.enabled !== false,
+          testStatus: 'ok',
+          testMsg: '可用',
+          testAt: Date.now()
+        })
+        meituAddedCount += 1
+      }
+      meituAdded = meituAddedCount
+
+      const nextShuangkanSources = [...d.shuangkanSources]
+      let shuangkanAddedCount = 0
+      const shuangkanUrls = new Set(nextShuangkanSources.map((s) => s.baseUrl))
+      for (const raw of bundle.shuangkanSources ?? []) {
+        if (!raw || typeof raw !== 'object') continue
+        const baseUrl = normalizeBaseUrl(String(raw.baseUrl ?? ''))
+        if (!/^https?:\/\//i.test(baseUrl) || shuangkanUrls.has(baseUrl)) continue
+        shuangkanUrls.add(baseUrl)
+        const baseId = `sk_${genSourceId(baseUrl)}`
+        let id = baseId
+        let n = 2
+        while (nextShuangkanSources.some((s) => s.id === id)) id = `${baseId}_${n++}`
+        nextShuangkanSources.push({
+          id,
+          name: String(raw.name ?? '').trim() || vodHost(baseUrl),
+          baseUrl,
+          enabled: raw.enabled !== false,
+          testStatus: null,
+          testMsg: null,
+          testAt: 0
+        })
+        shuangkanAddedCount += 1
+      }
+      shuangkanAdded = shuangkanAddedCount
+
       return {
         ...d,
         vodSources: [...d.vodSources, ...vodRows],
@@ -2283,9 +2166,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         musicSources: nextMusicSources,
         novelSources: nextNovelSources,
         comicSources: nextComicSources,
-        h1Sources: nextH1Sources,
         livePlatformSources: nextLivePlatformSources,
-        wallpaperSources: nextWallpaperSources
+        wallpaperSources: nextWallpaperSources,
+        meituSources: nextMeituSources,
+        shuangkanSources: nextShuangkanSources
       }
     })
 
@@ -2369,9 +2253,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       !musicAdded &&
       !novelAdded &&
       !comicAdded &&
-      !h1Added &&
       !livePlatformAdded &&
-      !wallpaperAdded
+      !wallpaperAdded &&
+      !meituAdded &&
+      !shuangkanAdded
     ) {
       onNotice('没有新增源（地址都已存在）')
       return
@@ -2379,7 +2264,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     // 源配置变了：清掉各模块的列表缓存，避免下次进入还显示旧源的列表
     clearModuleCaches()
     onNotice(
-      `已导入：影视源 ${vodAdded} · 短剧源 ${dramaAdded} · 小说源 ${novelAdded} · 漫画源 ${comicAdded} · 番号源 ${h1Added} · 直播源 ${livePlatformAdded} · 电视源 ${liveRows.length} · 磁力源 ${magnetAdded} · 补丁源 ${trainerAdded} · 音乐源 ${musicAdded} · 壁纸源 ${wallpaperAdded}`
+      `已导入：影视源 ${vodAdded} · 短剧源 ${dramaAdded} · 小说源 ${novelAdded} · 漫画源 ${comicAdded} · 直播源 ${livePlatformAdded} · 电视源 ${liveRows.length} · 磁力源 ${magnetAdded} · 补丁源 ${trainerAdded} · 音乐源 ${musicAdded} · 壁纸源 ${wallpaperAdded} · 套图源 ${meituAdded} · 皇片源 ${shuangkanAdded}`
     )
   }
 
@@ -2604,9 +2489,401 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   ).length
   const wallpaperEnabled = data.wallpaperSources.filter((s) => s.enabled).length
 
-  const h1Ok = data.h1Sources.filter((s) => s.testStatus === 'ok').length
-  const h1Bad = data.h1Sources.filter((s) => !!s.testStatus && s.testStatus !== 'ok').length
-  const h1Enabled = data.h1Sources.filter((s) => s.enabled).length
+  // ---------- 套图源（魅影画廊 / 雪月映画） ----------
+
+  const patchMeitu = (id: string, patch: Partial<MeituSource>) => {
+    update((d) => ({
+      ...d,
+      meituSources: d.meituSources.map((source) =>
+        source.id === id ? { ...source, ...patch } : source
+      )
+    }))
+  }
+
+  const runMeituTest = async (
+    source: MeituSource
+  ): Promise<{ status: 'ok' | 'bad'; msg: string }> => {
+    try {
+      const res = await window.laozheng.meituCategories(toMeituSourceRef(source))
+      const status: 'ok' | 'bad' = res.ok ? 'ok' : 'bad'
+      const msg = res.ok
+        ? `可用 · ${res.categories?.filter((entry) => entry.id).length ?? 0} 个分类`
+        : res.error ?? '不可用'
+      patchMeitu(source.id, { testStatus: status, testMsg: msg, testAt: Date.now() })
+      return { status, msg }
+    } catch (err) {
+      const msg = (err as Error).message || '测试失败'
+      patchMeitu(source.id, { testStatus: 'bad', testMsg: msg, testAt: Date.now() })
+      return { status: 'bad', msg }
+    }
+  }
+
+  const testMeitu = async (source: MeituSource) => {
+    if (testingMeituId) return
+    setTestingMeituId(source.id)
+    const res = await runMeituTest(source)
+    setTestingMeituId(null)
+    onNotice(`「${source.name}」${res.status === 'ok' ? '可用' : `不可用：${res.msg}`}`)
+  }
+
+  const testAllMeitu = async () => {
+    if (testingMeituAll || data.meituSources.length === 0) return
+    setTestingMeituAll(true)
+    let ok = 0
+    let bad = 0
+    for (const entry of data.meituSources) {
+      setTestingMeituId(entry.id)
+      const res = await runMeituTest(entry)
+      if (res.status === 'ok') ok += 1
+      else bad += 1
+    }
+    setTestingMeituId(null)
+    setTestingMeituAll(false)
+    onNotice(`套图源测试完成：可用 ${ok} 个 · 不可用 ${bad} 个`)
+  }
+
+  const saveMeituSource = (input: MeituSourceInput) => {
+    if (!(editingMeitu === 'new' || editingMeitu)) return
+    const baseUrl = normalizeBaseUrl(input.baseUrl)
+    if (!input.name.trim() || !/^https?:\/\//i.test(baseUrl)) {
+      onNotice('套图源名称和站点地址不能为空')
+      return
+    }
+    const name = input.name.trim()
+    if (
+      data.meituSources.some(
+        (source) => source.id !== input.id && source.baseUrl === baseUrl
+      )
+    ) {
+      onNotice('该套图源地址已经存在')
+      return
+    }
+    if (editingMeitu === 'new') {
+      update((d) => {
+        const baseId = `mt_${genSourceId(baseUrl)}`
+        let id = baseId
+        let n = 2
+        while (d.meituSources.some((source) => source.id === id)) {
+          id = `${baseId}_${n++}`
+        }
+        return {
+          ...d,
+          meituSources: [
+            ...d.meituSources,
+            {
+              id,
+              name,
+              baseUrl,
+              template: input.template,
+              enabled: true,
+              testStatus: 'ok',
+              testMsg: '可用',
+              testAt: Date.now()
+            }
+          ]
+        }
+      })
+      onNotice(`已添加套图源「${name}」`)
+    } else {
+      const current = editingMeitu
+      const changed = current.baseUrl !== baseUrl || current.template !== input.template
+      update((d) => ({
+        ...d,
+        meituSources: d.meituSources.map((source) =>
+          source.id === current.id
+            ? {
+                ...source,
+                name,
+                baseUrl,
+                template: input.template,
+                testStatus: changed ? null : source.testStatus,
+                testMsg: changed ? null : source.testMsg,
+                testAt: changed ? 0 : source.testAt
+              }
+            : source
+        )
+      }))
+      onNotice(`已保存套图源「${name}」`)
+    }
+    setEditingMeitu(null)
+  }
+
+  const importMeituSources = (inputs: VodSourceInput[]) => {
+    const urls = new Set(data.meituSources.map((source) => source.baseUrl))
+    const ids = new Set(data.meituSources.map((source) => source.id))
+    const fresh: MeituSource[] = []
+    let skipped = 0
+    for (const input of inputs) {
+      const baseUrl = normalizeBaseUrl(input.baseUrl)
+      if (!/^https?:\/\//i.test(baseUrl) || urls.has(baseUrl)) {
+        skipped += 1
+        continue
+      }
+      const template = inferMeituTemplate(baseUrl)
+      if (!template) {
+        skipped += 1
+        continue
+      }
+      urls.add(baseUrl)
+      const baseId = `mt_${genSourceId(baseUrl)}`
+      let id = baseId
+      let n = 2
+      while (ids.has(id)) id = `${baseId}_${n++}`
+      ids.add(id)
+      fresh.push({
+        id,
+        name: input.name.trim() || vodHost(baseUrl),
+        baseUrl,
+        template,
+        enabled: true,
+        testStatus: 'ok',
+        testMsg: '可用',
+        testAt: Date.now()
+      })
+    }
+    if (!fresh.length) {
+      onNotice('没有可导入的套图源（地址已存在或不是魅影画廊 / 雪月映画站点）')
+      setImportingMeitu(false)
+      return
+    }
+    update((d) => ({ ...d, meituSources: [...d.meituSources, ...fresh] }))
+    onNotice(`已导入 ${fresh.length} 个套图源${skipped ? ` · 跳过 ${skipped} 个` : ''}`)
+    setImportingMeitu(false)
+  }
+
+  const exportMeitu = async (): Promise<void> => {
+    if (!data.meituSources.length) {
+      onNotice('还没有可导出的套图源')
+      return
+    }
+    const res = await window.laozheng.exportMeituSources(
+      data.meituSources.map((source) => ({
+        id: source.id,
+        name: source.name,
+        baseUrl: source.baseUrl,
+        template: source.template,
+        enabled: source.enabled
+      }))
+    )
+    if (res.canceled) return
+    if (res.error) {
+      onNotice(`导出失败：${res.error}`)
+      return
+    }
+    onNotice(`已导出 ${res.count ?? 0} 个套图源到 ${res.path}`)
+  }
+
+  const removeMeituSource = () => {
+    if (!deletingMeitu) return
+    update((d) => ({
+      ...d,
+      meituSources: d.meituSources.filter((source) => source.id !== deletingMeitu.id)
+    }))
+    onNotice(`已删除套图源「${deletingMeitu.name}」`)
+    setDeletingMeitu(null)
+  }
+
+  const meituOk = data.meituSources.filter((s) => s.testStatus === 'ok').length
+  const meituBad = data.meituSources.filter(
+    (s) => !!s.testStatus && s.testStatus !== 'ok'
+  ).length
+  const meituEnabled = data.meituSources.filter((s) => s.enabled).length
+
+  // ---------- 皇片源（肉视频站点） ----------
+
+  const patchShuangkan = (id: string, patch: Partial<ShuangkanSource>) => {
+    update((d) => ({
+      ...d,
+      shuangkanSources: d.shuangkanSources.map((source) =>
+        source.id === id ? { ...source, ...patch } : source
+      )
+    }))
+  }
+
+  const runShuangkanTest = async (
+    source: ShuangkanSource
+  ): Promise<{ status: 'ok' | 'bad'; msg: string }> => {
+    try {
+      const res = await window.laozheng.shuangkanCatalog(
+        toShuangkanSourceRef(source),
+        'video',
+        '',
+        1
+      )
+      const status: 'ok' | 'bad' = res.ok ? 'ok' : 'bad'
+      const msg = res.ok
+        ? `可用 · 首页 ${res.items.length} 条`
+        : res.error ?? '不可用'
+      patchShuangkan(source.id, { testStatus: status, testMsg: msg, testAt: Date.now() })
+      return { status, msg }
+    } catch (err) {
+      const msg = (err as Error).message || '测试失败'
+      patchShuangkan(source.id, { testStatus: 'bad', testMsg: msg, testAt: Date.now() })
+      return { status: 'bad', msg }
+    }
+  }
+
+  const testShuangkan = async (source: ShuangkanSource) => {
+    if (testingShuangkanId) return
+    setTestingShuangkanId(source.id)
+    const res = await runShuangkanTest(source)
+    setTestingShuangkanId(null)
+    onNotice(`「${source.name}」${res.status === 'ok' ? '可用' : `不可用：${res.msg}`}`)
+  }
+
+  const testAllShuangkan = async () => {
+    if (testingShuangkanAll || data.shuangkanSources.length === 0) return
+    setTestingShuangkanAll(true)
+    let ok = 0
+    let bad = 0
+    for (const entry of data.shuangkanSources) {
+      setTestingShuangkanId(entry.id)
+      const res = await runShuangkanTest(entry)
+      if (res.status === 'ok') ok += 1
+      else bad += 1
+    }
+    setTestingShuangkanId(null)
+    setTestingShuangkanAll(false)
+    onNotice(`皇片源测试完成：可用 ${ok} 个 · 不可用 ${bad} 个`)
+  }
+
+  const saveShuangkanSource = (input: { name: string; baseUrl: string; id?: string }) => {
+    if (!(editingShuangkan === 'new' || editingShuangkan)) return
+    const baseUrl = normalizeBaseUrl(input.baseUrl)
+    if (!input.name.trim() || !/^https?:\/\//i.test(baseUrl)) {
+      onNotice('皇片源名称和站点地址不能为空')
+      return
+    }
+    const name = input.name.trim()
+    if (
+      data.shuangkanSources.some(
+        (source) => source.id !== input.id && source.baseUrl === baseUrl
+      )
+    ) {
+      onNotice('该皇片源地址已经存在')
+      return
+    }
+    if (editingShuangkan === 'new') {
+      update((d) => {
+        const baseId = `sk_${genSourceId(baseUrl)}`
+        let id = baseId
+        let n = 2
+        while (d.shuangkanSources.some((source) => source.id === id)) {
+          id = `${baseId}_${n++}`
+        }
+        return {
+          ...d,
+          shuangkanSources: [
+            ...d.shuangkanSources,
+            {
+              id,
+              name,
+              baseUrl,
+              enabled: true,
+              testStatus: null,
+              testMsg: null,
+              testAt: 0
+            }
+          ]
+        }
+      })
+      onNotice(`已添加皇片源「${name}」`)
+    } else {
+      const current = editingShuangkan
+      const changed = current.baseUrl !== baseUrl
+      update((d) => ({
+        ...d,
+        shuangkanSources: d.shuangkanSources.map((source) =>
+          source.id === current.id
+            ? {
+                ...source,
+                name,
+                baseUrl,
+                testStatus: changed ? null : source.testStatus,
+                testMsg: changed ? null : source.testMsg,
+                testAt: changed ? 0 : source.testAt
+              }
+            : source
+        )
+      }))
+      onNotice(`已保存皇片源「${name}」`)
+    }
+    setEditingShuangkan(null)
+  }
+
+  const importShuangkanSources = (inputs: VodSourceInput[]) => {
+    const existing = new Set(data.shuangkanSources.map((source) => source.baseUrl))
+    const fresh = inputs.filter((input) => {
+      const baseUrl = normalizeBaseUrl(input.baseUrl)
+      return /^https?:\/\//i.test(baseUrl) && !existing.has(baseUrl)
+    })
+    if (!fresh.length) {
+      onNotice('这些皇片源已存在')
+      setImportingShuangkan(false)
+      return
+    }
+    update((d) => {
+      const next = [...d.shuangkanSources]
+      const urls = new Set(next.map((source) => source.baseUrl))
+      const added: ShuangkanSource[] = []
+      for (const input of fresh) {
+        const baseUrl = normalizeBaseUrl(input.baseUrl)
+        if (urls.has(baseUrl)) continue
+        urls.add(baseUrl)
+        added.push({
+          id: newShuangkanSourceId(baseUrl, [...next, ...added]),
+          name: input.name || vodHost(baseUrl),
+          baseUrl,
+          enabled: true,
+          testStatus: null,
+          testMsg: null,
+          testAt: 0
+        })
+      }
+      return { ...d, shuangkanSources: [...next, ...added] }
+    })
+    onNotice(`已导入 ${fresh.length} 个皇片源`)
+    setImportingShuangkan(false)
+  }
+
+  const exportShuangkan = async (): Promise<void> => {
+    const rows = data.shuangkanSources.map((source) => ({
+      id: source.id,
+      name: source.name,
+      baseUrl: source.baseUrl,
+      enabled: source.enabled
+    }))
+    if (!rows.length) {
+      onNotice('还没有可导出的皇片源')
+      return
+    }
+    const res = await window.laozheng.exportShuangkanSources(rows)
+    if (res.canceled) return
+    if (res.error) {
+      onNotice(`导出失败：${res.error}`)
+      return
+    }
+    onNotice(`已导出 ${res.count ?? 0} 个皇片源到 ${res.path}`)
+  }
+
+  const removeShuangkanSource = () => {
+    if (!deletingShuangkan) return
+    update((d) => ({
+      ...d,
+      shuangkanSources: d.shuangkanSources.filter(
+        (source) => source.id !== deletingShuangkan.id
+      )
+    }))
+    onNotice(`已删除皇片源「${deletingShuangkan.name}」`)
+    setDeletingShuangkan(null)
+  }
+
+  const shuangkanOk = data.shuangkanSources.filter((s) => s.testStatus === 'ok').length
+  const shuangkanBad = data.shuangkanSources.filter(
+    (s) => !!s.testStatus && s.testStatus !== 'ok'
+  ).length
+  const shuangkanEnabled = data.shuangkanSources.filter((s) => s.enabled).length
+
   const livePlatformOk = data.livePlatformSources.filter((s) => s.testStatus === 'ok').length
   const livePlatformBad = data.livePlatformSources.filter(
     (s) => !!s.testStatus && s.testStatus !== 'ok'
@@ -2780,93 +3057,6 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                   className="icon-btn danger"
                   title="删除"
                   onClick={() => setDeletingDrama(source)}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </SourceCard>
-
-      <SourceCard
-        title="音乐源"
-        summary={sourceSummary(
-          data.musicSources.length,
-          musicEnabled,
-          musicOk,
-          musicBad
-        )}
-        open={musicOpen}
-        onToggle={() => setMusicOpen((value) => !value)}
-      >
-        <div className="settings-row" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <button className="btn primary" onClick={() => setEditingMusic('new')}>
-            <Plus size={15} /> 添加源
-          </button>
-          <button className="btn" onClick={() => setImportingMusic(true)}>
-            <Upload size={15} /> 批量导入
-          </button>
-          <button
-            className="btn"
-            disabled={testingMusicAll || data.musicSources.length === 0}
-            onClick={() => void testAllMusic()}
-          >
-            <RefreshCw size={15} /> {testingMusicAll ? '测试中…' : '整体测试'}
-          </button>
-          <button
-            className="btn"
-            disabled={data.musicSources.length === 0}
-            onClick={() => void exportMusic()}
-          >
-            <Download size={15} /> 导出
-          </button>
-        </div>
-
-        {data.musicSources.length === 0 ? (
-          <div className="settings-hint" style={{ marginTop: 12 }}>
-            还没有音乐源，点「添加源」。
-          </div>
-        ) : (
-          <div className="rows" style={{ marginTop: 10 }}>
-            {data.musicSources.map((source) => (
-              <div key={source.id} className="row">
-                <span
-                  className={`status-dot ${
-                    !source.enabled
-                      ? 'off'
-                      : source.testStatus
-                        ? source.testStatus === 'ok'
-                          ? 'ok'
-                          : 'warn'
-                        : ''
-                  }`}
-                />
-                <div className="row-main">
-                  <div className="row-title">{source.name}</div>
-                  <div className="row-meta">{vodHost(source.baseUrl)}</div>
-                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
-                </div>
-                <button
-                  className="btn"
-                  disabled={testingMusicId === source.id}
-                  onClick={() => void testMusic(source)}
-                >
-                  <RefreshCw size={14} /> {testingMusicId === source.id ? '测试中…' : '测试'}
-                </button>
-                <button
-                  className="btn"
-                  onClick={() => patchMusic(source.id, { enabled: !source.enabled })}
-                >
-                  {source.enabled ? '停用' : '启用'}
-                </button>
-                <button className="icon-btn" title="修改" onClick={() => setEditingMusic(source)}>
-                  <Pencil size={14} />
-                </button>
-                <button
-                  className="icon-btn danger"
-                  title="删除"
-                  onClick={() => setDeletingMusic(source)}
                 >
                   <Trash2 size={14} />
                 </button>
@@ -3054,50 +3244,47 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         )}
       </SourceCard>
 
-      {/* 磁力源并入片源管理，不再单独占配置管理入口 */}
-      <MagnetSettings key={magnetKey} onNotice={onNotice} />
-
       <SourceCard
-        title="补丁源"
+        title="音乐源"
         summary={sourceSummary(
-          data.trainerSources.length,
-          trainerEnabled,
-          trainerOk,
-          trainerBad
+          data.musicSources.length,
+          musicEnabled,
+          musicOk,
+          musicBad
         )}
-        open={trainerOpen}
-        onToggle={() => setTrainerOpen((value) => !value)}
+        open={musicOpen}
+        onToggle={() => setMusicOpen((value) => !value)}
       >
         <div className="settings-row" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <button className="btn primary" onClick={() => setEditingTrainer('new')}>
+          <button className="btn primary" onClick={() => setEditingMusic('new')}>
             <Plus size={15} /> 添加源
           </button>
-          <button className="btn" onClick={() => setImportingTrainer(true)}>
+          <button className="btn" onClick={() => setImportingMusic(true)}>
             <Upload size={15} /> 批量导入
           </button>
           <button
             className="btn"
-            disabled={testingTrainerAll || data.trainerSources.length === 0}
-            onClick={() => void testAllTrainer()}
+            disabled={testingMusicAll || data.musicSources.length === 0}
+            onClick={() => void testAllMusic()}
           >
-            <RefreshCw size={15} /> {testingTrainerAll ? '测试中…' : '整体测试'}
+            <RefreshCw size={15} /> {testingMusicAll ? '测试中…' : '整体测试'}
           </button>
           <button
             className="btn"
-            disabled={data.trainerSources.length === 0}
-            onClick={() => void exportTrainer()}
+            disabled={data.musicSources.length === 0}
+            onClick={() => void exportMusic()}
           >
             <Download size={15} /> 导出
           </button>
         </div>
 
-        {data.trainerSources.length === 0 ? (
+        {data.musicSources.length === 0 ? (
           <div className="settings-hint" style={{ marginTop: 12 }}>
-            还没有补丁源，点「添加源」。
+            还没有音乐源，点「添加源」。
           </div>
         ) : (
           <div className="rows" style={{ marginTop: 10 }}>
-            {data.trainerSources.map((source) => (
+            {data.musicSources.map((source) => (
               <div key={source.id} className="row">
                 <span
                   className={`status-dot ${
@@ -3117,28 +3304,124 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 </div>
                 <button
                   className="btn"
-                  disabled={testingTrainerId === source.id}
-                  onClick={() => void testTrainer(source)}
+                  disabled={testingMusicId === source.id}
+                  onClick={() => void testMusic(source)}
                 >
-                  <RefreshCw size={14} /> {testingTrainerId === source.id ? '测试中…' : '测试'}
+                  <RefreshCw size={14} /> {testingMusicId === source.id ? '测试中…' : '测试'}
                 </button>
                 <button
                   className="btn"
-                  onClick={() => patchTrainer(source.id, { enabled: !source.enabled })}
+                  onClick={() => patchMusic(source.id, { enabled: !source.enabled })}
                 >
                   {source.enabled ? '停用' : '启用'}
                 </button>
-                <button
-                  className="icon-btn"
-                  title="修改"
-                  onClick={() => setEditingTrainer(source)}
-                >
+                <button className="icon-btn" title="修改" onClick={() => setEditingMusic(source)}>
                   <Pencil size={14} />
                 </button>
                 <button
                   className="icon-btn danger"
                   title="删除"
-                  onClick={() => setDeletingTrainer(source)}
+                  onClick={() => setDeletingMusic(source)}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </SourceCard>
+
+      <SourceCard
+        title="漫画源"
+        summary={sourceSummary(data.comicSources.length, comicEnabled, comicOk, comicBad)}
+        open={comicOpen}
+        onToggle={() => setComicOpen((value) => !value)}
+      >
+        <div className="settings-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <button className="btn primary" onClick={() => setEditingComic('new')}>
+            <Plus size={15} /> 添加源
+          </button>
+          <button className="btn" onClick={() => setImportingComic(true)}>
+            <Upload size={15} /> 批量导入
+          </button>
+          <button
+            className="btn"
+            disabled={testingComicAll || data.comicSources.length === 0}
+            onClick={() => void testAllComic()}
+          >
+            <RefreshCw size={15} /> {testingComicAll ? '测试中…' : '整体测试'}
+          </button>
+          <button
+            className="btn"
+            disabled={data.comicSources.length === 0}
+            onClick={() => void exportComic()}
+          >
+            <Download size={15} /> 导出
+          </button>
+        </div>
+
+        {data.comicSources.length === 0 ? (
+          <div className="settings-hint" style={{ marginTop: 12 }}>
+            还没有漫画源，点「添加源」或「批量导入」。内置漫画客、Komiic、哔咔与头牌。
+          </div>
+        ) : (
+          <div className="rows" style={{ marginTop: 10 }}>
+            {data.comicSources.map((source) => (
+              <div key={source.id} className="row">
+                <span
+                  className={`status-dot ${
+                    !source.enabled
+                      ? 'off'
+                      : source.testStatus
+                        ? source.testStatus === 'ok'
+                          ? 'ok'
+                          : 'warn'
+                        : ''
+                  }`}
+                />
+                <div className="row-main">
+                  <div className="row-title">{source.name}</div>
+                  <div className="row-meta">
+                    {vodHost(source.baseUrl)} ·{' '}
+                    {source.template === 'komiic'
+                      ? 'Komiic 接口'
+                      : source.template === 'bikahub'
+                        ? '哔咔模板'
+                        : source.template === 'tptoon'
+                          ? '头牌模板'
+                          : source.template === 'jmcomic'
+                            ? '禁漫模板'
+                            : '漫画客模板'}
+                  </div>
+                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
+                </div>
+                <button
+                  className="btn"
+                  disabled={testingComicId === source.id}
+                  onClick={() => void testComic(source)}
+                >
+                  <RefreshCw size={14} /> {testingComicId === source.id ? '测试中…' : '测试'}
+                </button>
+                <button
+                  className="btn"
+                  onClick={() =>
+                    update((d) => ({
+                      ...d,
+                      comicSources: d.comicSources.map((item) =>
+                        item.id === source.id ? { ...item, enabled: !item.enabled } : item
+                      )
+                    }))
+                  }
+                >
+                  {source.enabled ? '停用' : '启用'}
+                </button>
+                <button className="icon-btn" title="修改" onClick={() => setEditingComic(source)}>
+                  <Pencil size={14} />
+                </button>
+                <button
+                  className="icon-btn danger"
+                  title="删除"
+                  onClick={() => setDeletingComic(source)}
                 >
                   <Trash2 size={14} />
                 </button>
@@ -3245,133 +3528,46 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       </SourceCard>
 
       <SourceCard
-        title="漫画源"
-        summary={sourceSummary(data.comicSources.length, comicEnabled, comicOk, comicBad)}
-        open={comicOpen}
-        onToggle={() => setComicOpen((value) => !value)}
-      >
-        <div className="settings-row" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <button className="btn primary" onClick={() => setEditingComic('new')}>
-            <Plus size={15} /> 添加源
-          </button>
-          <button className="btn" onClick={() => setImportingComic(true)}>
-            <Upload size={15} /> 批量导入
-          </button>
-          <button
-            className="btn"
-            disabled={testingComicAll || data.comicSources.length === 0}
-            onClick={() => void testAllComic()}
-          >
-            <RefreshCw size={15} /> {testingComicAll ? '测试中…' : '整体测试'}
-          </button>
-          <button
-            className="btn"
-            disabled={data.comicSources.length === 0}
-            onClick={() => void exportComic()}
-          >
-            <Download size={15} /> 导出
-          </button>
-        </div>
-
-        {data.comicSources.length === 0 ? (
-          <div className="settings-hint" style={{ marginTop: 12 }}>
-            还没有漫画源，点「添加源」或「批量导入」。内置漫画客与 Komiic。
-          </div>
-        ) : (
-          <div className="rows" style={{ marginTop: 10 }}>
-            {data.comicSources.map((source) => (
-              <div key={source.id} className="row">
-                <span
-                  className={`status-dot ${
-                    !source.enabled
-                      ? 'off'
-                      : source.testStatus
-                        ? source.testStatus === 'ok'
-                          ? 'ok'
-                          : 'warn'
-                        : ''
-                  }`}
-                />
-                <div className="row-main">
-                  <div className="row-title">{source.name}</div>
-                  <div className="row-meta">
-                    {vodHost(source.baseUrl)} ·{' '}
-                    {source.template === 'komiic' ? 'Komiic 接口' : '漫画客模板'}
-                  </div>
-                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
-                </div>
-                <button
-                  className="btn"
-                  disabled={testingComicId === source.id}
-                  onClick={() => void testComic(source)}
-                >
-                  <RefreshCw size={14} /> {testingComicId === source.id ? '测试中…' : '测试'}
-                </button>
-                <button
-                  className="btn"
-                  onClick={() =>
-                    update((d) => ({
-                      ...d,
-                      comicSources: d.comicSources.map((item) =>
-                        item.id === source.id ? { ...item, enabled: !item.enabled } : item
-                      )
-                    }))
-                  }
-                >
-                  {source.enabled ? '停用' : '启用'}
-                </button>
-                <button className="icon-btn" title="修改" onClick={() => setEditingComic(source)}>
-                  <Pencil size={14} />
-                </button>
-                <button
-                  className="icon-btn danger"
-                  title="删除"
-                  onClick={() => setDeletingComic(source)}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
+        title="补丁源"
+        summary={sourceSummary(
+          data.trainerSources.length,
+          trainerEnabled,
+          trainerOk,
+          trainerBad
         )}
-      </SourceCard>
-
-      <SourceCard
-        title="番号源"
-        summary={sourceSummary(data.h1Sources.length, h1Enabled, h1Ok, h1Bad)}
-        open={h1Open}
-        onToggle={() => setH1Open((value) => !value)}
+        open={trainerOpen}
+        onToggle={() => setTrainerOpen((value) => !value)}
       >
         <div className="settings-row" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <button className="btn primary" onClick={() => setEditingH1('new')}>
+          <button className="btn primary" onClick={() => setEditingTrainer('new')}>
             <Plus size={15} /> 添加源
           </button>
-          <button className="btn" onClick={() => setImportingH1(true)}>
+          <button className="btn" onClick={() => setImportingTrainer(true)}>
             <Upload size={15} /> 批量导入
           </button>
           <button
             className="btn"
-            disabled={testingH1All || data.h1Sources.length === 0}
-            onClick={() => void testAllH1()}
+            disabled={testingTrainerAll || data.trainerSources.length === 0}
+            onClick={() => void testAllTrainer()}
           >
-            <RefreshCw size={15} /> {testingH1All ? '测试中…' : '整体测试'}
+            <RefreshCw size={15} /> {testingTrainerAll ? '测试中…' : '整体测试'}
           </button>
           <button
             className="btn"
-            disabled={data.h1Sources.length === 0}
-            onClick={() => void exportH1()}
+            disabled={data.trainerSources.length === 0}
+            onClick={() => void exportTrainer()}
           >
             <Download size={15} /> 导出
           </button>
         </div>
 
-        {data.h1Sources.length === 0 ? (
+        {data.trainerSources.length === 0 ? (
           <div className="settings-hint" style={{ marginTop: 12 }}>
-            还没有番号源，点「添加源」或「批量导入」。
+            还没有补丁源，点「添加源」。
           </div>
         ) : (
           <div className="rows" style={{ marginTop: 10 }}>
-            {data.h1Sources.map((source) => (
+            {data.trainerSources.map((source) => (
               <div key={source.id} className="row">
                 <span
                   className={`status-dot ${
@@ -3391,24 +3587,28 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 </div>
                 <button
                   className="btn"
-                  disabled={testingH1Id === source.id}
-                  onClick={() => void testH1(source)}
+                  disabled={testingTrainerId === source.id}
+                  onClick={() => void testTrainer(source)}
                 >
-                  <RefreshCw size={14} /> {testingH1Id === source.id ? '测试中…' : '测试'}
+                  <RefreshCw size={14} /> {testingTrainerId === source.id ? '测试中…' : '测试'}
                 </button>
                 <button
                   className="btn"
-                  onClick={() => patchH1(source.id, { enabled: !source.enabled })}
+                  onClick={() => patchTrainer(source.id, { enabled: !source.enabled })}
                 >
                   {source.enabled ? '停用' : '启用'}
                 </button>
-                <button className="icon-btn" title="修改" onClick={() => setEditingH1(source)}>
+                <button
+                  className="icon-btn"
+                  title="修改"
+                  onClick={() => setEditingTrainer(source)}
+                >
                   <Pencil size={14} />
                 </button>
                 <button
                   className="icon-btn danger"
                   title="删除"
-                  onClick={() => setDeletingH1(source)}
+                  onClick={() => setDeletingTrainer(source)}
                 >
                   <Trash2 size={14} />
                 </button>
@@ -3417,6 +3617,9 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           </div>
         )}
       </SourceCard>
+
+      {/* 磁力源并入片源管理，不再单独占配置管理入口 */}
+      <MagnetSettings key={magnetKey} onNotice={onNotice} />
 
       <SourceCard
         title="壁纸源"
@@ -3504,6 +3707,188 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                   className="icon-btn danger"
                   title="删除"
                   onClick={() => setDeletingWallpaper(source)}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </SourceCard>
+
+      <SourceCard
+        title="套图源"
+        summary={sourceSummary(data.meituSources.length, meituEnabled, meituOk, meituBad)}
+        open={meituOpen}
+        onToggle={() => setMeituOpen((value) => !value)}
+      >
+        <div className="settings-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <button className="btn primary" onClick={() => setEditingMeitu('new')}>
+            <Plus size={15} /> 添加源
+          </button>
+          <button className="btn" onClick={() => setImportingMeitu(true)}>
+            <Upload size={15} /> 批量导入
+          </button>
+          <button
+            className="btn"
+            disabled={testingMeituAll || data.meituSources.length === 0}
+            onClick={() => void testAllMeitu()}
+          >
+            <RefreshCw size={15} /> {testingMeituAll ? '测试中…' : '整体测试'}
+          </button>
+          <button
+            className="btn"
+            disabled={data.meituSources.length === 0}
+            onClick={() => void exportMeitu()}
+          >
+            <Download size={15} /> 导出
+          </button>
+        </div>
+
+        {data.meituSources.length === 0 ? (
+          <EmptyState
+            title="还没有套图源"
+            desc="点「添加源」或「批量导入」；套图源支持魅影画廊 / 雪月映画 两种站点模板。"
+          />
+        ) : (
+          <div className="rows" style={{ marginTop: 10 }}>
+            {data.meituSources.map((source) => (
+              <div className="row" key={source.id}>
+                <span
+                  className={`status-dot ${
+                    source.enabled
+                      ? source.testStatus === 'ok'
+                        ? 'ok'
+                        : source.testStatus
+                          ? 'warn'
+                          : ''
+                      : 'off'
+                  }`}
+                />
+                <div className="row-main">
+                  <div className="row-title">{source.name}</div>
+                  <div className="row-meta">
+                    {vodHost(source.baseUrl)} · {meituTemplateLabel(source.template)}
+                  </div>
+                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
+                </div>
+                <button
+                  className="btn"
+                  disabled={testingMeituId === source.id}
+                  onClick={() => void testMeitu(source)}
+                >
+                  <RefreshCw size={14} /> {testingMeituId === source.id ? '测试中…' : '测试'}
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => patchMeitu(source.id, { enabled: !source.enabled })}
+                >
+                  {source.enabled ? '停用' : '启用'}
+                </button>
+                <button
+                  className="icon-btn"
+                  title="修改"
+                  onClick={() => setEditingMeitu(source)}
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
+                  className="icon-btn danger"
+                  title="删除"
+                  onClick={() => setDeletingMeitu(source)}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </SourceCard>
+
+      <SourceCard
+        title="皇片源"
+        summary={sourceSummary(
+          data.shuangkanSources.length,
+          shuangkanEnabled,
+          shuangkanOk,
+          shuangkanBad
+        )}
+        open={shuangkanOpen}
+        onToggle={() => setShuangkanOpen((value) => !value)}
+      >
+        <div className="settings-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+          <button className="btn primary" onClick={() => setEditingShuangkan('new')}>
+            <Plus size={15} /> 添加源
+          </button>
+          <button className="btn" onClick={() => setImportingShuangkan(true)}>
+            <Upload size={15} /> 批量导入
+          </button>
+          <button
+            className="btn"
+            disabled={testingShuangkanAll || data.shuangkanSources.length === 0}
+            onClick={() => void testAllShuangkan()}
+          >
+            <RefreshCw size={15} /> {testingShuangkanAll ? '测试中…' : '整体测试'}
+          </button>
+          <button
+            className="btn"
+            disabled={data.shuangkanSources.length === 0}
+            onClick={() => void exportShuangkan()}
+          >
+            <Download size={15} /> 导出
+          </button>
+        </div>
+
+        {data.shuangkanSources.length === 0 ? (
+          <EmptyState
+            title="还没有皇片源"
+            desc="点「添加源」填肉视频站点地址；内置肉视频源删掉后也可以随时加回来。"
+          />
+        ) : (
+          <div className="rows" style={{ marginTop: 10 }}>
+            {data.shuangkanSources.map((source) => (
+              <div className="row" key={source.id}>
+                <span
+                  className={`status-dot ${
+                    source.enabled
+                      ? source.testStatus === 'ok'
+                        ? 'ok'
+                        : source.testStatus
+                          ? 'warn'
+                          : ''
+                      : 'off'
+                  }`}
+                />
+                <div className="row-main">
+                  <div className="row-title">{source.name}</div>
+                  <div className="row-meta">{vodHost(source.baseUrl)}</div>
+                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
+                </div>
+                <button
+                  className="btn"
+                  disabled={testingShuangkanId === source.id}
+                  onClick={() => void testShuangkan(source)}
+                >
+                  <RefreshCw size={14} />{' '}
+                  {testingShuangkanId === source.id ? '测试中…' : '测试'}
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => patchShuangkan(source.id, { enabled: !source.enabled })}
+                >
+                  {source.enabled ? '停用' : '启用'}
+                </button>
+                <button
+                  className="icon-btn"
+                  title="修改"
+                  onClick={() => setEditingShuangkan(source)}
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
+                  className="icon-btn danger"
+                  title="删除"
+                  onClick={() => setDeletingShuangkan(source)}
                 >
                   <Trash2 size={14} />
                 </button>
@@ -3618,7 +4003,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       {importingComic && (
         <ImportModal
           title="批量导入漫画源"
-          hint="支持每行一个「名称|站点地址」，或 JSON 数组；地址含 komiic.com 时按 Komiic 接口处理，其余按漫画客模板处理。"
+          hint="支持每行一个「名称|站点地址」，或 JSON 数组；地址含 komiic.com 时按 Komiic 接口处理，含 bikahub.net / bikago.net / dojqybrcm.com 时按哔咔模板处理，含 tptoon.net / tpmh*.com 时按头牌模板处理，含 18comic / jmcomic / 18mj 时按禁漫模板处理，其余按漫画客模板处理。"
           onClose={() => setImportingComic(false)}
           onImport={importComicSources}
         />
@@ -3677,35 +4062,6 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           danger
           onConfirm={removeMusicSource}
           onCancel={() => setDeletingMusic(null)}
-        />
-      )}
-
-      {importingH1 && (
-        <ImportModal
-          title="批量导入番号源"
-          hint="支持每行一个「名称|接口地址」，或 KVideo 订阅 JSON。番号源使用苹果CMS V10 接口。"
-          onClose={() => setImportingH1(false)}
-          onImport={importH1Sources}
-          onBuiltin={() => importH1Sources(DEFAULT_H1_SOURCES.map(toInput))}
-        />
-      )}
-
-      {editingH1 && (
-        <SourceEditModal
-          source={editingH1 === 'new' ? null : editingH1}
-          onClose={() => setEditingH1(null)}
-          onSave={saveH1Source}
-        />
-      )}
-
-      {deletingH1 && (
-        <ConfirmDialog
-          title="删除番号源"
-          message={`确定删除「${deletingH1.name}」吗？只影响本机番号源配置。`}
-          confirmText="删除"
-          danger
-          onConfirm={removeH1Source}
-          onCancel={() => setDeletingH1(null)}
         />
       )}
 
@@ -3787,6 +4143,62 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           danger
           onConfirm={removeWallpaperSource}
           onCancel={() => setDeletingWallpaper(null)}
+        />
+      )}
+
+      {editingMeitu && (
+        <MeituSourceModal
+          source={editingMeitu === 'new' ? null : editingMeitu}
+          onClose={() => setEditingMeitu(null)}
+          onSave={saveMeituSource}
+        />
+      )}
+
+      {importingMeitu && (
+        <ImportModal
+          title="批量导入套图源"
+          hint="支持每行一个「名称|站点地址」，或 JSON 数组。只支持魅影画廊（jb9.es）和雪月映画（taoo.xyz）两种站点模板，其它地址会自动跳过。"
+          onClose={() => setImportingMeitu(false)}
+          onImport={importMeituSources}
+        />
+      )}
+
+      {deletingMeitu && (
+        <ConfirmDialog
+          title="删除套图源"
+          message={`确定删除「${deletingMeitu.name}」吗？只影响本机套图源配置。`}
+          confirmText="删除"
+          danger
+          onConfirm={removeMeituSource}
+          onCancel={() => setDeletingMeitu(null)}
+        />
+      )}
+
+      {importingShuangkan && (
+        <ImportModal
+          title="批量导入皇片源"
+          hint="支持每行一个「名称|站点地址」，或导出后的 JSON。站点地址形如 https://rou07.net。"
+          onClose={() => setImportingShuangkan(false)}
+          onImport={importShuangkanSources}
+        />
+      )}
+
+      {editingShuangkan && (
+        <ShuangkanSourceModal
+          source={editingShuangkan === 'new' ? null : editingShuangkan}
+          onClose={() => setEditingShuangkan(null)}
+          onSave={saveShuangkanSource}
+        />
+      )}
+
+      {deletingShuangkan && (
+        <ConfirmDialog
+          title="删除皇片源"
+          message={`确定删除「${deletingShuangkan.name}」吗？只影响本机皇片源配置。`}
+          confirmText="删除"
+          danger
+          onConfirm={removeShuangkanSource}
+          onCancel={() => setDeletingShuangkan(null)}
         />
       )}
     </div>
@@ -3881,6 +4293,156 @@ function WallpaperSourceModal({
       </div>
       <p className="settings-hint" style={{ marginTop: 10 }}>
         壁纸源按站点模板解析页面；同一模板可以添加镜像地址，修改地址后建议重新测试一次。
+      </p>
+    </Modal>
+  )
+}
+
+function MeituSourceModal({
+  source,
+  onClose,
+  onSave
+}: {
+  source: MeituSource | null
+  onClose: () => void
+  onSave: (input: MeituSourceInput) => void
+}) {
+  const [template, setTemplate] = useState<MeituSourceTemplate>(source?.template ?? 'jb9')
+  const [name, setName] = useState(source?.name ?? MEITU_SOURCE_TEMPLATES[0].name)
+  const [baseUrl, setBaseUrl] = useState(
+    source?.baseUrl ?? MEITU_SOURCE_TEMPLATES[0].homepage
+  )
+  const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
+  const info = MEITU_SOURCE_TEMPLATES.find((entry) => entry.id === template)
+
+  const pickTemplate = (next: MeituSourceTemplate) => {
+    const prev = MEITU_SOURCE_TEMPLATES.find((entry) => entry.id === template)
+    const target = MEITU_SOURCE_TEMPLATES.find((entry) => entry.id === next)
+    if (!target) return
+    setTemplate(next)
+    // 没改过默认名称 / 地址时跟着模板走
+    if (!name.trim() || (prev && name.trim() === prev.name)) setName(target.name)
+    if (!baseUrl.trim() || (prev && baseUrl.trim() === prev.homepage)) setBaseUrl(target.homepage)
+  }
+
+  return (
+    <Modal
+      title={source ? '修改套图源' : '添加套图源'}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn ghost" onClick={onClose}>
+            取消
+          </button>
+          <button
+            className="btn primary"
+            disabled={!valid}
+            onClick={() =>
+              onSave({
+                ...(source ? { id: source.id } : {}),
+                name: name.trim(),
+                baseUrl: baseUrl.trim(),
+                template
+              })
+            }
+          >
+            保存
+          </button>
+        </>
+      }
+    >
+      <div className="form-grid">
+        <label>
+          名称
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={info?.name ?? '套图源名称'}
+          />
+        </label>
+        <label>
+          站点模板
+          <select
+            value={template}
+            onChange={(e) => pickTemplate(e.target.value as MeituSourceTemplate)}
+          >
+            {MEITU_SOURCE_TEMPLATES.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          站点地址
+          <input
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder={info?.homepage ?? 'https://www.jb9.es'}
+          />
+        </label>
+      </div>
+      <p className="settings-hint" style={{ marginTop: 10 }}>
+        魅影画廊建议填入口地址 https://www.jb9.es（会自动选择可用线路），也可以直接填镜像站；雪月映画填 https://taoo.xyz。修改地址后建议重新测试一次。
+      </p>
+    </Modal>
+  )
+}
+
+function ShuangkanSourceModal({
+  source,
+  onClose,
+  onSave
+}: {
+  source: ShuangkanSource | null
+  onClose: () => void
+  onSave: (input: { id?: string; name: string; baseUrl: string }) => void
+}) {
+  const [name, setName] = useState(source?.name ?? '肉视频')
+  const [baseUrl, setBaseUrl] = useState(source?.baseUrl ?? SK_DEFAULT_BASE)
+  const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
+
+  return (
+    <Modal
+      title={source ? '修改皇片源' : '添加皇片源'}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn ghost" onClick={onClose}>
+            取消
+          </button>
+          <button
+            className="btn primary"
+            disabled={!valid}
+            onClick={() =>
+              onSave({
+                ...(source ? { id: source.id } : {}),
+                name: name.trim(),
+                baseUrl: baseUrl.trim()
+              })
+            }
+          >
+            保存
+          </button>
+        </>
+      }
+    >
+      <div className="form-grid">
+        <label>
+          名称
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="肉视频" />
+        </label>
+        <label>
+          站点地址
+          <input
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder={SK_DEFAULT_BASE}
+          />
+        </label>
+      </div>
+      <p className="settings-hint" style={{ marginTop: 10 }}>
+        皇片源按肉视频站点解析；可以添加镜像地址。地址失效时仍会自动到导航站换址。
       </p>
     </Modal>
   )
@@ -4148,11 +4710,14 @@ function ComicSourceModal({
           >
             <option value="yumanhua">漫画客</option>
             <option value="komiic">Komiic</option>
+            <option value="bikahub">哔咔漫画</option>
+            <option value="tptoon">头牌漫画</option>
+            <option value="jmcomic">禁漫天堂</option>
           </select>
         </label>
       </div>
       <p className="settings-hint" style={{ marginTop: 10 }}>
-        漫画客镜像填站点根地址；Komiic 使用官方接口，地址保留默认即可。添加后可点「测试」确认能否返回漫画列表。
+        漫画客 / 哔咔镜像填站点根地址；Komiic 使用官方接口，地址保留默认即可。哔咔站点打不开时会自动走 /go-home 防失联线路，禁漫天堂打不开时会自动从 x99dh.net 的「优选访问」里换可用线路。添加后可点「测试」确认能否返回漫画列表。
       </p>
     </Modal>
   )

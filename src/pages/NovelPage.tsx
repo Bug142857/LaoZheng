@@ -131,6 +131,8 @@ export function NovelPage({
   const [categoryId, setCategoryId] = useState('')
   const [categoryPage, setCategoryPage] = useState(1)
   const [categoryHasMore, setCategoryHasMore] = useState(false)
+  const [categoryTotalPages, setCategoryTotalPages] = useState(0)
+  const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({})
   const [keyword, setKeyword] = useState('')
   const [input, setInput] = useState('')
   const [page, setPage] = useState(1)
@@ -158,6 +160,26 @@ export function NovelPage({
   const categories = activeSource
     ? (NOVEL_SOURCE_CATEGORIES[activeSource.template] ?? [])
     : []
+  const categoryCountKey = activeSource
+    ? `${activeSource.id}|${activeSource.baseUrl}|${activeSource.template}`
+    : ''
+
+  // 哔咔书源分类数量：逐分类取第一页的 total（主进程缓存 10 分钟）
+  useEffect(() => {
+    setCategoryCounts({})
+    if (!activeSource || activeSource.template !== 'bikahub') return
+    let alive = true
+    void window.laozheng
+      .novelCategoryCounts(toInput(activeSource))
+      .then((res) => {
+        if (alive && res.ok) setCategoryCounts(res.counts)
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryCountKey])
   const detailSource =
     data.novelSources.find((source) => source.id === detailSourceId) ?? null
   const sourceOf = (item: NovelItem): NovelSource | null =>
@@ -299,6 +321,7 @@ export function NovelPage({
       if (!res.ok) {
         setItems([])
         setCategoryHasMore(false)
+        setCategoryTotalPages(0)
         setError(res.error ?? '加载失败')
         return
       }
@@ -310,6 +333,13 @@ export function NovelPage({
         }))
       )
       setCategoryHasMore(!!res.hasMore)
+      setCategoryTotalPages(
+        res.totalPages && res.totalPages > 0
+          ? res.totalPages
+          : res.hasMore
+            ? pageNum + 1
+            : pageNum
+      )
     } catch (err) {
       if (seq !== listSeq.current) return
       setLoading(false)
@@ -774,6 +804,20 @@ export function NovelPage({
             }}
             searching={loading && mode === 'search'}
             placeholder="搜索书名 / 作者…"
+            onRefresh={() => {
+              void window.laozheng.forceRefresh('novel').catch(() => {})
+              if (mode === 'search' && keyword) {
+                void doSearch(sourceId, keyword)
+                return
+              }
+              if (mode === 'category' && categoryId) {
+                void loadCategory(sourceId, categoryId, 1)
+                return
+              }
+              void loadHome(sourceId)
+            }}
+            refreshing={loading}
+            refreshDisabled={mode === 'search' && !keyword}
             leading={
               <select
                 className="select-inline"
@@ -813,6 +857,9 @@ export function NovelPage({
                         onClick={() => void loadCategory(sourceId, category.id, 1)}
                       >
                         {category.name}
+                        {categoryCounts[category.id] > 0 ? (
+                          <span className="chip-count">{categoryCounts[category.id]}</span>
+                        ) : null}
                       </button>
                     ))
                   : null}
@@ -910,7 +957,13 @@ export function NovelPage({
               {mode === 'category' ? (
                 <Pagination
                   page={categoryPage}
-                  lastPage={categoryHasMore ? categoryPage + 1 : categoryPage}
+                  lastPage={
+                    categoryTotalPages > 0
+                      ? categoryTotalPages
+                      : categoryHasMore
+                        ? categoryPage + 1
+                        : categoryPage
+                  }
                   hasMore={categoryHasMore}
                   showLast={false}
                   disabled={loading}

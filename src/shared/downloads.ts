@@ -1,4 +1,4 @@
-/** 下载管理共用类型（视频 / 音乐 / 漫画 / 图书 / 小说 / 壁纸 / 修改器 / 其他文件） */
+/** 下载管理共用类型（视频 / 音乐 / 漫画 / 图书 / 小说 / 壁纸 / 套图 / 修改器 / 其他文件） */
 
 export type DownloadKind =
   | 'video'
@@ -7,6 +7,7 @@ export type DownloadKind =
   | 'book'
   | 'novel'
   | 'wallpaper'
+  | 'meitu'
   | 'trainer'
   | 'file'
 
@@ -45,7 +46,8 @@ export interface DownloadTask {
   url: string
   sourceName: string
   coverUrl: string
-  state: 'running' | 'failed'
+  /** paused = 用户暂停，保留已下载内容，可继续 */
+  state: 'running' | 'paused' | 'failed'
   /** 0..1；-1 表示总量未知 */
   progress: number
   bytes: number
@@ -99,7 +101,7 @@ export interface DownloadReadResult {
 }
 
 /** 漫画 / 本子批量下载（整本或单章都是 chapters 数组） */
-export type ComicSource = 'komiic' | 'bika' | 'yumanhua'
+export type ComicSource = 'komiic' | 'bika' | 'yumanhua' | 'bikahub' | 'tptoon' | 'jmcomic'
 
 export interface ComicMetaInput {
   source: ComicSource

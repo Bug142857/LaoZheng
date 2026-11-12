@@ -1128,6 +1128,11 @@ export function WatchPage({
               }}
               searching={h1Loading}
               placeholder={`在 ${h1Source ? h1Source.name : '全部番号源'} 里搜索`}
+              onRefresh={() => {
+                void window.laozheng.forceRefresh('watch').catch(() => {})
+                void loadH1(1, h1Keyword, h1Type)
+              }}
+              refreshing={h1Loading}
               leading={
                 <select
                   className="select-inline"
@@ -1299,6 +1304,12 @@ export function WatchPage({
         }}
         searching={searching}
         placeholder="输入片名（可带年份，如 沙丘 2021）"
+        onRefresh={() => {
+          void window.laozheng.forceRefresh('watch').catch(() => {})
+          if (searched && keyword.trim()) void runSearch(keyword)
+          else void loadWatch(watchTab, 1)
+        }}
+        refreshing={searching || watchLoading}
         leading={
           <select
             className="select-inline"

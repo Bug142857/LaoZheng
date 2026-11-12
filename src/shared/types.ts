@@ -91,6 +91,15 @@ import type {
   MelonDetailResponse,
   MelonListResponse
 } from './melon'
+import type {
+  SkCatalogResponse,
+  SkContent,
+  SkDetailResponse,
+  SkPlayResponse,
+  SkSort,
+  ShuangkanSource,
+  ShuangkanSourceRef
+} from './shuangkan'
 import type { SyncActionResult, SyncConfigInput, SyncConfigView } from './sync'
 import type { UpdateCheckResult, UpdateDownloadResult, UpdateProgress } from './update'
 import type { AccountActionResult, AccountsView, AccountSite } from './accounts'
@@ -116,7 +125,13 @@ import type {
   YumanhuaListResponse
 } from './yumanhua'
 import type { ComicSource, ComicSourceInput } from './comicSources'
-import { DEFAULT_COMIC_SOURCES, normalizeComicSources } from './comicSources'
+import {
+  ADDED_COMIC_SOURCES,
+  DEFAULT_COMIC_SOURCES,
+  JMCOMIC_COMIC_SOURCE,
+  TPTOON_COMIC_SOURCE,
+  normalizeComicSources
+} from './comicSources'
 import type {
   GameCategoriesResponse,
   GameDetailResponse,
@@ -164,8 +179,16 @@ import type {
   NovelSourceInput,
   NovelTestResult
 } from './novel'
-import { ADDED_NOVEL_SOURCES, DEFAULT_NOVEL_SOURCES, normalizeNovelSources } from './novel'
+import {
+  ADDED_NOVEL_SOURCES,
+  BIKAHUB_NOVEL_SOURCE,
+  DEFAULT_NOVEL_SOURCES,
+  normalizeNovelSources
+} from './novel'
 import { DEFAULT_H1_SOURCES, normalizeH1Sources } from './h1'
+import type { BikahubCategoryCountsResponse } from './bikahub'
+import type { TptoonCategoryCountsResponse } from './tptoon'
+import type { JmcomicCategoryCountsResponse } from './jmcomic'
 import {
   DEFAULT_LIVE_PLATFORM_SOURCES,
   normalizeLivePlatformSources,
@@ -181,6 +204,16 @@ import type {
   WallpaperSourceTemplate
 } from './wallpaper'
 import { DEFAULT_WALLPAPER_SOURCES, normalizeWallpaperSources } from './wallpaper'
+import type {
+  MeituCategoriesResponse,
+  MeituDetailResponse,
+  MeituListResponse,
+  MeituSource,
+  MeituSourceRef,
+  MeituSourceTemplate
+} from './meitu'
+import { DEFAULT_MEITU_SOURCES, normalizeMeituSources } from './meitu'
+import { DEFAULT_SHUANGKAN_SOURCES, normalizeShuangkanSources } from './shuangkan'
 
 export interface CollectionItem {
   id: number
@@ -300,6 +333,10 @@ export interface AppData {
   livePlatformSources: LivePlatformSource[]
   /** 壁纸源（Wallspic / 壁纸迷站点模板），随备份与云同步一起走 */
   wallpaperSources: WallpaperSource[]
+  /** 美图源（魅影画廊 / 雪月映画），随备份与云同步一起走 */
+  meituSources: MeituSource[]
+  /** 爽看源（肉视频站点），随备份与云同步一起走 */
+  shuangkanSources: ShuangkanSource[]
 }
 
 export interface ImportResult {
@@ -372,6 +409,19 @@ export interface AllSourcesBundle {
     name: string
     baseUrl: string
     template: WallpaperSourceTemplate
+    enabled?: boolean
+  }[]
+  meituSources?: {
+    id?: string
+    name: string
+    baseUrl: string
+    template: MeituSourceTemplate
+    enabled?: boolean
+  }[]
+  shuangkanSources?: {
+    id?: string
+    name: string
+    baseUrl: string
     enabled?: boolean
   }[]
 }
@@ -479,6 +529,22 @@ export interface LaozhengApi {
     template: WallpaperSourceTemplate
     enabled?: boolean
   }[]) => Promise<SourcesExportResult>
+  /** 美图模块：列表 / 分类 / 图集详情 */
+  meituList: (
+    source: MeituSourceRef,
+    category: string,
+    page: number,
+    keyword: string
+  ) => Promise<MeituListResponse>
+  meituCategories: (source: MeituSourceRef) => Promise<MeituCategoriesResponse>
+  meituDetail: (source: MeituSourceRef, pageUrl: string) => Promise<MeituDetailResponse>
+  exportMeituSources: (sources: {
+    id?: string
+    name: string
+    baseUrl: string
+    template: MeituSourceTemplate
+    enabled?: boolean
+  }[]) => Promise<SourcesExportResult>
   searchVod: (source: VodSourceInput, keyword: string, year?: string) => Promise<VodSearchResponse>
   listVod: (
     source: VodSourceInput,
@@ -565,15 +631,23 @@ export interface LaozhengApi {
     lrc: string
   }) => Promise<MusicLyricsSaveResult>
   listDownloads: () => Promise<DownloadListResponse>
+  /** 刷新下载列表：清理本地已被手动删除的失效记录 */
+  refreshDownloads: () => Promise<{ removed: number; total: number }>
   addDownload: (input: DownloadAddInput) => Promise<DownloadAddResult>
   removeDownload: (id: string, deleteFile: boolean) => Promise<DownloadRemoveResult>
   cancelDownload: (id: string) => Promise<void>
+  /** 暂停下载：保留已下载内容 */
+  pauseDownload: (id: string) => Promise<void>
+  /** 继续已暂停的下载 */
+  resumeDownload: (id: string) => Promise<void>
   openDownloadsDir: (kind?: DownloadKind) => Promise<void>
   downloadRoot: () => Promise<string>
   chooseDownloadRoot: () => Promise<DownloadRootResult>
   changeDownloadRoot: (root: string, move: boolean) => Promise<DownloadChangeRootResult>
   cacheInfo: () => Promise<CacheInfo>
   clearCache: () => Promise<CacheClearResult>
+  /** 点标题 / 刷新按钮时让该模块的接口缓存短时间失效，直接取最新数据 */
+  forceRefresh: (scope: string) => Promise<{ ok: boolean }>
   /** 选择缓存目录；切换后旧目录的图片 / 接口缓存会被清空 */
   chooseCacheDir: () => Promise<CacheDirResult>
   getUiSettings: () => Promise<UiSettings>
@@ -601,6 +675,9 @@ export interface LaozhengApi {
     categoryId: string,
     page: number
   ) => Promise<NovelListResponse>
+  novelCategoryCounts: (
+    source: NovelSourceInput
+  ) => Promise<BikahubCategoryCountsResponse>
   novelDetail: (source: NovelSourceInput, bookId: string) => Promise<NovelDetailResponse>
   novelChapter: (
     source: NovelSourceInput,
@@ -643,6 +720,32 @@ export interface LaozhengApi {
   trackMelonImages: (urls: string[]) => Promise<void>
   melonImage: (url: string) => Promise<{ ok: boolean; dataUrl?: string; error?: string }>
   melonDuration: (url: string) => Promise<{ ok: boolean; seconds?: number; error?: string }>
+  shuangkanCatalog: (
+    source: ShuangkanSourceRef,
+    content: SkContent,
+    category: string,
+    page: number,
+    sort?: SkSort
+  ) => Promise<SkCatalogResponse>
+  shuangkanSearch: (
+    source: ShuangkanSourceRef,
+    content: SkContent,
+    keyword: string,
+    page: number
+  ) => Promise<SkCatalogResponse>
+  shuangkanDetail: (
+    source: ShuangkanSourceRef,
+    content: SkContent,
+    id: string
+  ) => Promise<SkDetailResponse>
+  shuangkanPlay: (source: ShuangkanSourceRef, id: string) => Promise<SkPlayResponse>
+  trackShuangkanImages: (urls: string[], baseUrl?: string) => Promise<void>
+  exportShuangkanSources: (sources: {
+    id?: string
+    name: string
+    baseUrl: string
+    enabled?: boolean
+  }[]) => Promise<SourcesExportResult>
   dramaCatalog: (
     source: DramaSourceInput,
     genre: string,
@@ -707,6 +810,96 @@ export interface LaozhengApi {
     chapterId: string,
     baseUrl?: string
   ) => Promise<YumanhuaImagesResponse>
+  bikahubComicRecent: (
+    baseUrl?: string,
+    sourceId?: string,
+    page?: number
+  ) => Promise<YumanhuaListResponse>
+  bikahubComicHot: (
+    baseUrl?: string,
+    sourceId?: string,
+    page?: number
+  ) => Promise<YumanhuaListResponse>
+  bikahubComicCategory: (
+    categoryId: string,
+    baseUrl?: string,
+    sourceId?: string,
+    page?: number
+  ) => Promise<YumanhuaListResponse>
+  bikahubComicCategoryCounts: (
+    baseUrl?: string
+  ) => Promise<BikahubCategoryCountsResponse>
+  bikahubComicSearch: (
+    keyword: string,
+    baseUrl?: string,
+    sourceId?: string
+  ) => Promise<YumanhuaListResponse>
+  bikahubComicDetail: (id: string, baseUrl?: string) => Promise<YumanhuaDetailResponse>
+  bikahubComicChapters: (id: string, baseUrl?: string) => Promise<YumanhuaChaptersResponse>
+  bikahubComicImages: (
+    comicId: string,
+    chapterId: string,
+    baseUrl?: string
+  ) => Promise<YumanhuaImagesResponse>
+  tptoonComicRecent: (
+    baseUrl?: string,
+    sourceId?: string,
+    page?: number
+  ) => Promise<YumanhuaListResponse>
+  tptoonComicHot: (
+    baseUrl?: string,
+    sourceId?: string,
+    page?: number
+  ) => Promise<YumanhuaListResponse>
+  tptoonComicCategory: (
+    categoryId: string,
+    baseUrl?: string,
+    sourceId?: string,
+    page?: number
+  ) => Promise<YumanhuaListResponse>
+  tptoonComicCategoryCounts: (baseUrl?: string) => Promise<TptoonCategoryCountsResponse>
+  tptoonComicSearch: (
+    keyword: string,
+    baseUrl?: string,
+    sourceId?: string
+  ) => Promise<YumanhuaListResponse>
+  tptoonComicDetail: (id: string, baseUrl?: string) => Promise<YumanhuaDetailResponse>
+  tptoonComicChapters: (id: string, baseUrl?: string) => Promise<YumanhuaChaptersResponse>
+  tptoonComicImages: (
+    comicId: string,
+    chapterId: string,
+    baseUrl?: string
+  ) => Promise<YumanhuaImagesResponse>
+  jmcomicRecent: (
+    baseUrl?: string,
+    sourceId?: string,
+    page?: number
+  ) => Promise<YumanhuaListResponse>
+  jmcomicHot: (
+    baseUrl?: string,
+    sourceId?: string,
+    page?: number
+  ) => Promise<YumanhuaListResponse>
+  jmcomicCategory: (
+    categoryId: string,
+    baseUrl?: string,
+    sourceId?: string,
+    page?: number
+  ) => Promise<YumanhuaListResponse>
+  jmcomicCategoryCounts: (baseUrl?: string) => Promise<JmcomicCategoryCountsResponse>
+  jmcomicSearch: (
+    keyword: string,
+    baseUrl?: string,
+    sourceId?: string,
+    page?: number
+  ) => Promise<YumanhuaListResponse>
+  jmcomicDetail: (id: string, baseUrl?: string) => Promise<YumanhuaDetailResponse>
+  jmcomicChapters: (id: string, baseUrl?: string) => Promise<YumanhuaChaptersResponse>
+  jmcomicImages: (
+    comicId: string,
+    chapterId: string,
+    baseUrl?: string
+  ) => Promise<YumanhuaImagesResponse>
   wygamerHome: (page: number) => Promise<GameListResponse>
   wygamerSearch: (keyword: string, page: number) => Promise<GameListResponse>
   wygamerByCategory: (categoryUrl: string, page: number) => Promise<GameListResponse>
@@ -749,7 +942,9 @@ export const EMPTY_DATA: AppData = {
   comicSources: DEFAULT_COMIC_SOURCES,
   h1Sources: DEFAULT_H1_SOURCES,
   livePlatformSources: DEFAULT_LIVE_PLATFORM_SOURCES,
-  wallpaperSources: DEFAULT_WALLPAPER_SOURCES
+  wallpaperSources: DEFAULT_WALLPAPER_SOURCES,
+  meituSources: DEFAULT_MEITU_SOURCES,
+  shuangkanSources: DEFAULT_SHUANGKAN_SOURCES
 }
 
 /**
@@ -764,16 +959,25 @@ function normalizeLists(raw: unknown): ItemList[] {
     .map((list) => (typeof list.parentId === 'number' ? list : { ...list, parentId: null }))
 }
 
+/**
+ * 数组字段兜底：备份 / data.json 可能被手工改坏，
+ * 数组里混入 null 时界面读取 id / name 会直接崩溃，这里统一丢掉非对象条目。
+ */
+function objectRows<T>(raw: unknown): T[] {
+  if (!Array.isArray(raw)) return []
+  return raw.filter((entry): entry is T => !!entry && typeof entry === 'object')
+}
+
 export function normalizeData(raw: unknown): AppData {
   const o = (raw ?? {}) as Partial<AppData>
   const out: AppData = {
     version: typeof o.version === 'number' ? o.version : 1,
     exportAt: o.exportAt,
-    items: Array.isArray(o.items) ? o.items : [],
+    items: objectRows<CollectionItem>(o.items),
     lists: normalizeLists(o.lists),
-    listItems: Array.isArray(o.listItems) ? o.listItems : [],
-    vodSources: Array.isArray(o.vodSources) ? o.vodSources : [],
-    innerFavs: Array.isArray(o.innerFavs) ? o.innerFavs : [],
+    listItems: objectRows<ListItem>(o.listItems),
+    vodSources: objectRows<VodSource>(o.vodSources),
+    innerFavs: objectRows<InnerFav>(o.innerFavs),
     readProgress: o.readProgress && typeof o.readProgress === 'object' ? o.readProgress : {},
     config: o.config && typeof o.config === 'object' ? o.config : {},
     liveFavorites: normalizeLiveFavorites(o.liveFavorites),
@@ -793,7 +997,11 @@ export function normalizeData(raw: unknown): AppData {
     // 平台直播源缺失时补 B站 / 斗鱼 / 抖音；已有配置以用户为准
     livePlatformSources: normalizeLivePlatformSources(o.livePlatformSources),
     // 壁纸源缺失时补 Wallspic / 壁纸迷；删空不补回
-    wallpaperSources: normalizeWallpaperSources(o.wallpaperSources)
+    wallpaperSources: normalizeWallpaperSources(o.wallpaperSources),
+    // 美图源缺失时补魅影画廊 / 雪月映画；删空不补回
+    meituSources: normalizeMeituSources(o.meituSources),
+    // 爽看源缺失时补内置肉视频；删空不补回
+    shuangkanSources: normalizeShuangkanSources(o.shuangkanSources)
   }
   // 2026-11-04 v0.85：按用户要求暂时下线「无损音乐」默认源，
   // 老数据里由 v0.83 自动补进来的内置 hi 源在这里移除（手动添加的同地址源 id 不同，不受影响）
@@ -857,6 +1065,51 @@ export function normalizeData(raw: unknown): AppData {
       }
     }
     out.config = { ...out.config, novelThirdSeeded: '1' }
+  }
+  // 2026-11-10：哔咔小说首次随老数据补进小说源；删除后不再自动加回
+  if (Array.isArray(o.novelSources) && out.config.bikahubNovelSeeded !== '1') {
+    if (o.novelSources.length > 0) {
+      const ids = new Set(o.novelSources.map((source) => source.id))
+      const urls = new Set(o.novelSources.map((source) => source.baseUrl))
+      if (!ids.has(BIKAHUB_NOVEL_SOURCE.id) && !urls.has(BIKAHUB_NOVEL_SOURCE.baseUrl)) {
+        out.novelSources.push({ ...BIKAHUB_NOVEL_SOURCE })
+      }
+    }
+    out.config = { ...out.config, bikahubNovelSeeded: '1' }
+  }
+  // 2026-11-10：哔咔漫画首次随老数据补进漫画源；删除后不再自动加回
+  if (Array.isArray(o.comicSources) && out.config.bikahubComicSeeded !== '1') {
+    if (o.comicSources.length > 0) {
+      const ids = new Set(o.comicSources.map((source) => source.id))
+      const urls = new Set(o.comicSources.map((source) => source.baseUrl))
+      for (const extra of ADDED_COMIC_SOURCES) {
+        if (ids.has(extra.id) || urls.has(extra.baseUrl)) continue
+        out.comicSources.push({ ...extra })
+      }
+    }
+    out.config = { ...out.config, bikahubComicSeeded: '1' }
+  }
+  // 2026-11-10 v0.113：头牌漫画首次随老数据补进漫画源；删除后不再自动加回
+  if (Array.isArray(o.comicSources) && out.config.tptoonComicSeeded !== '1') {
+    if (o.comicSources.length > 0) {
+      const ids = new Set(o.comicSources.map((source) => source.id))
+      const urls = new Set(o.comicSources.map((source) => source.baseUrl))
+      if (!ids.has(TPTOON_COMIC_SOURCE.id) && !urls.has(TPTOON_COMIC_SOURCE.baseUrl)) {
+        out.comicSources.push({ ...TPTOON_COMIC_SOURCE })
+      }
+    }
+    out.config = { ...out.config, tptoonComicSeeded: '1' }
+  }
+  // 2026-11-10 v0.115：禁漫天堂首次随老数据补进漫画源；删除后不再自动加回
+  if (Array.isArray(o.comicSources) && out.config.jmcomicComicSeeded !== '1') {
+    if (o.comicSources.length > 0) {
+      const ids = new Set(o.comicSources.map((source) => source.id))
+      const urls = new Set(o.comicSources.map((source) => source.baseUrl))
+      if (!ids.has(JMCOMIC_COMIC_SOURCE.id) && !urls.has(JMCOMIC_COMIC_SOURCE.baseUrl)) {
+        out.comicSources.push({ ...JMCOMIC_COMIC_SOURCE })
+      }
+    }
+    out.config = { ...out.config, jmcomicComicSeeded: '1' }
   }
   // PC 端扩展字段：只有备份里真的存在才带上，缺失时保持 undefined（导入时保留本机原值）
   if (Array.isArray(o.liveSources)) out.liveSources = o.liveSources as LiveSource[]

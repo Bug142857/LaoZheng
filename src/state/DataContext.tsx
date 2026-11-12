@@ -98,6 +98,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
       }
       // 模块列表缓存不会随备份走：数据换了之后旧缓存可能指向已删除的源，直接清掉
       clearModuleCaches()
+      // 常驻挂载的模块页还持有旧源的列表 / 详情状态，广播出去让 App 重新挂载它们
+      window.dispatchEvent(new CustomEvent('laozheng:data-replaced'))
       dataRef.current = next
       dirtyRef.current = true
       setData(next)

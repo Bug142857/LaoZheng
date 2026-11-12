@@ -463,6 +463,12 @@ export function SearchPage({
           setWarning(null)
         }}
         searching={loading}
+        onRefresh={() => {
+          void window.laozheng.forceRefresh('search').catch(() => {})
+          void runSearch()
+        }}
+        refreshing={loading}
+        refreshDisabled={!query.trim()}
         leading={
           <select
             className="select-inline"

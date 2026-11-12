@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ChevronDown, ChevronUp, Download, X } from 'lucide-react'
+import { ChevronDown, ChevronUp, Download, Pause, Play, X } from 'lucide-react'
 import { ConfirmDialog } from './ui'
 import { DOWNLOAD_REQUEST_EVENT } from '../utils/download'
 import { formatBytes, type DownloadAddInput, type DownloadTask } from '../shared/downloads'
@@ -64,6 +64,16 @@ export function DownloadCenter({
     void refresh()
   }
 
+  const pause = async (task: DownloadTask) => {
+    await window.laozheng.pauseDownload(task.id)
+    void refresh()
+  }
+
+  const resume = async (task: DownloadTask) => {
+    await window.laozheng.resumeDownload(task.id)
+    void refresh()
+  }
+
   const running = tasks.filter((t) => t.state === 'running').length
 
   return (
@@ -115,11 +125,13 @@ export function DownloadCenter({
                   <div className="download-float-meta">
                     {task.state === 'failed'
                       ? `失败：${task.error ?? '未知错误'}`
-                      : task.progress >= 0
-                        ? `${Math.round(task.progress * 100)}%`
-                        : formatBytes(task.bytes)}
+                      : task.state === 'paused'
+                        ? `已暂停${task.progress >= 0 ? ` · ${Math.round(task.progress * 100)}%` : ''}`
+                        : task.progress >= 0
+                          ? `${Math.round(task.progress * 100)}%`
+                          : formatBytes(task.bytes)}
                   </div>
-                  {task.state === 'running' ? (
+                  {task.state !== 'failed' ? (
                     <div className="progress">
                       <span
                         style={{
@@ -128,6 +140,16 @@ export function DownloadCenter({
                         }}
                       />
                     </div>
+                  ) : null}
+                  {task.state === 'running' ? (
+                    <button className="icon-btn" title="暂停下载" onClick={() => void pause(task)}>
+                      <Pause size={13} />
+                    </button>
+                  ) : null}
+                  {task.state === 'paused' ? (
+                    <button className="icon-btn" title="继续下载" onClick={() => void resume(task)}>
+                      <Play size={13} />
+                    </button>
                   ) : null}
                   <button
                     className="icon-btn danger"

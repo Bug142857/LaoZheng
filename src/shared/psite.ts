@@ -19,6 +19,8 @@ export interface PListResponse {
   ok: boolean
   items: PVideo[]
   lastPage: number
+  /** 用页面内嵌的结果总数算出的总页数；取不到时为 0 */
+  totalPages?: number
   /** 站点分页只显示附近几页，不能只看 lastPage 判断是否到底 */
   hasMore: boolean
   error?: string

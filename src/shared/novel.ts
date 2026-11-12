@@ -4,6 +4,8 @@
  * 小说源随 data.json 备份与云同步一起走；手机端会忽略该字段。
  */
 
+import { BIKAHUB_NOVEL_CATEGORIES } from './bikahub'
+
 export type NovelSourceTemplate =
   | 'bqg70'
   | 'bqg52'
@@ -19,6 +21,7 @@ export type NovelSourceTemplate =
   | 'zuizhong'
   | 'banshanren'
   | 'shenpinwu'
+  | 'bikahub'
 
 export const NOVEL_SOURCE_TEMPLATES: NovelSourceTemplate[] = [
   'bqg70',
@@ -34,7 +37,8 @@ export const NOVEL_SOURCE_TEMPLATES: NovelSourceTemplate[] = [
   'bqquge',
   'zuizhong',
   'banshanren',
-  'shenpinwu'
+  'shenpinwu',
+  'bikahub'
 ]
 
 /** 新建 / 编辑书源时可选的模板；bqg70 / bqg52 / biqugeco / xyuzhaiwu 已下线，仅保留旧数据解析兼容 */
@@ -47,7 +51,8 @@ export const NOVEL_SOURCE_TEMPLATE_OPTIONS: NovelSourceTemplate[] = [
   'ajnnan',
   'bqquge',
   'zuizhong',
-  'banshanren'
+  'banshanren',
+  'bikahub'
 ]
 
 export const NOVEL_SOURCE_TEMPLATE_LABEL: Record<NovelSourceTemplate, string> = {
@@ -64,7 +69,8 @@ export const NOVEL_SOURCE_TEMPLATE_LABEL: Record<NovelSourceTemplate, string> = 
   bqquge: '笔趣阁（bqquge）',
   zuizhong: '最终小说网（zuizhong）',
   banshanren: '搬山人小说网',
-  shenpinwu: '神书网（shenpinwu）'
+  shenpinwu: '神书网（shenpinwu）',
+  bikahub: '哔咔小说（bikahub）'
 }
 
 export interface NovelCategory {
@@ -149,7 +155,8 @@ export const NOVEL_SOURCE_CATEGORIES: Partial<Record<NovelSourceTemplate, NovelC
     { id: 'youxi', name: '游戏' },
     { id: 'nvsheng', name: '女生' },
     { id: 'qita', name: '其他' }
-  ]
+  ],
+  bikahub: BIKAHUB_NOVEL_CATEGORIES
 }
 
 export interface NovelSource {
@@ -174,6 +181,18 @@ export interface NovelSourceInput {
  * 内置书源：蚂蚁文学 + 九五小说 + 玄幻阁（后两个是 2026-11-04 从 Legado 合集里实测筛出的免费源）。
  * 新安装默认显示有效，之后手动测试会覆盖成真实结果。
  */
+/** 2026-11-10 新增：哔咔小说（bikahub.net，站点挂了会自动走 /go-home 防失联换址） */
+export const BIKAHUB_NOVEL_SOURCE: NovelSource = {
+  id: 'bikahub',
+  name: '哔咔小说',
+  baseUrl: 'https://bikahub.net',
+  template: 'bikahub',
+  enabled: true,
+  testStatus: 'ok',
+  testMsg: '可用',
+  testAt: 0
+}
+
 export const DEFAULT_NOVEL_SOURCES: NovelSource[] = [
   {
     id: 'mayi',
@@ -265,6 +284,7 @@ export const DEFAULT_NOVEL_SOURCES: NovelSource[] = [
     testMsg: '可用',
     testAt: 0
   },
+  { ...BIKAHUB_NOVEL_SOURCE }
 ]
 
 /** 后续新增的内置源：老数据首次加载时补一次，删除后不再自动加回 */
@@ -389,6 +409,10 @@ export interface NovelListResponse {
   error?: string
   /** 分类浏览时是否还有下一页（搜索 / 推荐不返回） */
   hasMore?: boolean
+  /** 分类浏览时的总条数（哔咔等能算出的源） */
+  total?: number
+  /** 分类浏览时的总页数（哔咔等能算出的源） */
+  totalPages?: number
 }
 
 export interface NovelChapter {

@@ -127,7 +127,8 @@ export function GamePage({
   }
 
   useEffect(() => {
-    if (!cache.loaded) void load(cache.mode, cache.categoryUrl, cache.query, cache.page)
+    // 有缓存也请求一次：点标题刷新会重挂载本页，但模块级缓存 loaded 仍是 true，不能靠它跳过请求
+    void load(cache.mode, cache.categoryUrl, cache.query, cache.page)
     if (!categoryCache.length) {
       void window.laozheng.wygamerCategories().then((res) => {
         if (!res.ok) return
@@ -419,6 +420,11 @@ export function GamePage({
         }}
         searching={loading && mode === 'search'}
         placeholder="搜索游戏关键词…"
+        onRefresh={() => {
+          void window.laozheng.forceRefresh('game').catch(() => {})
+          void load(mode, categoryUrl, query, page)
+        }}
+        refreshing={loading}
       />
 
       {!query && (

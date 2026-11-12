@@ -373,6 +373,9 @@ export function MagnetPage({
         }}
         searching={loading}
         placeholder="输入关键词，回车搜索"
+        onRefresh={() => void runSearch(1, false)}
+        refreshing={loading}
+        refreshDisabled={!keyword.trim()}
         leading={
           <select
             className="select-inline"

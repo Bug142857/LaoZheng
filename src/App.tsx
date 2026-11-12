@@ -6,13 +6,11 @@ import {
   type MouseEvent as ReactMouseEvent
 } from 'react'
 import {
-  BookHeart,
   BookOpen,
   BookText,
+  Camera,
   Clapperboard,
-  Film,
   Gamepad2,
-  Globe,
   Images,
   ListChecks,
   Magnet,
@@ -35,14 +33,13 @@ import { LivePage } from './pages/LivePage'
 import { LiveRoomsPage } from './pages/LiveRoomsPage'
 import { MusicPage } from './pages/MusicPage'
 import { DownloadsPage, type DownloadSection } from './pages/DownloadsPage'
-import { XSitePage } from './pages/XSitePage'
-import { PsitePage } from './pages/PsitePage'
-import { BikaPage } from './pages/BikaPage'
 import { ComicPage } from './pages/ComicPage'
 import { NovelPage, type NovelFocus } from './pages/NovelPage'
 import { GamePage } from './pages/GamePage'
 import { BookPage } from './pages/BookPage'
 import { MelonPage } from './pages/MelonPage'
+import { ShuangkanPage } from './pages/ShuangkanPage'
+import type { SkContent, ShuangkanFocus } from './shared/shuangkan'
 import { MagnetPage } from './pages/MagnetPage'
 import { ListsPage } from './pages/ListsPage'
 import { ListDetailPage } from './pages/ListDetailPage'
@@ -50,6 +47,7 @@ import { FavoritesPage } from './pages/FavoritesPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { SysInfoPage } from './pages/SysInfoPage'
 import { WallpaperPage } from './pages/WallpaperPage'
+import { MeituPage } from './pages/MeituPage'
 import { GameCheatPage, type GameCheatFocus } from './pages/GameCheatPage'
 import { EmptyState } from './components/ui'
 import { ImageViewer } from './components/ImageViewer'
@@ -59,7 +57,7 @@ import {
   MusicPlayerProvider
 } from './components/MusicPlayer'
 import { syncUiSettings } from './utils/theme'
-import { clearCache } from './utils/cache'
+import { clearCachePrefix } from './utils/cache'
 
 import type { InnerFav } from './shared/types'
 import type { LivePlatformId, LiveRoomFocus } from './shared/livePlatform'
@@ -69,6 +67,7 @@ import {
   type WallpaperFocus,
   type WallpaperItem
 } from './shared/wallpaper'
+import { parseMeituFavId, parseMeituFavPayload, type MeituFocus } from './shared/meitu'
 
 type Route =
   | { name: 'watch'; focus?: WatchFocus; searchTitle?: string }
@@ -76,13 +75,10 @@ type Route =
   | { name: 'live'; focusUrl?: string }
   | { name: 'liveRooms'; focus?: LiveRoomFocus }
   | { name: 'music'; focus?: FavFocus }
-  | { name: 'xsite'; focusId?: string }
-  | { name: 'psite'; focus?: FavFocus }
-  | { name: 'bika'; focusId?: string }
   | { name: 'comic'; focusId?: string }
   | { name: 'novel'; focus?: NovelFocus }
   | { name: 'melon'; focusId?: string }
-  | { name: 'h1'; focus?: WatchFocus }
+  | { name: 'shuangkan'; focus?: ShuangkanFocus }
   | { name: 'book'; focusId?: string }
   | { name: 'game'; focusId?: string }
   | { name: 'magnet'; searchTitle?: string }
@@ -92,6 +88,7 @@ type Route =
   | { name: 'downloads'; section?: DownloadSection }
   | { name: 'sysinfo' }
   | { name: 'wallpaper'; focus?: WallpaperFocus }
+  | { name: 'meitu'; focus?: MeituFocus }
   | { name: 'gamecheat'; focus?: GameCheatFocus }
   | { name: 'settings' }
 
@@ -109,8 +106,7 @@ interface NavItem {
     | 'lists'
     | 'watch'
     | 'drama'
-    | 'h1'
-    | 'bika'
+    | 'shuangkan'
     | 'comic'
     | 'novel'
     | 'game'
@@ -120,42 +116,37 @@ interface NavItem {
     | 'music'
     | 'melon'
     | 'magnet'
-    | 'xsite'
-    | 'psite'
     | 'sysinfo'
     | 'wallpaper'
+    | 'meitu'
     | 'gamecheat'
     | 'settings'
   label: string
   icon: LucideIcon
   ready: boolean
-  /** 需要外网环境的模块：导航项后显示「外网」小字 */
-  external?: boolean
 }
 
-/** 首页「电脑信息」不放在导航里，点顶部「老郑分享」进入 */
-const HOME_NAV_ITEM: NavItem = { key: 'sysinfo', label: '电脑信息', icon: MonitorCog, ready: true }
+/** 首页「硬件」不放在导航里，点顶部「老郑分享」进入 */
+const HOME_NAV_ITEM: NavItem = { key: 'sysinfo', label: '硬件', icon: MonitorCog, ready: true }
 
-/** 老郑分享：清单 → 影视 → 短剧 → 音乐 → 游戏 → 补丁 → 电视 → 吃瓜 → 小说 → 壁纸 → 漫画 / 本子 / 图书 → 外网模块 */
+/** 老郑分享：清单 → 影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 图书 → 游戏 → 补丁 → 磁力 → 壁纸 → 美图 → 吃瓜 → 皇片 */
 const NAV_ITEMS: NavItem[] = [
   { key: 'lists', label: '清单', icon: ListChecks, ready: true },
   { key: 'watch', label: '影视', icon: MonitorPlay, ready: true },
   { key: 'drama', label: '短剧', icon: Clapperboard, ready: true },
-  { key: 'music', label: '音乐', icon: Music, ready: true },
-  { key: 'game', label: '游戏', icon: Gamepad2, ready: true },
-  { key: 'gamecheat', label: '补丁', icon: Wand2, ready: true },
   { key: 'live', label: '电视', icon: Tv, ready: true },
   { key: 'liveRooms', label: '直播', icon: Radio, ready: true },
-  { key: 'melon', label: '吃瓜', icon: Popcorn, ready: true },
-  { key: 'magnet', label: '磁力', icon: Magnet, ready: true },
-  { key: 'novel', label: '小说', icon: BookText, ready: true },
-  { key: 'wallpaper', label: '壁纸', icon: Wallpaper, ready: true },
+  { key: 'music', label: '音乐', icon: Music, ready: true },
   { key: 'comic', label: '漫画', icon: Images, ready: true },
-  { key: 'bika', label: '本子', icon: BookHeart, ready: true, external: true },
-  { key: 'book', label: '图书', icon: BookOpen, ready: true, external: true },
-  { key: 'h1', label: '番号', icon: Film, ready: true, external: true },
-  { key: 'psite', label: 'P站', icon: PlayCircle, ready: true, external: true },
-  { key: 'xsite', label: 'X站', icon: Globe, ready: true, external: true }
+  { key: 'novel', label: '小说', icon: BookText, ready: true },
+  { key: 'book', label: '图书', icon: BookOpen, ready: true },
+  { key: 'game', label: '游戏', icon: Gamepad2, ready: true },
+  { key: 'gamecheat', label: '补丁', icon: Wand2, ready: true },
+  { key: 'magnet', label: '磁力', icon: Magnet, ready: true },
+  { key: 'wallpaper', label: '壁纸', icon: Wallpaper, ready: true },
+  { key: 'meitu', label: '套图', icon: Camera, ready: true },
+  { key: 'melon', label: '吃瓜', icon: Popcorn, ready: true },
+  { key: 'shuangkan', label: '皇片', icon: PlayCircle, ready: true }
 ]
 
 /** 设置固定在导航底部 */
@@ -198,10 +189,8 @@ function leafRoute(key: NavItem['key']): Route {
       return { name: 'watch' }
     case 'drama':
       return { name: 'drama' }
-    case 'h1':
-      return { name: 'h1' }
-    case 'bika':
-      return { name: 'bika' }
+    case 'shuangkan':
+      return { name: 'shuangkan' }
     case 'comic':
       return { name: 'comic' }
     case 'novel':
@@ -220,14 +209,12 @@ function leafRoute(key: NavItem['key']): Route {
       return { name: 'melon' }
     case 'magnet':
       return { name: 'magnet' }
-    case 'xsite':
-      return { name: 'xsite' }
-    case 'psite':
-      return { name: 'psite' }
     case 'sysinfo':
       return { name: 'sysinfo' }
     case 'wallpaper':
       return { name: 'wallpaper' }
+    case 'meitu':
+      return { name: 'meitu' }
     case 'gamecheat':
       return { name: 'gamecheat' }
     case 'settings':
@@ -252,7 +239,7 @@ const MODULE_SHORTCUTS: Record<string, ShortcutConfig> = {
   // 观影页只保留收藏入口，下载入口按用户要求移除
   watch: { fav: 'watch' },
   drama: { fav: 'drama', download: 'video' },
-  h1: { fav: 'h1', download: 'video' },
+  shuangkan: { fav: 'shuangkan', download: 'video' },
   live: { fav: 'tv' },
   liveRooms: { fav: 'live' },
   music: { fav: 'music', download: 'music' },
@@ -261,11 +248,30 @@ const MODULE_SHORTCUTS: Record<string, ShortcutConfig> = {
   book: { fav: 'book', download: 'book' },
   comic: { fav: 'comic', download: 'comic' },
   novel: { fav: 'novel', download: 'novel' },
-  bika: { fav: 'h2', download: 'h2' },
-  psite: { fav: 'psite', download: 'video' },
-  xsite: { fav: 'xsite', download: 'video' },
   gamecheat: { fav: 'trainer', download: 'trainer' },
-  wallpaper: { fav: 'wallpaper', download: 'wallpaper' }
+  wallpaper: { fav: 'wallpaper', download: 'wallpaper' },
+  meitu: { fav: 'meitu', download: 'meitu' }
+}
+
+/** 点标题回到默认页时要清掉的模块本地缓存前缀 */
+const MODULE_CACHE_PREFIXES: Record<string, string[]> = {
+  watch: ['h1_', 'watch_'],
+  drama: ['drama'],
+  shuangkan: ['shuangkan'],
+  comic: ['comic'],
+  novel: ['novel'],
+  melon: ['melon'],
+  game: ['game'],
+  book: ['book'],
+  wallpaper: ['wallpaper'],
+  meitu: ['meitu'],
+  psite: ['psite'],
+  xsite: ['xsite'],
+  search: ['search'],
+  gamecheat: ['cheat'],
+  music: ['music'],
+  live: ['live'],
+  liveRooms: ['liveRooms']
 }
 
 /** 收藏 payload 里保存的片源 / 条目信息（新版收藏才有） */
@@ -364,6 +370,34 @@ function parseNovelPayload(raw: string | null): NovelFavPayload {
   }
 }
 
+interface ShuangkanFavPayload {
+  sourceId?: string
+  sourceName?: string
+  baseUrl?: string
+  content?: string
+  id?: string
+  title?: string
+}
+
+function parseShuangkanPayload(raw: string | null): ShuangkanFavPayload {
+  if (!raw) return {}
+  try {
+    const value = JSON.parse(raw) as unknown
+    if (!value || typeof value !== 'object') return {}
+    const parsed = value as ShuangkanFavPayload
+    return {
+      sourceId: typeof parsed.sourceId === 'string' ? parsed.sourceId : undefined,
+      sourceName: typeof parsed.sourceName === 'string' ? parsed.sourceName : undefined,
+      baseUrl: typeof parsed.baseUrl === 'string' ? parsed.baseUrl : undefined,
+      content: typeof parsed.content === 'string' ? parsed.content : undefined,
+      id: typeof parsed.id === 'string' ? parsed.id : undefined,
+      title: typeof parsed.title === 'string' ? parsed.title : undefined
+    }
+  } catch {
+    return {}
+  }
+}
+
 interface TrainerFavPayload {
   url?: string
   sourceId?: string
@@ -394,6 +428,8 @@ function Shell() {
   const [navEpoch, setNavEpoch] = useState<Record<string, number>>({})
   /** 点页面标题时递增，用于让需要强制重取数据的页面（如电脑信息）区分普通进入与刷新 */
   const [refreshEpoch, setRefreshEpoch] = useState<Record<string, number>>({})
+  /** 导入备份 / 云恢复后递增：常驻挂载的模块页需要整页重挂载，避免继续用旧源数据 */
+  const [dataEpoch, setDataEpoch] = useState(0)
   /** 导航项拖动排序（存进本机设置，随备份 / 云同步走） */
   const [navOrder, setNavOrder] = useState<Record<string, string[]>>({})
   const navOrderRef = useRef<Record<string, string[]>>({})
@@ -461,6 +497,13 @@ function Shell() {
     return () => window.removeEventListener('laozheng:nav-order', onNavOrder)
   }, [])
 
+  // 导入 / 云恢复替换了数据：所有常驻挂载的模块页重新挂载，重新按新源加载
+  useEffect(() => {
+    const onDataReplaced = (): void => setDataEpoch((value) => value + 1)
+    window.addEventListener('laozheng:data-replaced', onDataReplaced)
+    return () => window.removeEventListener('laozheng:data-replaced', onDataReplaced)
+  }, [])
+
   useEffect(() => {
     if (!visited.includes(activeKey)) setVisited((prev) => [...prev, activeKey])
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -512,9 +555,6 @@ function Shell() {
       payload: fav.payload
     }
     switch (fav.module) {
-      case 'h2':
-        pushRoute({ name: 'bika', focusId: fav.id })
-        return
       case 'comic':
         pushRoute({ name: 'comic', focusId: fav.id })
         return
@@ -535,12 +575,6 @@ function Shell() {
         return
       case 'book':
         pushRoute({ name: 'book', focusId: fav.id })
-        return
-      case 'xsite':
-        pushRoute({ name: 'xsite', focusId: fav.id })
-        return
-      case 'psite':
-        pushRoute({ name: 'psite', focus: focus })
         return
       case 'melon':
         pushRoute({ name: 'melon', focusId: fav.id })
@@ -584,6 +618,41 @@ function Shell() {
           tags: payload?.tags ?? []
         }
         pushRoute({ name: 'wallpaper', focus: { item, at: Date.now() } })
+        return
+      }
+      case 'meitu': {
+        const payload = parseMeituFavPayload(fav.payload)
+        const parsed = parseMeituFavId(fav.id)
+        const source = payload?.source ?? parsed.source
+        if (!source || !payload) {
+          setNotice(`「${fav.title}」缺少套图信息，无法直接打开。`)
+          return
+        }
+        const sourceConfig = data.meituSources.find((entry) => entry.id === source)
+        if (!sourceConfig) {
+          setNotice(`「${fav.title}」的套图源已删除，无法直接打开。`)
+          return
+        }
+        if (!sourceConfig.enabled) {
+          setNotice(`「${fav.title}」的套图源已停用，请在片源管理里启用。`)
+          return
+        }
+        pushRoute({
+          name: 'meitu',
+          focus: {
+            album: {
+              source,
+              id: parsed.albumId || payload.title,
+              title: fav.title,
+              cover: payload.cover || fav.cover || '',
+              pageUrl: payload.pageUrl,
+              imageCount: payload.imageCount,
+              tags: payload.tags,
+              timeText: ''
+            },
+            at: Date.now()
+          }
+        })
         return
       }
       case 'trainer': {
@@ -637,6 +706,32 @@ function Shell() {
         })
         return
       }
+      case 'shuangkan': {
+        const payload = parseShuangkanPayload(fav.payload)
+        // 收藏 id 形如「源 id|内容库|条目 id」，旧收藏没有 payload 时用它兜底
+        const [idSource, idContent, ...rest] = fav.id.split('|')
+        const sourceId = payload.sourceId ?? idSource
+        const content: SkContent =
+          (payload.content ?? idContent) === 'series' ? 'series' : 'video'
+        const itemId = payload.id ?? rest.join('|')
+        if (!sourceId || !itemId) {
+          setNotice(`「${fav.title}」缺少皇片信息，无法直接打开。`)
+          return
+        }
+        pushRoute({
+          name: 'shuangkan',
+          focus: {
+            sourceId,
+            sourceName: payload.sourceName,
+            baseUrl: payload.baseUrl,
+            content,
+            id: itemId,
+            title: payload.title ?? fav.title,
+            at: Date.now()
+          }
+        })
+        return
+      }
       case 'drama': {
         const payload = parseDramaPayload(fav.payload)
         // 收藏 id 形如「源 id|剧集 id」，旧收藏没有 payload 时用它兜底
@@ -659,8 +754,7 @@ function Shell() {
         })
         return
       }
-      case 'watch':
-      case 'h1': {
+      case 'watch': {
         const payload = parseFavPayload(fav.payload)
         const watchFocus: WatchFocus = {
           url: fav.videoUrl ?? undefined,
@@ -671,11 +765,7 @@ function Shell() {
           vodId: payload.vodId ?? (fav.mediaId > 0 ? fav.mediaId : undefined),
           groupName: payload.groupName
         }
-        if (fav.module === 'h1') {
-          pushRoute({ name: 'h1', focus: watchFocus })
-        } else {
-          pushRoute({ name: 'watch', focus: watchFocus })
-        }
+        pushRoute({ name: 'watch', focus: watchFocus })
         return
       }
       default:
@@ -739,10 +829,9 @@ function Shell() {
       // 丢掉 focus / searchTitle 等入口参数，保留返回栈
       setStack((prev) => [...prev.slice(0, -1), leafRoute(activeNav as NavItem['key'])])
     }
-    if (activeKey === 'wallpaper') {
-      // 壁纸有源 / 设备 / 分类的浏览缓存，标题刷新时一并清掉，回到真正的默认页
-      clearCache('wallpaper2')
-    }
+    // 清掉当前模块的列表缓存并让接口缓存短时间失效，重新挂载后回到真正的默认页
+    for (const prefix of MODULE_CACHE_PREFIXES[activeKey] ?? []) clearCachePrefix(prefix)
+    void window.laozheng.forceRefresh(activeKey).catch(() => {})
     if (activeKey === 'magnet') {
       // 磁力搜索结果会写进 data，刷新时一并清掉，否则重新挂载又会恢复上次结果
       update((current) =>
@@ -773,7 +862,7 @@ function Shell() {
 
   const slot = (key: string) => ({
     // 点标题刷新时换 key，整页重新挂载，回到初始状态（搜索、结果、弹层等全部清空）
-    key: `${key}:${refreshEpoch[key] ?? 0}`,
+    key: `${key}:${refreshEpoch[key] ?? 0}:${dataEpoch}`,
     style: { display: (activeKey === key ? 'block' : 'none') as 'block' | 'none' },
     'data-page-slot': key
   })
@@ -827,11 +916,6 @@ function Shell() {
       >
         <Icon size={17} strokeWidth={1.9} />
         {item.label}
-        {item.external ? (
-          <span className="nav-suffix" title="需要外网环境">
-            外网
-          </span>
-        ) : null}
       </button>
     )
   }
@@ -844,8 +928,8 @@ function Shell() {
         <button
           className="sidebar-brand"
           onClick={() => openNav(HOME_NAV_ITEM)}
-          title="回到电脑信息首页"
-          aria-label="老郑分享，点击回到电脑信息首页"
+          title="回到硬件首页"
+          aria-label="老郑分享，点击回到硬件首页"
         >
           <span className="brand-mark">郑</span>
           <span className="brand-title">老郑分享</span>
@@ -883,15 +967,14 @@ function Shell() {
           </div>
         ) : null}
 
-        {shownKeys.includes('h1') ? (
-          <div {...slot('h1')}>
-            <WatchPage
-              variant={{ label: '番号' }}
-              focus={route.name === 'h1' ? route.focus : undefined}
-              resetSignal={navEpoch.h1}
+        {shownKeys.includes('shuangkan') ? (
+          <div {...slot('shuangkan')}>
+            <ShuangkanPage
               onNotice={setNotice}
+              resetSignal={navEpoch.shuangkan}
+              focus={route.name === 'shuangkan' ? route.focus : undefined}
               onExit={backRoute}
-              {...shortcuts('h1')}
+              {...shortcuts('shuangkan')}
             />
           </div>
         ) : null}
@@ -940,42 +1023,6 @@ function Shell() {
               resetSignal={navEpoch.music}
               onExit={backRoute}
               {...shortcuts('music')}
-            />
-          </div>
-        ) : null}
-
-        {shownKeys.includes('xsite') ? (
-          <div {...slot('xsite')}>
-            <XSitePage
-              onNotice={setNotice}
-              focusId={route.name === 'xsite' ? route.focusId : undefined}
-              resetSignal={navEpoch.xsite}
-              onExit={backRoute}
-              {...shortcuts('xsite')}
-            />
-          </div>
-        ) : null}
-
-        {shownKeys.includes('psite') ? (
-          <div {...slot('psite')}>
-            <PsitePage
-              onNotice={setNotice}
-              focus={route.name === 'psite' ? route.focus : undefined}
-              resetSignal={navEpoch.psite}
-              onExit={backRoute}
-              {...shortcuts('psite')}
-            />
-          </div>
-        ) : null}
-
-        {shownKeys.includes('bika') ? (
-          <div {...slot('bika')}>
-            <BikaPage
-              onNotice={setNotice}
-              focusId={route.name === 'bika' ? route.focusId : undefined}
-              resetSignal={navEpoch.bika}
-              onExit={backRoute}
-              {...shortcuts('bika')}
             />
           </div>
         ) : null}
@@ -1072,6 +1119,18 @@ function Shell() {
           </div>
         ) : null}
 
+        {shownKeys.includes('meitu') ? (
+          <div {...slot('meitu')}>
+            <MeituPage
+              onNotice={setNotice}
+              focus={route.name === 'meitu' ? route.focus : undefined}
+              resetSignal={navEpoch.meitu}
+              onExit={backRoute}
+              {...shortcuts('meitu')}
+            />
+          </div>
+        ) : null}
+
         {shownKeys.includes('gamecheat') ? (
           <div {...slot('gamecheat')}>
             <GameCheatPage
@@ -1102,7 +1161,7 @@ function Shell() {
 
         {route.name === 'list' ? (
           <ListDetailPage
-            key={`${activeKey}:${refreshEpoch[activeKey] ?? 0}`}
+            key={`${activeKey}:${refreshEpoch[activeKey] ?? 0}:${dataEpoch}`}
             listId={route.id}
             onBack={backRoute}
             onOpenList={(id) => pushRoute({ name: 'list', id })}
@@ -1114,7 +1173,7 @@ function Shell() {
 
         {route.name === 'favorites' ? (
           <FavoritesPage
-            key={`${activeKey}:${refreshEpoch[activeKey] ?? 0}`}
+            key={`${activeKey}:${refreshEpoch[activeKey] ?? 0}:${dataEpoch}`}
             onOpen={openFav}
             onBack={backRoute}
             onModuleChange={setFavoritesModule}
@@ -1126,7 +1185,7 @@ function Shell() {
 
         {route.name === 'downloads' ? (
           <DownloadsPage
-            key={`${activeKey}:${refreshEpoch[activeKey] ?? 0}`}
+            key={`${activeKey}:${refreshEpoch[activeKey] ?? 0}:${dataEpoch}`}
             onNotice={setNotice}
             onBack={backRoute}
             initialSection={route.section}

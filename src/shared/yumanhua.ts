@@ -48,6 +48,8 @@ export interface YumanhuaListResponse {
   items: YumanhuaComic[]
   error?: string
   hasMore?: boolean
+  /** 站点能算出的总页数（哔咔等分页源），没有时省略 */
+  totalPages?: number
 }
 
 export interface YumanhuaDetailResponse {

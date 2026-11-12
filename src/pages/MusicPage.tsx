@@ -414,6 +414,14 @@ export function MusicPage({
         }}
         searching={searching}
         placeholder="搜索歌曲名或歌手…"
+        onRefresh={() => {
+          if (keyword) {
+            void window.laozheng.forceRefresh('music').catch(() => {})
+            void doSearch(keyword, 1)
+          }
+        }}
+        refreshing={searching}
+        refreshDisabled={!keyword}
         leading={
           <select
             className="select-inline"

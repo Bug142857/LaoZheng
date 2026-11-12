@@ -24,6 +24,32 @@ const MEMORY_LIMIT = 400
 const memory = new Map<string, CacheEntry<unknown>>()
 /** 正在后台刷新的 key，避免同一接口被并发重复请求 */
 const refreshing = new Set<string>()
+/** 用户主动刷新时的临时绕过前缀：窗口期内命中的 key 直接重新请求 */
+const forced = new Map<string, number>()
+const FORCE_WINDOW_MS = 8_000
+
+/** 标记一批 key 前缀，在接下来几秒内跳过旧缓存、直接取最新数据（刷新按钮 / 点标题用） */
+export function forceApiCache(prefixes: string[]): void {
+  const until = Date.now() + FORCE_WINDOW_MS
+  for (const prefix of prefixes) {
+    const key = prefix.trim()
+    if (key) forced.set(key, until)
+  }
+}
+
+function isForced(key: string): boolean {
+  if (!forced.size) return false
+  const now = Date.now()
+  let matched = false
+  for (const [prefix, until] of forced) {
+    if (until <= now) {
+      forced.delete(prefix)
+      continue
+    }
+    if (key.startsWith(prefix)) matched = true
+  }
+  return matched
+}
 
 function dirOf(): string {
   return join(cacheRoot(), 'api-cache')
@@ -97,6 +123,21 @@ async function refreshNow<T>(key: string, load: () => Promise<T>, stale: T): Pro
   }
 }
 
+async function readCached<T>(key: string): Promise<T | null> {
+  const hit = memory.get(key)
+  if (hit && hit.value !== undefined) return hit.value as T
+  try {
+    const raw = JSON.parse(await readFile(fileOf(key), 'utf8')) as CacheEntry<T>
+    if (raw && typeof raw.at === 'number' && 'value' in raw && raw.value !== undefined) {
+      remember(key, raw)
+      return raw.value
+    }
+  } catch {
+    // 没有缓存或内容损坏
+  }
+  return null
+}
+
 /**
  * @param ttlMs     静默刷新间隔：超过后后台更新，本次仍立即返回旧数据
  * @param maxStaleMs 最长可容忍的旧数据（带播放直链的接口用）：超过后先刷新再返回，
@@ -109,6 +150,18 @@ export async function cachedResponse<T>(
   maxStaleMs = Number.POSITIVE_INFINITY
 ): Promise<T> {
   const now = Date.now()
+  // 用户刚点了刷新：这次必须拿新数据，失败时才退回旧缓存
+  if (isForced(key)) {
+    try {
+      const value = await load()
+      if (!isFailure(value)) await store(key, value)
+      return value
+    } catch (err) {
+      const cached = await readCached<T>(key)
+      if (cached !== null) return cached
+      throw err
+    }
+  }
   const hit = memory.get(key)
   if (hit) {
     const age = now - hit.at
@@ -140,4 +193,5 @@ export async function cachedResponse<T>(
 export function clearApiCacheMemory(): void {
   memory.clear()
   refreshing.clear()
+  forced.clear()
 }

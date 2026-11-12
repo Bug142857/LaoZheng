@@ -249,7 +249,12 @@ export function BookPage({
             <ChevronLeft size={15} /> 返回
           </button>
         ) : null}
-        <h1 className="page-title">图书</h1>
+        <h1 className="page-title">
+          图书{' '}
+          <span className="nav-suffix" title="需要外网环境">
+            外网
+          </span>
+        </h1>
         <div className="page-actions">
           <ModuleShortcuts onOpenFavorites={onOpenFavorites} onOpenDownloads={onOpenDownloads} />
         </div>
@@ -275,6 +280,14 @@ export function BookPage({
         }}
         searching={searching}
         placeholder="搜索书名 / 作者 / ISBN…"
+        onRefresh={() => {
+          if (keyword) {
+            void window.laozheng.forceRefresh('book').catch(() => {})
+            void doSearch(keyword, 1)
+          }
+        }}
+        refreshing={searching}
+        refreshDisabled={!keyword}
         extra={
           <span className="book-quota" title={quotaText}>
             {quotaText}

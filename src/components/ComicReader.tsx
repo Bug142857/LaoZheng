@@ -1,5 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Grid2X2, Images, RotateCcw, Rows3, ZoomIn, ZoomOut } from 'lucide-react'
+import {
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Grid2X2,
+  Images,
+  Loader2,
+  RotateCcw,
+  Rows3,
+  ZoomIn,
+  ZoomOut
+} from 'lucide-react'
 import { openImageZoom } from './ImageViewer'
 
 export type ReaderMode = 'vertical' | 'horizontal' | 'grid'
@@ -11,11 +22,32 @@ const MODE_OPTIONS: { key: ReaderMode; label: string; icon: typeof Rows3 }[] = [
 ]
 
 /** 漫画 / 本子阅读器：默认上下滑动，另有左右翻页（滚轮缩放）与网格总览 */
-export function ComicReader({ images }: { images: string[] }) {
-  const [mode, setMode] = useState<ReaderMode>('vertical')
+export function ComicReader({
+  images,
+  defaultMode = 'vertical',
+  onSaveImage
+}: {
+  images: string[]
+  /** 美图等场景直接以网格总览打开 */
+  defaultMode?: ReaderMode
+  /** 网格浏览时每张图右上角的下载按钮 */
+  onSaveImage?: (url: string, index: number) => void | Promise<void>
+}) {
+  const [mode, setMode] = useState<ReaderMode>(defaultMode)
   const [page, setPage] = useState(0)
   const [zoom, setZoom] = useState(1)
+  const [saving, setSaving] = useState<number | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
+
+  const saveImage = async (url: string, index: number) => {
+    if (!onSaveImage || saving !== null) return
+    setSaving(index)
+    try {
+      await onSaveImage(url, index)
+    } finally {
+      setSaving(null)
+    }
+  }
 
   useEffect(() => {
     setPage(0)
@@ -130,6 +162,23 @@ export function ComicReader({ images }: { images: string[] }) {
               onClick={() => openImageZoom(url, images)}
             >
               <img src={url} alt={`第 ${index + 1} 页`} loading="lazy" />
+              {onSaveImage ? (
+                <span
+                  className="reader-grid-dl"
+                  role="button"
+                  title="下载这张"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void saveImage(url, index)
+                  }}
+                >
+                  {saving === index ? (
+                    <Loader2 size={14} className="spin" />
+                  ) : (
+                    <Download size={14} />
+                  )}
+                </span>
+              ) : null}
               <span>{index + 1}</span>
             </button>
           ))}

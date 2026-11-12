@@ -364,6 +364,12 @@ export function XSitePage({
         onClear={clearTagSearch}
         placeholder="搜索标签（如 jk / 女高中生 / cosplay）"
         disabled={!categories.length}
+        onRefresh={() => {
+          void window.laozheng.forceRefresh('xsite').catch(() => {})
+          void load(range, category, 1)
+        }}
+        refreshing={loading}
+        refreshDisabled={!categories.length}
       />
 
       {tagMatches && tagMatches.length > 0 ? (

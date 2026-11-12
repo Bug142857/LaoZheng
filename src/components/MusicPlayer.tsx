@@ -211,6 +211,10 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
         const resolved = await resolveSongUrl(song)
         if (seq !== playSeqRef.current) return
         if (!resolved) {
+          // 解析失败时要把上一首停掉，否则播放条显示新歌、声音还是旧歌
+          audio.pause()
+          audio.removeAttribute('src')
+          audio.load()
           setError('没有解析到可用直链，换一首或稍后重试')
           setPlaying(false)
           return
@@ -233,6 +237,9 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
         }
       } catch {
         if (seq === playSeqRef.current) {
+          audio.pause()
+          audio.removeAttribute('src')
+          audio.load()
           setError('解析播放地址失败，换一首或稍后重试')
           setPlaying(false)
         }

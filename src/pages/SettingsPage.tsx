@@ -453,14 +453,16 @@ export function SettingsPage({
   const sourceTotal =
     data.vodSources.length +
     data.dramaSources.length +
+    data.musicSources.length +
     data.novelSources.length +
     data.comicSources.length +
-    data.h1Sources.length +
     data.livePlatformSources.length +
     liveCount +
     magnetCount +
     data.trainerSources.length +
-    data.wallpaperSources.length
+    data.wallpaperSources.length +
+    data.shuangkanSources.length +
+    data.meituSources.length
 
   const zlibHint = zlib
     ? zlib.loggedIn
@@ -489,7 +491,9 @@ export function SettingsPage({
               title="账号管理"
               hint={`豆瓣 ${douban?.loggedIn ? '已登录' : '未登录'} · Z-Library ${
                 zlib?.loggedIn ? '已登录' : '未登录'
-              } · 内置 ${accounts?.items.length ?? 0} 个站点`}
+              } · 内置 ${
+                accounts?.items.filter((item) => item.site !== 'bika').length ?? 0
+              } 个站点`}
               onClick={() => setSection('accounts')}
             />
             <SettingsEntry
@@ -513,7 +517,11 @@ export function SettingsPage({
             <SettingsEntry
               icon={Heart}
               title="收藏管理"
-              hint={`共 ${data.innerFavs.length + data.liveFavorites.length} 个收藏`}
+              hint={`共 ${
+                data.innerFavs.filter(
+                  (fav) => !['h2', 'h1', 'psite', 'xsite'].includes(fav.module)
+                ).length + data.liveFavorites.length
+              } 个收藏`}
               onClick={() => onOpenPage('favorites')}
             />
             <SettingsEntry
@@ -739,11 +747,11 @@ export function SettingsPage({
               <section className="settings-card">
                 <h3>内置账号</h3>
                 <p className="settings-hint">
-                  哔咔 / Komiic / 无忧三个站点的账号已加密保存在本机，启动时自动登录：哔咔与
-                  Komiic 静默换 token 并自动续期；无忧会自动完成滑块验证，并复用持久化会话。
+                  Komiic / 无忧两个站点的账号已加密保存在本机，启动时自动登录：Komiic
+                  静默换 token 并自动续期；无忧会自动完成滑块验证，并复用持久化会话。
                   账号密码不会出现在备份文件、日志或代码里。
                 </p>
-                {accounts?.items.map((item) => (
+                {accounts?.items.filter((item) => item.site !== 'bika').map((item) => (
                   <div className="account-row" key={item.site}>
                     <div className="account-main">
                       <div className="account-title">

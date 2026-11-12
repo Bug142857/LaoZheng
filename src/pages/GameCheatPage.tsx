@@ -555,6 +555,8 @@ export function GameCheatPage({
         onClear={clearSearch}
         placeholder="搜索游戏名（中英文均可）…"
         disabled={loading}
+        onRefresh={() => void load(sourceId, query, 1)}
+        refreshing={loading}
         leading={
           <select
             className="select-inline"

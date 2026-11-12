@@ -47,7 +47,8 @@ export function runPowerShell(script: string, timeoutMs = 30_000): Promise<strin
     })
     child.on('close', (code) => {
       clearTimeout(timer)
-      if (code === 0 && stdout.trim()) {
+      // Start-Process -Verb RunAs 成功时没有 stdout，退出码 0 就算成功
+      if (code === 0) {
         resolve(stdout)
         return
       }

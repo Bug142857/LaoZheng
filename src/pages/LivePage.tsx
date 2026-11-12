@@ -51,10 +51,10 @@ export function LivePage({
     setInput('')
   }
 
-  const loadChannels = async (source: LiveSource) => {
+  const loadChannels = async (source: LiveSource, force = false) => {
     setSelectedId(source.id)
     clearFilter()
-    if (cache[source.id] && !cache[source.id].error) return
+    if (!force && cache[source.id] && !cache[source.id].error) return
     setLoadingId(source.id)
     const res = await window.laozheng.loadLiveChannels(source)
     setCache((prev) => ({ ...prev, [source.id]: res }))
@@ -89,12 +89,20 @@ export function LivePage({
 
   useEffect(() => {
     let alive = true
-    window.laozheng.loadLiveSources().then((list) => {
-      if (!alive) return
-      setSources(list)
-      const enabled = list.filter((s) => s.enabled)
-      if (enabled.length) void loadAllChannels(enabled)
-    })
+    window.laozheng
+      .loadLiveSources()
+      .then((list) => {
+        if (!alive) return
+        setSources(list)
+        const enabled = list.filter((s) => s.enabled)
+        if (enabled.length) void loadAllChannels(enabled)
+      })
+      .catch(() => {
+        // 读取失败也要结束加载态，否则页面会一直停在「正在加载电视源…」
+        if (!alive) return
+        setSources([])
+        onNotice('读取电视源失败，请稍后重试')
+      })
     return () => {
       alive = false
     }
@@ -113,13 +121,20 @@ export function LivePage({
     if (resetSignal === undefined) return
     setPlaying(null)
     let alive = true
-    void window.laozheng.loadLiveSources().then((list) => {
-      if (!alive) return
-      setSources(list)
-      const enabled = list.filter((s) => s.enabled)
-      if (enabled.length) void loadAllChannels(enabled, true)
-      else setSelectedId('')
-    })
+    void window.laozheng
+      .loadLiveSources()
+      .then((list) => {
+        if (!alive) return
+        setSources(list)
+        const enabled = list.filter((s) => s.enabled)
+        if (enabled.length) void loadAllChannels(enabled, true)
+        else setSelectedId('')
+      })
+      .catch(() => {
+        if (!alive) return
+        setSources([])
+        onNotice('读取电视源失败，请稍后重试')
+      })
     return () => {
       alive = false
     }
@@ -272,6 +287,15 @@ export function LivePage({
             placeholder="搜索频道…"
             submitLabel="搜索"
             disabled={!channels.length}
+            onRefresh={() => {
+              void window.laozheng.forceRefresh('live').catch(() => {})
+              if (selectedId !== ALL_SOURCES_ID && current) {
+                void loadChannels(current, true)
+                return
+              }
+              void loadAllChannels(enabledSources, true)
+            }}
+            refreshing={!!loadingId}
             leading={
               <select
                 className="select-inline"

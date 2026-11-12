@@ -8,6 +8,7 @@ import { loadCache, saveCache } from '../utils/cache'
 import { requestDownload } from '../utils/download'
 import {
   XIFAN_DRAMA_SOURCE_ID,
+  isBuiltinDramaSource,
   type DramaCatalogResponse,
   type DramaCategory,
   type DramaDetail,
@@ -48,7 +49,7 @@ export interface DramaFocus {
 const FAV_MODULE = 'drama'
 
 function inputFor(source: DramaSource): DramaSourceInput | null {
-  if (source.id === XIFAN_DRAMA_SOURCE_ID) {
+  if (isBuiltinDramaSource(source.id)) {
     return {
       id: source.id,
       name: source.name,
@@ -60,7 +61,8 @@ function inputFor(source: DramaSource): DramaSourceInput | null {
 }
 
 function cacheKeyOf(scope: string): string {
-  return `drama_${scope || 'all'}`
+  // v2：分类缓存带上数量后重新缓存一次，避免旧缓存里没有数字
+  return `drama_v2_${scope || 'all'}`
 }
 
 function failedCatalog(page: number, error: string): DramaCatalogResponse {
@@ -90,7 +92,10 @@ export function DramaPage({
   const sources = data.dramaSources
 
   const available = useMemo(
-    () => sources.filter((source) => source.enabled && (source.id === XIFAN_DRAMA_SOURCE_ID || !!source.baseUrl)),
+    () =>
+      sources.filter(
+        (source) => source.enabled && (isBuiltinDramaSource(source.id) || !!source.baseUrl)
+      ),
     [sources]
   )
   const availableKey = available
@@ -120,6 +125,8 @@ export function DramaPage({
   const [playLoading, setPlayLoading] = useState(false)
   const seqRef = useRef(0)
   const detailSeqRef = useRef(0)
+  /** 只应用最后一次选集请求，快速连点两集时不播旧请求的那一集 */
+  const playSeqRef = useRef(0)
   const handledFocusRef = useRef('')
   /** 源地址 / 启停变化时强制重新拉列表，避免继续显示旧地址的缓存 */
   const lastAvailableKeyRef = useRef(availableKey)
@@ -266,6 +273,7 @@ export function DramaPage({
     if (resetSignal === undefined) return
     seqRef.current += 1
     detailSeqRef.current += 1
+    playSeqRef.current += 1
     setLoading(false)
     setError('')
     setDetail(null)
@@ -286,6 +294,7 @@ export function DramaPage({
     lastAvailableKeyRef.current = availableKey
     seqRef.current += 1
     detailSeqRef.current += 1
+    playSeqRef.current += 1
     setLoading(false)
     setDetail(null)
     setDetailSource(null)
@@ -307,13 +316,13 @@ export function DramaPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceId, availableKey])
 
-  // 分类数量：只有苹果CMS 源能拿到精确总数，西饭接口不返回总数就不显示
+  // 分类数量：只有苹果CMS 源能拿到精确总数，内置源接口不返回总数就不显示
   const countsKey = `${sourceId}|${categories.map((category) => category.slug).join('|')}`
   useEffect(() => {
     setGenreCounts({})
     const input = singleSource ? inputFor(singleSource) : null
     if (!input || !categories.length) return
-    if (singleSource?.id === XIFAN_DRAMA_SOURCE_ID) return
+    if (singleSource && isBuiltinDramaSource(singleSource.id)) return
     let alive = true
     const queue = [...categories.map((category) => category.slug)]
     const worker = async (): Promise<void> => {
@@ -343,6 +352,7 @@ export function DramaPage({
     seriesId: string
   ): Promise<void> => {
     const seq = ++detailSeqRef.current
+    playSeqRef.current += 1
     setDetailLoading(true)
     setPlaying(null)
     setError('')
@@ -387,7 +397,7 @@ export function DramaPage({
       id: focus.sourceId,
       name: focus.sourceName || configured?.name || '短剧',
       enabled: true,
-      builtin: focus.sourceId === XIFAN_DRAMA_SOURCE_ID,
+      builtin: isBuiltinDramaSource(focus.sourceId),
       ...(baseUrl ? { baseUrl } : {})
     }
     const input = inputFor(source)
@@ -407,9 +417,11 @@ export function DramaPage({
     }
     const input = inputFor(detailSource)
     if (!input) return
+    const seq = ++playSeqRef.current
     setPlayLoading(true)
     try {
       const res = await window.laozheng.dramaPlay(input, detail.seriesId, episode.id)
+      if (seq !== playSeqRef.current) return
       setPlayLoading(false)
       if (!res.ok || !res.url) {
         onNotice(res.error ?? '取播放地址失败')
@@ -417,6 +429,7 @@ export function DramaPage({
       }
       setPlaying({ episode, url: res.url })
     } catch (err) {
+      if (seq !== playSeqRef.current) return
       setPlayLoading(false)
       onNotice(`取播放地址失败：${(err as Error).message}`)
     }
@@ -424,6 +437,7 @@ export function DramaPage({
 
   const backToList = () => {
     detailSeqRef.current += 1
+    playSeqRef.current += 1
     setDetail(null)
     setDetailSource(null)
     setPlaying(null)
@@ -647,6 +661,11 @@ export function DramaPage({
             onClear={clearSearch}
             searching={loading}
             placeholder="输入剧名，回车搜索"
+            onRefresh={() => {
+              void window.laozheng.forceRefresh('drama').catch(() => {})
+              void load(sourceId, genre, 1, keyword)
+            }}
+            refreshing={loading}
             leading={
               <select
                 className="select-inline"
@@ -678,7 +697,7 @@ export function DramaPage({
                 </button>
               ) : null}
               {categories.map((category) => {
-                const count = genreCounts[category.slug]
+                const count = genreCounts[category.slug] ?? category.count ?? 0
                 return (
                   <button
                     key={category.slug}

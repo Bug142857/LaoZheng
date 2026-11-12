@@ -24,7 +24,10 @@ import {
   type YumanhuaChapter,
   type YumanhuaComic
 } from '../shared/yumanhua'
-import { DEFAULT_COMIC_SOURCES, type ComicSource } from '../shared/comicSources'
+import { DEFAULT_COMIC_SOURCES, type ComicSource, type ComicSourceTemplate } from '../shared/comicSources'
+import { BIKAHUB_COMIC_CATEGORIES, bikahubComicSourceId } from '../shared/bikahub'
+import { TPTOON_CATEGORIES, tptoonComicSourceId } from '../shared/tptoon'
+import { JMCOMIC_CATEGORIES, jmcomicComicSourceId } from '../shared/jmcomic'
 
 type Mode = 'recent' | 'hot' | 'category' | 'search'
 type ComicSourceId = string
@@ -35,6 +38,16 @@ interface ChapterView extends KomiicChapter {
 }
 
 const COMIC_SOURCE_KEY = 'laozheng.comic.source'
+const COMIC_TEMPLATE_KEY = 'laozheng.comic.template'
+/** 搜索结果一次拉全量，前端按 24 条/页分页 */
+const COMIC_SEARCH_PAGE_SIZE = 24
+
+function categoriesForTemplate(template: ComicSourceTemplate): KomiicCategory[] {
+  if (template === 'bikahub') return BIKAHUB_COMIC_CATEGORIES.map((item) => ({ ...item, count: 0 }))
+  if (template === 'tptoon') return TPTOON_CATEGORIES.map((item) => ({ ...item, count: 0 }))
+  if (template === 'jmcomic') return JMCOMIC_CATEGORIES.map((item) => ({ ...item, count: 0 }))
+  return YUMANHUA_CATEGORIES.map((item) => ({ ...item, count: 0 }))
+}
 
 function chapterLabel(chapter: ChapterView): string {
   if (chapter.label) return chapter.label
@@ -113,6 +126,7 @@ interface YumListCache {
   query: string
   items: KomiicComic[]
   hasMore: boolean
+  lastPage: number
   loaded: boolean
 }
 
@@ -122,6 +136,7 @@ const EMPTY_YUM_CACHE: YumListCache = {
   query: '',
   items: [],
   hasMore: false,
+  lastPage: 1,
   loaded: false
 }
 
@@ -133,11 +148,66 @@ const yumCache: YumListCache = (() => {
   return cached
 })()
 
+const bkhCache: YumListCache = (() => {
+  const cached = loadCache<YumListCache>('comic.bikahub', EMPTY_YUM_CACHE)
+  if (cached.mode !== 'recent' || cached.categoryId || cached.query) {
+    return { ...EMPTY_YUM_CACHE }
+  }
+  return cached
+})()
+
+const tptCache: YumListCache = (() => {
+  const cached = loadCache<YumListCache>('comic.tptoon', EMPTY_YUM_CACHE)
+  if (cached.mode !== 'recent' || cached.categoryId || cached.query) {
+    return { ...EMPTY_YUM_CACHE }
+  }
+  return cached
+})()
+
+const jmCache: YumListCache = (() => {
+  const cached = loadCache<YumListCache>('comic.jmcomic', EMPTY_YUM_CACHE)
+  if (cached.mode !== 'recent' || cached.categoryId || cached.query) {
+    return { ...EMPTY_YUM_CACHE }
+  }
+  return cached
+})()
+
+/** 漫画客 / 哔咔 / 头牌 / 禁漫天堂都是分页式列表源，各自留一份浏览缓存 */
+function listCacheFor(template: ComicSourceTemplate): YumListCache {
+  if (template === 'bikahub') return bkhCache
+  if (template === 'tptoon') return tptCache
+  if (template === 'jmcomic') return jmCache
+  return yumCache
+}
+
+function listCacheKeyFor(template: ComicSourceTemplate): string {
+  if (template === 'bikahub') return 'comic.bikahub'
+  if (template === 'tptoon') return 'comic.tptoon'
+  if (template === 'jmcomic') return 'comic.jmcomic'
+  return 'comic.yumanhua'
+}
+
 const storedComicSource: ComicSourceId =
   (typeof localStorage !== 'undefined' ? localStorage.getItem(COMIC_SOURCE_KEY) : '') || 'yumanhua'
+const storedComicTemplate: ComicSourceTemplate | '' =
+  typeof localStorage !== 'undefined'
+    ? (localStorage.getItem(COMIC_TEMPLATE_KEY) as ComicSourceTemplate | null) || ''
+    : ''
+const initialTemplate: ComicSourceTemplate =
+  storedComicTemplate ||
+  (storedComicSource === 'komiic'
+    ? 'komiic'
+    : storedComicSource === 'bikahub'
+      ? 'bikahub'
+      : storedComicSource === 'tptoon'
+        ? 'tptoon'
+        : storedComicSource === 'jmcomic'
+          ? 'jmcomic'
+          : 'yumanhua')
 
-const sourceInitialCache = storedComicSource === 'komiic' ? cache : yumCache
-const sourceInitialMode: Mode = storedComicSource === 'komiic' ? initialMode : 'recent'
+const sourceInitialCache =
+  initialTemplate === 'komiic' ? cache : listCacheFor(initialTemplate)
+const sourceInitialMode: Mode = initialTemplate === 'komiic' ? initialMode : 'recent'
 
 function findComicSource(sources: ComicSource[], id: string): ComicSource | undefined {
   return sources.find((source) => source.id === id)
@@ -148,6 +218,21 @@ function sourceOfComic(sources: ComicSource[], id: string): ComicSource | undefi
     const sourceId = yumanhuaSourceId(id)
     return sources.find((source) => source.id === sourceId) ??
       sources.find((source) => source.template === 'yumanhua')
+  }
+  if (id.startsWith('bkh')) {
+    const sourceId = bikahubComicSourceId(id)
+    return sources.find((source) => source.id === sourceId) ??
+      sources.find((source) => source.template === 'bikahub')
+  }
+  if (id.startsWith('tpt')) {
+    const sourceId = tptoonComicSourceId(id)
+    return sources.find((source) => source.id === sourceId) ??
+      sources.find((source) => source.template === 'tptoon')
+  }
+  if (/^jm[_A-Za-z0-9]*:/.test(id)) {
+    const sourceId = jmcomicComicSourceId(id)
+    return sources.find((source) => source.id === sourceId) ??
+      sources.find((source) => source.template === 'jmcomic')
   }
   return sources.find((source) => source.template === 'komiic')
 }
@@ -209,25 +294,25 @@ export function ComicPage({
     findComicSource(comicSources, sourceId) ??
     enabledComicSources[0] ??
     comicSources[0]
-  const activeTemplate = activeComicSource?.template ?? 'yumanhua'
+  const activeTemplate = activeComicSource?.template ?? initialTemplate
   const [categories, setCategories] = useState<KomiicCategory[]>(
-    storedComicSource === 'komiic'
-      ? categoryCache
-      : YUMANHUA_CATEGORIES.map((item) => ({ ...item, count: 0 }))
+    initialTemplate === 'komiic' ? categoryCache : categoriesForTemplate(initialTemplate)
   )
+  const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({})
   const [mode, setMode] = useState<Mode>(sourceInitialMode)
   const [categoryId, setCategoryId] = useState(
-    storedComicSource === 'komiic' ? cache.categoryId : ''
+    initialTemplate === 'komiic' ? cache.categoryId : ''
   )
-  const [query, setQuery] = useState(storedComicSource === 'komiic' ? cache.query : '')
-  const [input, setInput] = useState(storedComicSource === 'komiic' ? cache.query : '')
+  const [query, setQuery] = useState(initialTemplate === 'komiic' ? cache.query : '')
+  const [input, setInput] = useState(initialTemplate === 'komiic' ? cache.query : '')
   const [items, setItems] = useState<KomiicComic[]>(sourceInitialCache.items)
+  const [searchPage, setSearchPage] = useState(1)
   const [hasMore, setHasMore] = useState(sourceInitialCache.hasMore)
   const [lastPage, setLastPage] = useState(
-    storedComicSource === 'komiic' ? cache.lastPage ?? 0 : 0
+    initialTemplate === 'komiic' ? cache.lastPage ?? 0 : sourceInitialCache.lastPage ?? 1
   )
   const [pageNum, setPageNum] = useState(
-    storedComicSource === 'komiic'
+    initialTemplate === 'komiic'
       ? Math.floor(cache.offset / KOMIIC_PAGE_SIZE) + 1
       : 1
   )
@@ -243,12 +328,15 @@ export function ComicPage({
   const requestSeq = useRef(0)
   /** 只应用最后一次章节取图结果，避免返回后旧请求又把阅读器打开 */
   const chapterSeq = useRef(0)
+  /** 只应用最后一次详情请求，避免连点两部漫画时旧响应覆盖新详情 */
+  const detailOpenSeq = useRef(0)
   const listKeyRef = useRef('')
   const probeCache = useRef(new Map<string, number>())
 
   useEffect(() => {
     if (resetSignal === undefined) return
     chapterSeq.current += 1
+    detailOpenSeq.current += 1
     setDetail(null)
     setReader(null)
   }, [resetSignal])
@@ -258,28 +346,72 @@ export function ComicPage({
     nextCategoryId: string,
     nextQuery: string,
     nextOffset: number,
-    nextSourceId: ComicSourceId = sourceId
+    nextSourceId: ComicSourceId = sourceId,
+    nextPage = Math.floor(nextOffset / KOMIIC_PAGE_SIZE) + 1
   ) => {
     const sourceConfig =
       findComicSource(enabledComicSources, nextSourceId) ??
       findComicSource(comicSources, nextSourceId) ??
       activeComicSource
-    if (sourceConfig?.template === 'yumanhua') {
-      const baseUrl = sourceConfig.baseUrl
-      const sid = sourceConfig.id
+    const template = sourceConfig?.template ?? 'yumanhua'
+    if (
+      template === 'yumanhua' ||
+      template === 'bikahub' ||
+      template === 'tptoon' ||
+      template === 'jmcomic'
+    ) {
+      const baseUrl = sourceConfig?.baseUrl
+      const sid = sourceConfig?.id
+      const api =
+        template === 'bikahub'
+          ? {
+              recent: () => window.laozheng.bikahubComicRecent(baseUrl, sid, nextPage),
+              hot: () => window.laozheng.bikahubComicHot(baseUrl, sid, nextPage),
+              category: (category: string) =>
+                window.laozheng.bikahubComicCategory(category, baseUrl, sid, nextPage),
+              search: (keyword: string) =>
+                window.laozheng.bikahubComicSearch(keyword, baseUrl, sid)
+            }
+          : template === 'tptoon'
+            ? {
+                recent: () => window.laozheng.tptoonComicRecent(baseUrl, sid, nextPage),
+                hot: () => window.laozheng.tptoonComicHot(baseUrl, sid, nextPage),
+                category: (category: string) =>
+                  window.laozheng.tptoonComicCategory(category, baseUrl, sid, nextPage),
+                search: (keyword: string) =>
+                  window.laozheng.tptoonComicSearch(keyword, baseUrl, sid)
+              }
+            : template === 'jmcomic'
+              ? {
+                  recent: () => window.laozheng.jmcomicRecent(baseUrl, sid, nextPage),
+                  hot: () => window.laozheng.jmcomicHot(baseUrl, sid, nextPage),
+                  category: (category: string) =>
+                    window.laozheng.jmcomicCategory(category, baseUrl, sid, nextPage),
+                  search: (keyword: string) =>
+                    window.laozheng.jmcomicSearch(keyword, baseUrl, sid, nextPage)
+                }
+              : {
+                  recent: () => window.laozheng.yumanhuaRecent(baseUrl, sid),
+                  hot: () => window.laozheng.yumanhuaHot(baseUrl, sid),
+                  category: (category: string) =>
+                    window.laozheng.yumanhuaCategory(category, baseUrl, sid),
+                  search: (keyword: string) =>
+                    window.laozheng.yumanhuaSearch(keyword, baseUrl, sid)
+                }
       const res =
         nextMode === 'recent'
-          ? await window.laozheng.yumanhuaRecent(baseUrl, sid)
+          ? await api.recent()
           : nextMode === 'hot'
-            ? await window.laozheng.yumanhuaHot(baseUrl, sid)
+            ? await api.hot()
             : nextMode === 'category'
-              ? await window.laozheng.yumanhuaCategory(nextCategoryId, baseUrl, sid)
-              : await window.laozheng.yumanhuaSearch(nextQuery, baseUrl, sid)
+              ? await api.category(nextCategoryId)
+              : await api.search(nextQuery)
       return {
         ok: res.ok,
         items: res.items.map(yumanhuaToComic),
         error: res.error,
-        hasMore: res.hasMore === true
+        hasMore: res.hasMore === true,
+        lastPage: res.totalPages
       }
     }
     if (nextMode === 'recent') return window.laozheng.komiicRecent(nextOffset, '')
@@ -344,13 +476,22 @@ export function ComicPage({
       setError('没有启用的漫画源，请到「配置管理 → 片源管理 → 漫画源」启用')
       return
     }
-    const isKomiic = sourceConfig?.template === 'komiic'
+    const template = sourceConfig.template
+    const isKomiic = template === 'komiic'
     const nextOffset = Math.max(0, (nextPage - 1) * KOMIIC_PAGE_SIZE)
     const seq = ++requestSeq.current
+    if (nextMode === 'search') setSearchPage(1)
     setPending({ mode: nextMode, categoryId: nextCategoryId })
     setLoading(true)
     setError(null)
-    const res = await fetchPage(nextMode, nextCategoryId, nextQuery, nextOffset, nextSourceId)
+    const res = await fetchPage(
+      nextMode,
+      nextCategoryId,
+      nextQuery,
+      nextOffset,
+      nextSourceId,
+      nextPage
+    )
     if (seq !== requestSeq.current) return
     setPending(null)
     setLoading(false)
@@ -363,7 +504,9 @@ export function ComicPage({
       : (res as { hasMore?: boolean }).hasMore === true
     const key = `${nextSourceId}|${nextMode}|${nextCategoryId}|${nextQuery}`
     listKeyRef.current = key
-    const knownLastPage = isKomiic ? probeCache.current.get(key) ?? 0 : 1
+    const knownLastPage = isKomiic
+      ? probeCache.current.get(key) ?? 0
+      : ((res as { lastPage?: number }).lastPage ?? (template === 'tptoon' ? 0 : 1))
     setItems(res.items)
     setHasMore(nextHasMore)
     setLastPage(knownLastPage)
@@ -371,25 +514,22 @@ export function ComicPage({
     setMode(nextMode)
     setCategoryId(nextCategoryId)
     setQuery(nextQuery)
-    if (!isKomiic && nextSourceId === 'yumanhua') {
-      Object.assign(yumCache, {
+    if (!isKomiic) {
+      const targetCache = listCacheFor(template)
+      const cacheKey = listCacheKeyFor(template)
+      Object.assign(targetCache, {
         mode: nextMode,
         categoryId: nextCategoryId,
         query: nextQuery,
         items: res.items,
         hasMore: nextHasMore,
+        lastPage: knownLastPage,
         loaded: true
       })
-      if (
-        nextSourceId === 'yumanhua' &&
-        nextMode === 'recent' &&
-        !nextCategoryId &&
-        !nextQuery &&
-        nextPage === 1
-      ) {
-        saveCache<YumListCache>('comic.yumanhua', { ...yumCache })
+      if (nextMode === 'recent' && !nextCategoryId && !nextQuery && nextPage === 1) {
+        saveCache<YumListCache>(cacheKey, { ...targetCache })
       }
-    } else if (isKomiic) {
+    } else {
       Object.assign(cache, {
         mode: nextMode,
         categoryId: nextCategoryId,
@@ -424,27 +564,56 @@ export function ComicPage({
   }
 
   useEffect(() => {
-    if (activeTemplate === 'yumanhua') {
-      setCategories(YUMANHUA_CATEGORIES.map((item) => ({ ...item, count: 0 })))
-      if (sourceId !== 'yumanhua' || !yumCache.loaded) {
-        void load('recent', '', '', 1, sourceId)
-      }
+    if (activeTemplate !== 'komiic') {
+      setCategories(categoriesForTemplate(activeTemplate))
+      // 有缓存也请求一次：点标题刷新会重挂载本页，但模块级缓存 loaded 仍是 true，不能靠它跳过
+      void load('recent', '', '', 1, sourceId)
     } else {
-      if (!cache.loaded || (cache.mode as string) !== initialMode) {
-        void load(initialMode, cache.categoryId, cache.query, 1, sourceId)
-      }
+      void load(initialMode, cache.categoryId, cache.query, 1, sourceId)
       loadKomiicCategories()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // 哔咔 / 头牌 / 禁漫分类数量：哔咔取分类页 total，头牌二分探末页，禁漫按末页折算（主进程缓存 24 小时）
+  useEffect(() => {
+    setCategoryCounts({})
+    if (
+      activeTemplate !== 'bikahub' &&
+      activeTemplate !== 'tptoon' &&
+      activeTemplate !== 'jmcomic'
+    ) {
+      return
+    }
+    let alive = true
+    const baseUrl = activeComicSource?.baseUrl
+    const load =
+      activeTemplate === 'bikahub'
+        ? window.laozheng.bikahubComicCategoryCounts(baseUrl)
+        : activeTemplate === 'tptoon'
+          ? window.laozheng.tptoonComicCategoryCounts(baseUrl)
+          : window.laozheng.jmcomicCategoryCounts(baseUrl)
+    void load
+      .then((res) => {
+        if (alive && res.ok) setCategoryCounts(res.counts)
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTemplate, activeComicSource?.id, activeComicSource?.baseUrl])
+
   const changeSource = (next: ComicSourceId) => {
     if (next === sourceId) return
     const nextConfig =
       findComicSource(comicSources, next) ?? enabledComicSources[0] ?? comicSources[0]
+    const nextTemplate = nextConfig?.template ?? 'yumanhua'
     localStorage.setItem(COMIC_SOURCE_KEY, next)
+    localStorage.setItem(COMIC_TEMPLATE_KEY, nextTemplate)
     requestSeq.current += 1
     chapterSeq.current += 1
+    detailOpenSeq.current += 1
     setSourceId(next)
     setDetail(null)
     setReader(null)
@@ -454,13 +623,14 @@ export function ComicPage({
     setCategoryId('')
     setMode('recent')
     setPageNum(1)
+    setSearchPage(1)
     setPending(null)
-    if (nextConfig?.template !== 'komiic') {
-      setCategories(YUMANHUA_CATEGORIES.map((item) => ({ ...item, count: 0 })))
-      const cached = next === 'yumanhua' ? yumCache : { ...EMPTY_YUM_CACHE }
+    if (nextTemplate !== 'komiic') {
+      setCategories(categoriesForTemplate(nextTemplate))
+      const cached = listCacheFor(nextTemplate)
       setItems(cached.items)
       setHasMore(cached.hasMore)
-      setLastPage(1)
+      setLastPage(cached.lastPage ?? 1)
       setLoading(!cached.loaded)
       void load('recent', '', '', 1, next)
     } else {
@@ -476,9 +646,9 @@ export function ComicPage({
   useEffect(() => {
     if (!enabledComicSources.length) return
     if (enabledComicSources.some((item) => item.id === sourceId)) return
-    const first = enabledComicSources[0]
-    localStorage.setItem(COMIC_SOURCE_KEY, first.id)
-    setSourceId(first.id)
+    // 当前源被停用 / 删除：走正常切源流程，清详情并重新拉列表，避免「新源选择器 + 旧源列表」
+    changeSource(enabledComicSources[0].id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.comicSources, sourceId, enabledComicSources])
 
   useEffect(() => {
@@ -525,17 +695,37 @@ export function ComicPage({
   }
 
   const openDetail = async (comic: KomiicComic) => {
+    const seq = ++detailOpenSeq.current
     setChapterDesc(true)
     setDetail({ comic, chapters: [], loading: true, error: null })
     const config = sourceOfComic(comicSources, comic.id)
-    const isYum = config?.template !== 'komiic'
-    if (isYum) {
+    const template = config?.template ?? 'yumanhua'
+    if (template !== 'komiic') {
       const baseUrl = config?.baseUrl
-      const [detailRes, chapterRes] = await Promise.all([
-        window.laozheng.yumanhuaDetail(comic.id, baseUrl),
-        window.laozheng.yumanhuaChapters(comic.id, baseUrl)
-      ])
-      const merged = detailRes.ok && detailRes.comic ? yumanhuaToComic(detailRes.comic) : comic
+      const [detailRes, chapterRes] =
+        template === 'bikahub'
+          ? await Promise.all([
+              window.laozheng.bikahubComicDetail(comic.id, baseUrl),
+              window.laozheng.bikahubComicChapters(comic.id, baseUrl)
+            ])
+          : template === 'tptoon'
+            ? await Promise.all([
+                window.laozheng.tptoonComicDetail(comic.id, baseUrl),
+                window.laozheng.tptoonComicChapters(comic.id, baseUrl)
+              ])
+            : template === 'jmcomic'
+              ? await Promise.all([
+                  window.laozheng.jmcomicDetail(comic.id, baseUrl),
+                  window.laozheng.jmcomicChapters(comic.id, baseUrl)
+                ])
+              : await Promise.all([
+                  window.laozheng.yumanhuaDetail(comic.id, baseUrl),
+                  window.laozheng.yumanhuaChapters(comic.id, baseUrl)
+                ])
+      const parsed = detailRes.ok && detailRes.comic ? yumanhuaToComic(detailRes.comic) : comic
+      // 头牌详情页没有连载状态：保留列表卡片上的状态，避免显示「未知」
+      const merged = parsed.status || !comic.status ? parsed : { ...parsed, status: comic.status }
+      if (seq !== detailOpenSeq.current) return
       setDetail({
         comic: merged,
         chapters: chapterRes.ok ? chapterRes.items.map(yumanhuaToChapter) : [],
@@ -553,6 +743,7 @@ export function ComicPage({
       window.laozheng.komiicChapters(comic.id)
     ])
     const merged = detailRes.ok && detailRes.comic ? detailRes.comic : comic
+    if (seq !== detailOpenSeq.current) return
     setDetail({
       comic: merged,
       chapters: chapterRes.ok ? sortChapters(chapterRes.items) : [],
@@ -568,17 +759,28 @@ export function ComicPage({
   const openDetailById = async (id: string, alive?: () => boolean) => {
     setChapterDesc(true)
     const config = sourceOfComic(comicSources, id)
-    const isYum = config?.template !== 'komiic'
-    const targetSourceId = config?.id ?? (isYum ? 'yumanhua' : 'komiic')
+    const template = config?.template ?? 'yumanhua'
+    const targetSourceId =
+      config?.id ??
+      (template === 'komiic'
+        ? 'komiic'
+        : template === 'bikahub'
+          ? 'bikahub'
+          : template === 'tptoon'
+            ? 'tptoon'
+            : template === 'jmcomic'
+              ? 'jmcomic'
+              : 'yumanhua')
     if (targetSourceId !== sourceId) {
       localStorage.setItem(COMIC_SOURCE_KEY, targetSourceId)
+      localStorage.setItem(COMIC_TEMPLATE_KEY, template)
       setSourceId(targetSourceId)
-      if (isYum) {
-        setCategories(YUMANHUA_CATEGORIES.map((item) => ({ ...item, count: 0 })))
-        const cached = targetSourceId === 'yumanhua' ? yumCache : { ...EMPTY_YUM_CACHE }
+      if (template !== 'komiic') {
+        setCategories(categoriesForTemplate(template))
+        const cached = listCacheFor(template)
         setItems(cached.items)
         setHasMore(cached.hasMore)
-        setLastPage(1)
+        setLastPage(cached.lastPage ?? 1)
       } else {
         loadKomiicCategories()
         setItems(cache.items)
@@ -600,11 +802,28 @@ export function ComicPage({
       favoriteCount: 0
     }
     setDetail({ comic: placeholder, chapters: [], loading: true, error: null })
-    if (isYum) {
-      const [detailRes, chapterRes] = await Promise.all([
-        window.laozheng.yumanhuaDetail(id, config?.baseUrl),
-        window.laozheng.yumanhuaChapters(id, config?.baseUrl)
-      ])
+    if (template !== 'komiic') {
+      const baseUrl = config?.baseUrl
+      const [detailRes, chapterRes] =
+        template === 'bikahub'
+          ? await Promise.all([
+              window.laozheng.bikahubComicDetail(id, baseUrl),
+              window.laozheng.bikahubComicChapters(id, baseUrl)
+            ])
+          : template === 'tptoon'
+            ? await Promise.all([
+                window.laozheng.tptoonComicDetail(id, baseUrl),
+                window.laozheng.tptoonComicChapters(id, baseUrl)
+              ])
+            : template === 'jmcomic'
+              ? await Promise.all([
+                  window.laozheng.jmcomicDetail(id, baseUrl),
+                  window.laozheng.jmcomicChapters(id, baseUrl)
+                ])
+              : await Promise.all([
+                  window.laozheng.yumanhuaDetail(id, baseUrl),
+                  window.laozheng.yumanhuaChapters(id, baseUrl)
+                ])
       if (alive && !alive()) return
       setDetail({
         comic:
@@ -643,6 +862,7 @@ export function ComicPage({
     return () => {
       alive = false
       chapterSeq.current += 1
+      detailOpenSeq.current += 1
       setDetail(null)
       setReader(null)
     }
@@ -664,10 +884,17 @@ export function ComicPage({
     const seq = ++chapterSeq.current
     setReader({ comic, chapter, urls: [], loading: true, error: null })
     const config = sourceOfComic(comicSources, comic.id)
+    const template = config?.template ?? 'yumanhua'
     const res =
-      config?.template !== 'komiic'
-        ? await window.laozheng.yumanhuaImages(comic.id, chapter.id, config?.baseUrl)
-        : await window.laozheng.komiicImages(comic.id, chapter.id)
+      template === 'bikahub'
+        ? await window.laozheng.bikahubComicImages(comic.id, chapter.id, config?.baseUrl)
+        : template === 'tptoon'
+          ? await window.laozheng.tptoonComicImages(comic.id, chapter.id, config?.baseUrl)
+          : template === 'jmcomic'
+            ? await window.laozheng.jmcomicImages(comic.id, chapter.id, config?.baseUrl)
+            : template === 'yumanhua'
+              ? await window.laozheng.yumanhuaImages(comic.id, chapter.id, config?.baseUrl)
+              : await window.laozheng.komiicImages(comic.id, chapter.id)
     if (seq !== chapterSeq.current) return
     setReader({
       comic,
@@ -689,19 +916,79 @@ export function ComicPage({
     setReader(null)
   }
 
+  /** 漫画下载用的源信息：单张 / 整本共用 */
+  const comicDownloadMeta = (comicId: string) => {
+    const config = sourceOfComic(comicSources, comicId)
+    const template = config?.template ?? 'yumanhua'
+    return {
+      template,
+      referer:
+        template === 'komiic'
+          ? 'https://komiic.com/'
+          : `${
+              config?.baseUrl ??
+              (template === 'bikahub'
+                ? 'https://bikahub.net'
+                : template === 'tptoon'
+                  ? 'https://tptoon.net'
+                  : template === 'jmcomic'
+                    ? 'https://18comic66.com'
+                    : 'http://www.yumanhua.com')
+            }/`,
+      sourceName:
+        config?.name ??
+        (template === 'komiic'
+          ? '漫画'
+          : template === 'bikahub'
+            ? '哔咔漫画'
+            : template === 'tptoon'
+              ? '头牌漫画'
+              : template === 'jmcomic'
+                ? '禁漫天堂'
+                : '漫画客')
+    }
+  }
+
+  /** 网格浏览卡片右上角：单张图片直接加入下载 */
+  const saveReaderImage = async (url: string, index: number) => {
+    if (!reader) return
+    const meta = comicDownloadMeta(reader.comic.id)
+    try {
+      const res = await window.laozheng.addDownload({
+        title: `${reader.comic.title}-${chapterLabel(reader.chapter)}-${index + 1}`,
+        url,
+        kind: 'comic',
+        coverUrl: reader.comic.imageUrl,
+        sourceName: meta.sourceName,
+        referer: meta.referer
+      })
+      onNotice(res.ok ? '已加入下载管理，可在下载 → 漫画查看' : res.error ?? '加入下载失败')
+    } catch (err) {
+      onNotice(`下载失败：${(err as Error).message}`)
+    }
+  }
+
   const downloadChapters = async (chapters: ChapterView[]) => {
     const comic = detail?.comic
     if (!comic || !chapters.length || batch) return
     const config = sourceOfComic(comicSources, comic.id)
-    const isYum = config?.template !== 'komiic'
+    const template = config?.template ?? 'yumanhua'
+    const meta = comicDownloadMeta(comic.id)
     setBatch({ done: 0, total: chapters.length })
     const payload: { key: string; name: string; urls: string[] }[] = []
     try {
       for (let i = 0; i < chapters.length; i++) {
         const chapter = chapters[i]
-        const res = isYum
-          ? await window.laozheng.yumanhuaImages(comic.id, chapter.id, config?.baseUrl)
-          : await window.laozheng.komiicImages(comic.id, chapter.id)
+        const res =
+          template === 'bikahub'
+            ? await window.laozheng.bikahubComicImages(comic.id, chapter.id, config?.baseUrl)
+            : template === 'tptoon'
+              ? await window.laozheng.tptoonComicImages(comic.id, chapter.id, config?.baseUrl)
+              : template === 'jmcomic'
+                ? await window.laozheng.jmcomicImages(comic.id, chapter.id, config?.baseUrl)
+                : template === 'yumanhua'
+                  ? await window.laozheng.yumanhuaImages(comic.id, chapter.id, config?.baseUrl)
+                  : await window.laozheng.komiicImages(comic.id, chapter.id)
         if (res.ok && res.urls.length) {
           payload.push({
             key: chapter.id,
@@ -719,14 +1006,14 @@ export function ComicPage({
       }
       const res = await window.laozheng.addComicBatchDownload({
         comic: {
-          source: isYum ? 'yumanhua' : 'komiic',
+          source: template,
           id: comic.id,
           title: comic.title,
           cover: comic.imageUrl
         },
         chapters: payload,
-        referer: isYum ? `${config?.baseUrl ?? 'http://www.yumanhua.com'}/` : 'https://komiic.com/',
-        sourceName: config?.name ?? (isYum ? '漫画客' : '漫画')
+        referer: meta.referer,
+        sourceName: meta.sourceName
       })
       onNotice(
         res.ok
@@ -822,7 +1109,7 @@ export function ComicPage({
           />
         ) : (
           <>
-            <ComicReader images={reader.urls} />
+            <ComicReader images={reader.urls} onSaveImage={saveReaderImage} />
             <div className="reader-footer">
               <button className="btn" disabled={!hasPrev} onClick={() => stepChapter(-1)}>
                 上一话
@@ -860,6 +1147,7 @@ export function ComicPage({
             onClick={() => {
               // 先清掉详情再返回，避免从收藏返回后又落回详情页
               chapterSeq.current += 1
+              detailOpenSeq.current += 1
               setDetail(null)
               setReader(null)
               if (focusId && onExit) onExit()
@@ -971,6 +1259,17 @@ export function ComicPage({
     )
   }
 
+  const clientSearchPaging =
+    mode === 'search' && (activeTemplate === 'bikahub' || activeTemplate === 'tptoon')
+  const searchLastPage = Math.max(1, Math.ceil(items.length / COMIC_SEARCH_PAGE_SIZE))
+  const safeSearchPage = Math.min(Math.max(1, searchPage), searchLastPage)
+  const visibleItems = clientSearchPaging
+    ? items.slice(
+        (safeSearchPage - 1) * COMIC_SEARCH_PAGE_SIZE,
+        safeSearchPage * COMIC_SEARCH_PAGE_SIZE
+      )
+    : items
+
   return (
     <>
       <header className="page-header">
@@ -1001,8 +1300,21 @@ export function ComicPage({
           void load('recent', '', '', 1)
         }}
         searching={loading && mode === 'search'}
+        onRefresh={() => {
+          void window.laozheng.forceRefresh('comic').catch(() => {})
+          void load(mode, categoryId, query, pageNum)
+        }}
+        refreshing={loading}
         placeholder={
-          activeTemplate === 'yumanhua' ? '搜索漫画客漫画…' : '搜索 Komiic 漫画…'
+          activeTemplate === 'yumanhua'
+            ? '搜索漫画客漫画…'
+            : activeTemplate === 'bikahub'
+              ? '搜索哔咔漫画…'
+              : activeTemplate === 'tptoon'
+                ? '搜索头牌漫画…'
+                : activeTemplate === 'jmcomic'
+                  ? '搜索禁漫天堂漫画…'
+                  : '搜索 Komiic 漫画…'
         }
         leading={
           <select
@@ -1024,7 +1336,10 @@ export function ComicPage({
 
       {query ? (
         <div className="toolbar">
-          <span className="page-desc">搜索结果：{query}</span>
+          <span className="page-desc">
+            搜索结果：{query}
+            {clientSearchPaging && items.length > 0 ? `（${items.length} 条）` : ''}
+          </span>
         </div>
       ) : (
         <div className="toolbar">
@@ -1034,16 +1349,19 @@ export function ComicPage({
           >
             {activeTemplate === 'yumanhua' ? '最近更新' : '最近'}
           </button>
-          <button
-            className={`chip ${(pending?.mode ?? mode) === 'hot' ? 'active' : ''}`}
-            onClick={() => void load('hot', '', '', 1)}
-          >
-            {activeTemplate === 'yumanhua' ? '排行榜' : '热门'}
-          </button>
+          {activeTemplate !== 'bikahub' ? (
+            <button
+              className={`chip ${(pending?.mode ?? mode) === 'hot' ? 'active' : ''}`}
+              onClick={() => void load('hot', '', '', 1)}
+            >
+              {activeTemplate === 'yumanhua' ? '排行榜' : '热门'}
+            </button>
+          ) : null}
           {categories.map((c) => {
             const active = pending
               ? pending.mode === 'category' && pending.categoryId === c.id
               : mode === 'category' && categoryId === c.id
+            const count = categoryCounts[c.id] ?? c.count
             return (
               <button
                 key={c.id}
@@ -1051,7 +1369,7 @@ export function ComicPage({
                 onClick={() => void load('category', c.id, '', 1)}
               >
                 {c.name}
-                {c.count > 0 ? <span className="chip-count">{c.count}</span> : null}
+                {count > 0 ? <span className="chip-count">{count}</span> : null}
               </button>
             )
           })}
@@ -1077,7 +1395,7 @@ export function ComicPage({
       ) : (
         <>
           <div className="comic-grid">
-            {items.map((comic) => (
+            {visibleItems.map((comic) => (
               <button key={comic.id} className="comic-card" onClick={() => void openDetail(comic)}>
                 <span className="comic-cover">
                   {comic.imageUrl ? <img src={comic.imageUrl} alt="" loading="lazy" /> : null}
@@ -1102,16 +1420,25 @@ export function ComicPage({
             ))}
           </div>
 
-          <Pagination
-            page={pageNum}
-            lastPage={categoryLastPage || lastPage}
-            onLast={
-              categoryLastPage > 0 || lastPage > 0 ? undefined : () => void goLastPage()
-            }
-            hasMore={hasMore}
-            disabled={loading}
-            onChange={(next) => void load(mode, categoryId, query, next)}
-          />
+          {clientSearchPaging ? (
+            <Pagination
+              page={safeSearchPage}
+              lastPage={searchLastPage}
+              disabled={loading}
+              onChange={setSearchPage}
+            />
+          ) : (
+            <Pagination
+              page={pageNum}
+              lastPage={categoryLastPage || lastPage}
+              onLast={
+                categoryLastPage > 0 || lastPage > 0 ? undefined : () => void goLastPage()
+              }
+              hasMore={hasMore}
+              disabled={loading}
+              onChange={(next) => void load(mode, categoryId, query, next)}
+            />
+          )}
         </>
       )}
     </>

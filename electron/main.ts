@@ -85,6 +85,8 @@ import {
   type WallpaperSourceRef
 } from '../src/shared/wallpaper'
 import { wallpaperCategories, wallpaperList, wallpaperResolve } from './wallpaper'
+import { isMeituTemplate, type MeituSourceRef } from '../src/shared/meitu'
+import { meituCategories, meituDetail, meituList } from './meitu'
 
 import { resolveMusic, resolveLegacyMusic, searchMusic, testMusicSource } from './music'
 import type { MusicSourceInput } from '../src/shared/music'
@@ -109,6 +111,9 @@ import {
   hasRunningDownloads,
   importDownloadRecords,
   listDownloads,
+  pauseTask,
+  refreshDownloads,
+  resumeTask,
   openDownloadItem,
   openDownloadFolder,
   openDownloadsDir,
@@ -132,6 +137,18 @@ import {
   melonVideoDuration,
   trackMelonImages
 } from './melon'
+import {
+  noteShuangkanMediaRedirect,
+  shuangkanCatalog,
+  shuangkanDetail,
+  shuangkanImageAuth,
+  shuangkanMediaAuth,
+  shuangkanPlay,
+  shuangkanSearch,
+  trackShuangkanImages
+} from './shuangkan'
+import { defaultSkSort, inferSkAdapter, isSkAdapter, isSkSort } from '../src/shared/shuangkan'
+import type { ShuangkanSourceRef } from '../src/shared/shuangkan'
 import { dramaCatalog, dramaDetail, dramaPlay } from './drama'
 import {
   novelChapter,
@@ -175,6 +192,37 @@ import {
   yumanhuaSearch
 } from './yumanhua'
 import {
+  bikahubComicCategory,
+  bikahubComicCategoryCounts,
+  bikahubComicChapters,
+  bikahubComicDetail,
+  bikahubComicHot,
+  bikahubComicImages,
+  bikahubComicRecent,
+  bikahubComicSearch,
+  bikahubNovelCategoryCounts
+} from './bikahub'
+import {
+  tptoonComicCategory,
+  tptoonComicCategoryCounts,
+  tptoonComicChapters,
+  tptoonComicDetail,
+  tptoonComicHot,
+  tptoonComicImages,
+  tptoonComicRecent,
+  tptoonComicSearch
+} from './tptoon'
+import {
+  jmcomicCategory,
+  jmcomicCategoryCounts,
+  jmcomicChapters,
+  jmcomicDetail,
+  jmcomicHot,
+  jmcomicImages,
+  jmcomicRecent,
+  jmcomicSearch
+} from './jmcomic'
+import {
   openWygamerLogin,
   wygamerByCategory,
   wygamerCategories,
@@ -209,7 +257,7 @@ import {
 import type { MagnetOptions, MagnetSource } from '../src/shared/magnet'
 import type { AccountActionResult, AccountSite } from '../src/shared/accounts'
 import { downloadSync, getSyncConfig, saveSyncConfig, testSync, uploadSync } from './sync'
-import { cachedResponse, clearApiCacheMemory } from './apiCache'
+import { cachedResponse, clearApiCacheMemory, forceApiCache } from './apiCache'
 import {
   registerImageCacheScheme,
   setupImageCacheHandler,
@@ -405,6 +453,22 @@ function applyRequestHeaders(
       melonAuth = null
     }
   }
+  let skAuth: { referer: string; ua: string } | null = null
+  try {
+    skAuth = shuangkanImageAuth(new URL(rawUrl))
+  } catch {
+    skAuth = null
+  }
+  // 爽看站点自己签发的播放流（jmpres 等）：不带站点 Cookie / Referer 时镜像只回几秒提示片。
+  // 只对媒体类请求生效，避免抢走同域名封面图需要 Referer 的规则
+  let skMedia: { referer?: string; cookie?: string; ua?: string } | null = null
+  if (resourceType !== 'image') {
+    try {
+      skMedia = shuangkanMediaAuth(new URL(rawUrl))
+    } catch {
+      skMedia = null
+    }
+  }
   if (/(^|\.)doubanio\.com$|(^|\.)douban\.com$/.test(host)) {
     headers['Referer'] = IMAGE_REFERER
     headers['User-Agent'] = IMAGE_UA
@@ -417,6 +481,14 @@ function applyRequestHeaders(
     headers['Referer'] = 'https://www.pornhub.com/'
     headers['User-Agent'] = VOD_UA
     headers['Cookie'] = 'accessAgeDisclaimerPH=1; age_verified=1; accessPH=1'
+  } else if (skMedia) {
+    // 肉视频探测登记的是「只带 UA」的鉴权，其它站点带完整 Cookie / Referer
+    if (skMedia.referer) headers['Referer'] = skMedia.referer
+    if (skMedia.cookie) headers['Cookie'] = skMedia.cookie
+    if (skMedia.ua) headers['User-Agent'] = skMedia.ua
+    // 网关会把播放清单伪装成 index.png，Chromium 会按图片给 Accept 头，
+    // 部分节点据此回 206 分段内容，hls.js 解析不出来（实测过），这里按普通资源取
+    if (/\.png(\?|$)/i.test(rawUrl)) headers['Accept'] = '*/*'
   } else if (/(^|\.)komiic\.(com|cc)$/.test(host)) {
     // Komiic 章节图：注入登录 Cookie + 完整路径 Referer（防盗链），缺口归属在查询参数里
     try {
@@ -437,6 +509,10 @@ function applyRequestHeaders(
     // 吃瓜镜像的图床有防盗链：补镜像 Referer + 站点同款移动 UA
     headers['Referer'] = melonAuth.referer
     headers['User-Agent'] = melonAuth.ua
+  } else if (skAuth) {
+    // 爽看封面 CDN 校验站点 Referer 与浏览器 UA，缺了会 403
+    headers['Referer'] = skAuth.referer
+    headers['User-Agent'] = skAuth.ua
   } else if (/(^|\.)(mayiwsk\.info|biquges\.com)$/.test(host)) {
     // 小说封面 / 站内图片：补站点 Referer，避免部分节点防盗链
     headers['Referer'] = 'http://www.mayiwsk.info/'
@@ -496,6 +572,18 @@ function setupRequestRules(): void {
     callback({ requestHeaders: headers })
   })
 
+  // v0.122：站点主域的播放请求重定向到 CDN 网关（jre*.vc*.top 等）时，
+  // 把网关域名也继承同一份鉴权——实测 CDN 对 master / variant / 分片 / key
+  // 每个请求都做鉴权检查，漏了就只回几秒提示片
+  ses.webRequest.onBeforeRedirect((details) => {
+    if (!details.redirectURL) return
+    try {
+      noteShuangkanMediaRedirect(details.url, details.redirectURL)
+    } catch {
+      // 忽略非法 URL
+    }
+  })
+
   ses.webRequest.onHeadersReceived((details, callback) => {
     const headers = details.responseHeaders
     if (!headers) {
@@ -544,8 +632,10 @@ function isDramaSourceInput(value: unknown): value is DramaSourceInput {
   const o = value as Record<string, unknown>
   if (typeof o.id !== 'string' || !/^[a-zA-Z0-9_-]{1,200}$/.test(o.id)) return false
   if (typeof o.name !== 'string' || o.name.length > 80) return false
-  // 苹果CMS 短剧源必须带合法接口地址；内置源（西饭 / 旧红果、河马）不需要
-  if (o.baseUrl === undefined) return o.id === 'xifan' || o.id === 'hongguo' || o.id === 'hema'
+  // 苹果CMS 短剧源必须带合法接口地址；内置源（西饭 / 肉视频 / 旧红果、河马）不需要
+  if (o.baseUrl === undefined) {
+    return o.id === 'xifan' || o.id === 'rou07' || o.id === 'hongguo' || o.id === 'hema'
+  }
   return (
     typeof o.baseUrl === 'string' &&
     /^https?:\/\//i.test(o.baseUrl) &&
@@ -1105,6 +1195,12 @@ async function installUpdateInstaller(path: string): Promise<void> {
   if (!abs.toLowerCase().endsWith('.exe')) throw new Error('安装包格式无效')
   await stat(abs)
   const child = spawn(abs, [], { detached: true, stdio: 'ignore' })
+  // 安装包被杀软拦截 / 没有执行权限时 spawn 会异步抛 error，不处理会直接崩主进程
+  const spawnError = await new Promise<Error | null>((resolveError) => {
+    child.once('error', (err) => resolveError(err))
+    setTimeout(() => resolveError(null), 500)
+  })
+  if (spawnError) throw new Error(`无法启动安装程序：${spawnError.message}`)
   child.unref()
   setTimeout(() => app.quit(), 900)
 }
@@ -1142,6 +1238,8 @@ async function buildBackupPayload(data: AppData): Promise<AppData> {
   return {
     ...data,
     version: 1,
+    // 磁力搜索结果只是本次运行的会话缓存（启动时会被 data:load 清掉），不写进备份 / 云同步
+    magnetSearch: undefined,
     liveSources,
     downloads,
     // 磁力源属于用户配置，必须跟备份 / 云同步一起走
@@ -1406,9 +1504,21 @@ function registerIpc(): void {
       return { ok: false, items: [], error: '搜索参数无效' }
     }
     return cachedResponse(
-      `novel:search|${source.id}|${source.baseUrl}|${source.template}|${keyword}`,
+      `novel:search|v3|${source.id}|${source.baseUrl}|${source.template}|${keyword}`,
       10 * 60 * 1000,
       () => novelSearch(source, keyword)
+    )
+  })
+
+  ipcMain.handle('novel:categoryCounts', (_e, source: NovelSourceInput) => {
+    if (!isNovelSourceInput(source)) return { ok: false, counts: {}, error: '书源参数无效' }
+    if (source.template !== 'bikahub') {
+      return { ok: false, counts: {}, error: '该源不支持分类数量' }
+    }
+    return cachedResponse(
+      `novel:categoryCounts|${source.baseUrl}`,
+      10 * 60 * 1000,
+      () => bikahubNovelCategoryCounts(source.baseUrl)
     )
   })
 
@@ -1523,7 +1633,10 @@ function registerIpc(): void {
           id: typeof s.id === 'string' ? s.id : '',
           name: typeof s.name === 'string' ? s.name : '',
           baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
-          template: s.template === 'komiic' ? 'komiic' : 'yumanhua',
+          template:
+            s.template === 'komiic' || s.template === 'bikahub' || s.template === 'tptoon'
+              ? s.template
+              : 'yumanhua',
           enabled: s.enabled !== false
         }))
         .filter((s) => /^https?:\/\//i.test(s.baseUrl))
@@ -1796,7 +1909,13 @@ function registerIpc(): void {
           id: typeof s.id === 'string' ? s.id : '',
           name: typeof s.name === 'string' ? s.name : '',
           baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
-          template: s.template === 'yumanhua' || s.template === 'komiic' ? s.template : '',
+          template:
+            s.template === 'yumanhua' ||
+            s.template === 'komiic' ||
+            s.template === 'bikahub' ||
+            s.template === 'tptoon'
+              ? s.template
+              : '',
           enabled: s.enabled !== false
         }))
         .filter((s) => /^https?:\/\//i.test(s.baseUrl) && !!s.template)
@@ -1825,6 +1944,23 @@ function registerIpc(): void {
           enabled: s.enabled !== false
         }))
         .filter((s) => /^https?:\/\//i.test(s.baseUrl) && !!isWallpaperTemplate(s.template))
+      const meituSources = rowsOf('meituSources')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          template: isMeituTemplate(s.template) ? s.template : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl) && !!isMeituTemplate(s.template))
+      const shuangkanSources = rowsOf('shuangkanSources')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl))
       const payload = {
         version: 1,
         exportedAt: new Date().toISOString(),
@@ -1838,7 +1974,9 @@ function registerIpc(): void {
         comicSources,
         h1Sources,
         livePlatformSources,
-        wallpaperSources
+        wallpaperSources,
+        meituSources,
+        shuangkanSources
       }
       await writeFile(picked.filePath, JSON.stringify(payload, null, 2), 'utf8')
       return {
@@ -1855,7 +1993,9 @@ function registerIpc(): void {
           comicSources.length +
           h1Sources.length +
           livePlatformSources.length +
-          wallpaperSources.length
+          wallpaperSources.length +
+          meituSources.length +
+          shuangkanSources.length
       }
     } catch (err) {
       return { canceled: false, error: (err as Error).message }
@@ -1887,7 +2027,9 @@ function registerIpc(): void {
         comicSources: rowsOf('comicSources'),
         h1Sources: rowsOf('h1Sources'),
         livePlatformSources: rowsOf('livePlatformSources'),
-        wallpaperSources: rowsOf('wallpaperSources')
+        wallpaperSources: rowsOf('wallpaperSources'),
+        meituSources: rowsOf('meituSources'),
+        shuangkanSources: rowsOf('shuangkanSources')
       }
       if (
         !data.vodSources.length &&
@@ -1900,7 +2042,9 @@ function registerIpc(): void {
         !data.comicSources.length &&
         !data.h1Sources.length &&
         !data.livePlatformSources.length &&
-        !data.wallpaperSources.length
+        !data.wallpaperSources.length &&
+        !data.meituSources.length &&
+        !data.shuangkanSources.length
       ) {
         return { canceled: false, error: '文件里没有可导入的源' }
       }
@@ -2282,6 +2426,8 @@ function registerIpc(): void {
 
   ipcMain.handle('downloads:list', () => listDownloads())
 
+  ipcMain.handle('downloads:refresh', () => refreshDownloads())
+
   ipcMain.handle('downloads:add', (_e, input: DownloadAddInput) => {
     if (!input || typeof input !== 'object') return { ok: false, error: '参数无效' }
     const { title, url, kind } = input
@@ -2290,7 +2436,7 @@ function registerIpc(): void {
       title.length > 200 ||
       typeof url !== 'string' ||
       !/^https?:\/\//i.test(url) ||
-      !['video', 'music', 'comic', 'book', 'novel', 'wallpaper', 'trainer', 'file'].includes(
+      !['video', 'music', 'comic', 'book', 'novel', 'wallpaper', 'meitu', 'trainer', 'file'].includes(
         kind
       )
     ) {
@@ -2320,6 +2466,16 @@ function registerIpc(): void {
     return undefined
   })
 
+  ipcMain.handle('downloads:pause', (_e, id: string) => {
+    if (typeof id === 'string') return pauseTask(id)
+    return undefined
+  })
+
+  ipcMain.handle('downloads:resume', (_e, id: string) => {
+    if (typeof id === 'string') return resumeTask(id)
+    return undefined
+  })
+
   ipcMain.handle('downloads:openDir', (_e, kind?: DownloadKind) => openDownloadsDir(kind))
 
   ipcMain.handle('downloads:root', () => downloadRoot())
@@ -2345,6 +2501,31 @@ function registerIpc(): void {
   ipcMain.handle('app:cacheInfo', () => cacheInfo())
   ipcMain.handle('app:clearCache', () => clearCache())
   ipcMain.handle('app:chooseCacheDir', () => chooseCacheDir())
+
+  // 用户点标题 / 刷新按钮时，让对应模块的接口缓存短时间失效，直接拉最新数据
+  const FORCE_REFRESH_PREFIXES: Record<string, string[]> = {
+    watch: ['vod:', 'subject:'],
+    search: ['vod:', 'subject:'],
+    drama: ['drama:'],
+    live: ['live:'],
+    liveRooms: ['livePlatform:'],
+    music: ['music:'],
+    comic: ['bika:', 'komiic:', 'yumanhua:', 'bikahub:', 'tptoon:', 'jmcomic:'],
+    novel: ['novel:', 'bikahub:'],
+    melon: ['melon:'],
+    game: ['wygamer:'],
+    book: ['zlib:'],
+    wallpaper: ['wallpaper:'],
+    meitu: ['meitu:'],
+    shuangkan: ['shuangkan:'],
+    psite: ['psite:'],
+    xsite: ['xsite:']
+  }
+  ipcMain.handle('cache:forceRefresh', (_e, scope: unknown) => {
+    const prefixes = typeof scope === 'string' ? FORCE_REFRESH_PREFIXES[scope] : undefined
+    if (prefixes?.length) forceApiCache(prefixes)
+    return { ok: true }
+  })
 
   ipcMain.handle('settings:getUi', () => uiSettings())
   ipcMain.handle('settings:setUi', (_e, input: Partial<UiSettings>) => {
@@ -2446,6 +2627,133 @@ function registerIpc(): void {
     trackMelonImages(urls.filter((u): u is string => typeof u === 'string'))
   })
 
+  // ---------- 爽看（肉视频；站点失效时走 x99dh.net 优选访问换址） ----------
+  const sanitizeShuangkanSource = (raw: unknown): ShuangkanSourceRef | null => {
+    if (!raw || typeof raw !== 'object') return null
+    const record = raw as Record<string, unknown>
+    const baseUrl =
+      typeof record.baseUrl === 'string' ? record.baseUrl.trim().slice(0, 300) : ''
+    if (!/^https?:\/\//i.test(baseUrl)) return null
+    return {
+      id: typeof record.id === 'string' ? record.id.slice(0, 80) : '',
+      name: typeof record.name === 'string' ? record.name.slice(0, 80) : '',
+      baseUrl,
+      adapter: isSkAdapter(record.adapter) ? record.adapter : inferSkAdapter(baseUrl)
+    }
+  }
+
+  const isSkContent = (value: unknown): value is 'video' | 'series' =>
+    value === 'video' || value === 'series'
+
+  ipcMain.handle(
+    'shuangkan:catalog',
+    (_e, rawSource: unknown, content: string, category: string, page: number, sort: unknown) => {
+      const source = sanitizeShuangkanSource(rawSource)
+      if (!source || !isSkContent(content)) {
+        return { ok: false, items: [], page: 1, lastPage: 0, categories: [], error: '参数无效' }
+      }
+      if (typeof category !== 'string' || category.length > 80) {
+        return { ok: false, items: [], page: 1, lastPage: 0, categories: [], error: '参数无效' }
+      }
+      const current = Number.isInteger(page) ? Math.max(1, Math.min(20_000, page)) : 1
+      const adapter = source.adapter ?? inferSkAdapter(source.baseUrl)
+      const currentSort = isSkSort(sort) ? sort : defaultSkSort(adapter)
+      return cachedResponse(
+        `shuangkan:v5:catalog|${source.id}|${adapter}|${source.baseUrl}|${content}|${category}|${current}|${currentSort}`,
+        15 * 60 * 1000,
+        () => shuangkanCatalog(content, category, current, source.baseUrl, adapter, currentSort)
+      )
+    }
+  )
+
+  ipcMain.handle(
+    'shuangkan:search',
+    (_e, rawSource: unknown, content: string, keyword: string, page: number) => {
+      const source = sanitizeShuangkanSource(rawSource)
+      if (!source || !isSkContent(content) || typeof keyword !== 'string') {
+        return { ok: false, items: [], page: 1, lastPage: 0, categories: [], error: '参数无效' }
+      }
+      const query = keyword.trim().slice(0, 100)
+      const current = Number.isInteger(page) ? Math.max(1, Math.min(20_000, page)) : 1
+      return cachedResponse(
+        `shuangkan:v4:search|${source.id}|${source.adapter}|${source.baseUrl}|${content}|${current}|${query}`,
+        15 * 60 * 1000,
+        () => shuangkanSearch(content, query, current, source.baseUrl, source.adapter)
+      )
+    }
+  )
+
+  ipcMain.handle('shuangkan:detail', (_e, rawSource: unknown, content: string, id: string) => {
+    const source = sanitizeShuangkanSource(rawSource)
+    if (!source || !isSkContent(content) || typeof id !== 'string') {
+      return { ok: false, error: '参数无效' }
+    }
+    return cachedResponse(
+      `shuangkan:v5:detail|${source.id}|${source.adapter}|${source.baseUrl}|${content}|${id}`,
+      6 * HOUR,
+      async () => {
+        const res = await shuangkanDetail(content, id, source.baseUrl, source.adapter)
+        // v0.122：播放地址带短时效签名（网关几分钟就可能过期），不能跟着 6 小时的详情缓存走，
+        // 否则再次打开同一个视频会拿到已过期的地址（实测直接 410 / 提示片）。
+        // 播放地址统一由 shuangkan:play 现取。
+        return res.ok && res.detail ? { ...res, detail: { ...res.detail, playUrl: null } } : res
+      },
+      6 * HOUR
+    )
+  })
+
+  ipcMain.handle('shuangkan:play', (_e, rawSource: unknown, id: string) => {
+    const source = sanitizeShuangkanSource(rawSource)
+    if (!source || typeof id !== 'string' || !/^[A-Za-z0-9_~./-]{1,160}$/.test(id)) {
+      return { ok: false, error: '参数无效' }
+    }
+    return cachedResponse(
+      `shuangkan:v6:play|${source.id}|${source.adapter}|${source.baseUrl}|${id}`,
+      60 * 1000,
+      () => shuangkanPlay(id, source.baseUrl, source.adapter),
+      60 * 60 * 1000
+    )
+  })
+
+  ipcMain.handle('shuangkan:trackImages', (_e, urls: unknown, baseUrl: unknown) => {
+    if (!Array.isArray(urls)) return
+    trackShuangkanImages(
+      urls.filter((u): u is string => typeof u === 'string'),
+      typeof baseUrl === 'string' ? baseUrl : undefined
+    )
+  })
+
+  // 导出皇片源为 JSON
+  ipcMain.handle('shuangkan:exportSources', async (_e, sources: unknown) => {
+    const list = Array.isArray(sources) ? sources : []
+    const picked = await dialog.showSaveDialog({
+      title: '导出皇片源',
+      defaultPath: join(
+        lastDialogDir('shuangkan', app.getPath('documents')),
+        `老郑分享-皇片源-${stamp()}.json`
+      ),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('shuangkan', picked.filePath)
+    try {
+      const rows = list
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          enabled: s.enabled !== false,
+          ...(isSkAdapter(s.adapter) ? { adapter: s.adapter } : {})
+        }))
+        .filter((s) => /^https?:\/\//i.test(s.baseUrl))
+      await writeFile(picked.filePath, JSON.stringify(rows, null, 2), 'utf8')
+      return { canceled: false, path: picked.filePath, count: rows.length }
+    } catch (err) {
+      return { canceled: false, error: (err as Error).message }
+    }
+  })
+
   // ---------- 壁纸（Wallspic / 壁纸迷） ----------
   const sanitizeWallpaperSource = (raw: unknown): WallpaperSourceRef | null => {
     if (!raw || typeof raw !== 'object') return null
@@ -2545,6 +2853,101 @@ function registerIpc(): void {
         .filter(
           (s) => s.name && /^https?:\/\//i.test(s.baseUrl) && !!isWallpaperTemplate(s.template)
         )
+      await writeFile(picked.filePath, JSON.stringify(rows, null, 2), 'utf8')
+      return { canceled: false, path: picked.filePath, count: rows.length }
+    } catch (err) {
+      return { canceled: false, error: (err as Error).message }
+    }
+  })
+
+  // ---------- 美图（魅影画廊 / 雪月映画） ----------
+  const sanitizeMeituSource = (raw: unknown): MeituSourceRef | null => {
+    if (!raw || typeof raw !== 'object') return null
+    const record = raw as Record<string, unknown>
+    const template = isMeituTemplate(record.template) ? record.template : null
+    const baseUrl =
+      typeof record.baseUrl === 'string' ? record.baseUrl.trim().slice(0, 300) : ''
+    if (!template || !/^https?:\/\//i.test(baseUrl)) return null
+    return {
+      id: typeof record.id === 'string' && record.id ? record.id.slice(0, 80) : template,
+      template,
+      baseUrl
+    }
+  }
+
+  ipcMain.handle(
+    'meitu:list',
+    (_e, rawSource: unknown, category: string, page: number, keyword: string) => {
+      const source = sanitizeMeituSource(rawSource)
+      if (
+        !source ||
+        typeof category !== 'string' ||
+        category.length > 80 ||
+        !Number.isFinite(page) ||
+        typeof keyword !== 'string' ||
+        keyword.length > 80
+      ) {
+        return { ok: false, error: '参数无效' }
+      }
+      const safeKeyword = keyword.trim()
+      return cachedResponse(
+        `meitu:list:v2|${source.id}|${source.template}|${source.baseUrl}|${category}|${Math.round(page)}|${safeKeyword}`,
+        30 * 60 * 1000,
+        () => meituList(source, category, Math.round(page), safeKeyword)
+      )
+    }
+  )
+
+  ipcMain.handle('meitu:categories', (_e, rawSource: unknown) => {
+    const source = sanitizeMeituSource(rawSource)
+    if (!source) return { ok: false, error: '参数无效' }
+    return cachedResponse(
+      `meitu:categories:v2|${source.id}|${source.template}|${source.baseUrl}`,
+      12 * 60 * 60 * 1000,
+      () => meituCategories(source)
+    )
+  })
+
+  ipcMain.handle('meitu:detail', (_e, rawSource: unknown, pageUrl: string) => {
+    const source = sanitizeMeituSource(rawSource)
+    if (
+      !source ||
+      typeof pageUrl !== 'string' ||
+      pageUrl.length > 600 ||
+      !/^https?:\/\//i.test(pageUrl)
+    ) {
+      return { ok: false, error: '参数无效' }
+    }
+    return cachedResponse(
+      `meitu:detail:v1|${source.id}|${source.template}|${pageUrl}`,
+      60 * 60 * 1000,
+      () => meituDetail(source, pageUrl)
+    )
+  })
+
+  ipcMain.handle('meitu:exportSources', async (_e, sources: unknown) => {
+    const list = Array.isArray(sources) ? sources : []
+    const picked = await dialog.showSaveDialog({
+      title: '导出套图源',
+      defaultPath: join(
+        lastDialogDir('meitu', app.getPath('documents')),
+        `老郑分享-套图源-${stamp()}.json`
+      ),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    })
+    if (picked.canceled || !picked.filePath) return { canceled: true }
+    await rememberDialogDir('meitu', picked.filePath)
+    try {
+      const rows = list
+        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
+        .map((s) => ({
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+          template: isMeituTemplate(s.template) ? s.template : '',
+          enabled: s.enabled !== false
+        }))
+        .filter((s) => s.name && /^https?:\/\//i.test(s.baseUrl) && !!isMeituTemplate(s.template))
       await writeFile(picked.filePath, JSON.stringify(rows, null, 2), 'utf8')
       return { canceled: false, path: picked.filePath, count: rows.length }
     } catch (err) {
@@ -2806,6 +3209,261 @@ function registerIpc(): void {
     return yumanhuaImages(comicId, chapterId, baseUrl)
   })
 
+  // ---------- 哔咔漫画（bikahub，站点故障时自动走 /go-home 防失联换址） ----------
+  ipcMain.handle('bikahub:recent', (_e, baseUrl?: string, sourceId?: string, page?: number) => {
+    const current = Number.isFinite(page) ? Math.max(1, Math.min(999, Math.floor(page as number))) : 1
+    return cachedResponse(
+      `bikahub:recent|${baseUrl ?? ''}|${sourceId ?? ''}|${current}`,
+      15 * 60 * 1000,
+      () => bikahubComicRecent(baseUrl, sourceId, current)
+    )
+  })
+
+  ipcMain.handle('bikahub:hot', (_e, baseUrl?: string, sourceId?: string, page?: number) => {
+    const current = Number.isFinite(page) ? Math.max(1, Math.min(999, Math.floor(page as number))) : 1
+    return cachedResponse(
+      `bikahub:hot|${baseUrl ?? ''}|${sourceId ?? ''}|${current}`,
+      15 * 60 * 1000,
+      () => bikahubComicHot(baseUrl, sourceId, current)
+    )
+  })
+
+  ipcMain.handle(
+    'bikahub:category',
+    (_e, categoryId: string, baseUrl?: string, sourceId?: string, page?: number) => {
+      if (typeof categoryId !== 'string' || !/^[a-z0-9-]{1,30}$/i.test(categoryId)) {
+        return { ok: false, items: [], error: '参数无效' }
+      }
+      const current = Number.isFinite(page)
+        ? Math.max(1, Math.min(999, Math.floor(page as number)))
+        : 1
+      return cachedResponse(
+        `bikahub:category|${categoryId}|${baseUrl ?? ''}|${sourceId ?? ''}|${current}`,
+        15 * 60 * 1000,
+        () => bikahubComicCategory(categoryId, baseUrl, sourceId, current)
+      )
+    }
+  )
+
+  ipcMain.handle('bikahub:categoryCounts', (_e, baseUrl?: string) =>
+    cachedResponse(`bikahub:categoryCounts|${baseUrl ?? ''}`, 10 * 60 * 1000, () =>
+      bikahubComicCategoryCounts(baseUrl)
+    )
+  )
+
+  ipcMain.handle('bikahub:search', (_e, keyword: string, baseUrl?: string, sourceId?: string) => {
+    if (typeof keyword !== 'string' || !keyword.trim() || keyword.length > 40) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    return cachedResponse(
+      `bikahub:search|v3|${keyword.trim()}|${baseUrl ?? ''}|${sourceId ?? ''}`,
+      30 * 60 * 1000,
+      () => bikahubComicSearch(keyword.trim(), baseUrl, sourceId)
+    )
+  })
+
+  ipcMain.handle('bikahub:detail', (_e, id: string, baseUrl?: string) => {
+    if (typeof id !== 'string' || !id || id.length > 80) {
+      return { ok: false, comic: null, error: '参数无效' }
+    }
+    return cachedResponse(`bikahub:detail|${id}|${baseUrl ?? ''}`, 12 * HOUR, () =>
+      bikahubComicDetail(id, baseUrl)
+    )
+  })
+
+  ipcMain.handle('bikahub:chapters', (_e, id: string, baseUrl?: string) => {
+    if (typeof id !== 'string' || !id || id.length > 80) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    return bikahubComicChapters(id, baseUrl)
+  })
+
+  ipcMain.handle('bikahub:images', (_e, comicId: string, chapterId: string, baseUrl?: string) => {
+    if (
+      typeof comicId !== 'string' ||
+      !comicId ||
+      comicId.length > 80 ||
+      typeof chapterId !== 'string' ||
+      !chapterId ||
+      chapterId.length > 80
+    ) {
+      return { ok: false, urls: [], error: '参数无效' }
+    }
+    return bikahubComicImages(comicId, chapterId, baseUrl)
+  })
+
+  // ---------- 头牌漫画（tptoon，站点故障时走 tpmh8.cc 防失联换址） ----------
+  ipcMain.handle('tptoon:recent', (_e, baseUrl?: string, sourceId?: string, page?: number) => {
+    const current = Number.isFinite(page) ? Math.max(1, Math.min(9999, Math.floor(page as number))) : 1
+    return cachedResponse(
+      `tptoon:v1:recent|${baseUrl ?? ''}|${sourceId ?? ''}|${current}`,
+      15 * 60 * 1000,
+      () => tptoonComicRecent(baseUrl, sourceId, current)
+    )
+  })
+
+  ipcMain.handle('tptoon:hot', (_e, baseUrl?: string, sourceId?: string, page?: number) => {
+    const current = Number.isFinite(page) ? Math.max(1, Math.min(9999, Math.floor(page as number))) : 1
+    return cachedResponse(
+      `tptoon:v1:hot|${baseUrl ?? ''}|${sourceId ?? ''}|${current}`,
+      15 * 60 * 1000,
+      () => tptoonComicHot(baseUrl, sourceId, current)
+    )
+  })
+
+  ipcMain.handle(
+    'tptoon:category',
+    (_e, categoryId: string, baseUrl?: string, sourceId?: string, page?: number) => {
+      if (typeof categoryId !== 'string' || !/^[a-z0-9-]{1,30}$/i.test(categoryId)) {
+        return { ok: false, items: [], error: '参数无效' }
+      }
+      const current = Number.isFinite(page)
+        ? Math.max(1, Math.min(9999, Math.floor(page as number)))
+        : 1
+      return cachedResponse(
+        `tptoon:v1:category|${categoryId}|${baseUrl ?? ''}|${sourceId ?? ''}|${current}`,
+        15 * 60 * 1000,
+        () => tptoonComicCategory(categoryId, baseUrl, sourceId, current)
+      )
+    }
+  )
+
+  ipcMain.handle('tptoon:categoryCounts', (_e, baseUrl?: string) =>
+    cachedResponse(`tptoon:v1:categoryCounts|${baseUrl ?? ''}`, 24 * 60 * 60 * 1000, () =>
+      tptoonComicCategoryCounts(baseUrl)
+    )
+  )
+
+  ipcMain.handle('tptoon:search', (_e, keyword: string, baseUrl?: string, sourceId?: string) => {
+    if (typeof keyword !== 'string' || !keyword.trim() || keyword.length > 40) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    return cachedResponse(
+      `tptoon:v1:search|${keyword.trim()}|${baseUrl ?? ''}|${sourceId ?? ''}`,
+      30 * 60 * 1000,
+      () => tptoonComicSearch(keyword.trim(), baseUrl, sourceId)
+    )
+  })
+
+  ipcMain.handle('tptoon:detail', (_e, id: string, baseUrl?: string) => {
+    if (typeof id !== 'string' || !id || id.length > 80) {
+      return { ok: false, comic: null, error: '参数无效' }
+    }
+    return cachedResponse(`tptoon:v1:detail|${id}|${baseUrl ?? ''}`, 12 * HOUR, () =>
+      tptoonComicDetail(id, baseUrl)
+    )
+  })
+
+  ipcMain.handle('tptoon:chapters', (_e, id: string, baseUrl?: string) => {
+    if (typeof id !== 'string' || !id || id.length > 80) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    return tptoonComicChapters(id, baseUrl)
+  })
+
+  ipcMain.handle('tptoon:images', (_e, comicId: string, chapterId: string, baseUrl?: string) => {
+    if (
+      typeof comicId !== 'string' ||
+      !comicId ||
+      comicId.length > 80 ||
+      typeof chapterId !== 'string' ||
+      !chapterId ||
+      chapterId.length > 80
+    ) {
+      return { ok: false, urls: [], error: '参数无效' }
+    }
+    return tptoonComicImages(comicId, chapterId, baseUrl)
+  })
+
+  // ---------- 禁漫天堂（18comic，站点故障时走 x99dh.net 优选访问换址） ----------
+  ipcMain.handle('jmcomic:recent', (_e, baseUrl?: string, sourceId?: string, page?: number) => {
+    const current = Number.isFinite(page) ? Math.max(1, Math.min(9999, Math.floor(page as number))) : 1
+    return cachedResponse(
+      `jmcomic:v1:recent|${baseUrl ?? ''}|${sourceId ?? ''}|${current}`,
+      15 * 60 * 1000,
+      () => jmcomicRecent(baseUrl, sourceId, current)
+    )
+  })
+
+  ipcMain.handle('jmcomic:hot', (_e, baseUrl?: string, sourceId?: string, page?: number) => {
+    const current = Number.isFinite(page) ? Math.max(1, Math.min(9999, Math.floor(page as number))) : 1
+    return cachedResponse(
+      `jmcomic:v1:hot|${baseUrl ?? ''}|${sourceId ?? ''}|${current}`,
+      15 * 60 * 1000,
+      () => jmcomicHot(baseUrl, sourceId, current)
+    )
+  })
+
+  ipcMain.handle(
+    'jmcomic:category',
+    (_e, categoryId: string, baseUrl?: string, sourceId?: string, page?: number) => {
+      if (typeof categoryId !== 'string' || !/^[a-z0-9-]{1,30}$/i.test(categoryId)) {
+        return { ok: false, items: [], error: '参数无效' }
+      }
+      const current = Number.isFinite(page)
+        ? Math.max(1, Math.min(9999, Math.floor(page as number)))
+        : 1
+      return cachedResponse(
+        `jmcomic:v1:category|${categoryId}|${baseUrl ?? ''}|${sourceId ?? ''}|${current}`,
+        15 * 60 * 1000,
+        () => jmcomicCategory(categoryId, baseUrl, sourceId, current)
+      )
+    }
+  )
+
+  ipcMain.handle('jmcomic:categoryCounts', (_e, baseUrl?: string) =>
+    cachedResponse(`jmcomic:v1:categoryCounts|${baseUrl ?? ''}`, 24 * HOUR, () =>
+      jmcomicCategoryCounts(baseUrl)
+    )
+  )
+
+  ipcMain.handle(
+    'jmcomic:search',
+    (_e, keyword: string, baseUrl?: string, sourceId?: string, page?: number) => {
+      if (typeof keyword !== 'string' || !keyword.trim() || keyword.length > 40) {
+        return { ok: false, items: [], error: '参数无效' }
+      }
+      const current = Number.isFinite(page)
+        ? Math.max(1, Math.min(9999, Math.floor(page as number)))
+        : 1
+      return cachedResponse(
+        `jmcomic:v1:search|${keyword.trim()}|${baseUrl ?? ''}|${sourceId ?? ''}|${current}`,
+        30 * 60 * 1000,
+        () => jmcomicSearch(keyword.trim(), baseUrl, sourceId, current)
+      )
+    }
+  )
+
+  ipcMain.handle('jmcomic:detail', (_e, id: string, baseUrl?: string) => {
+    if (typeof id !== 'string' || !id || id.length > 80) {
+      return { ok: false, comic: null, error: '参数无效' }
+    }
+    return cachedResponse(`jmcomic:v1:detail|${id}|${baseUrl ?? ''}`, 12 * HOUR, () =>
+      jmcomicDetail(id, baseUrl)
+    )
+  })
+
+  ipcMain.handle('jmcomic:chapters', (_e, id: string, baseUrl?: string) => {
+    if (typeof id !== 'string' || !id || id.length > 80) {
+      return { ok: false, items: [], error: '参数无效' }
+    }
+    return jmcomicChapters(id, baseUrl)
+  })
+
+  ipcMain.handle('jmcomic:images', (_e, comicId: string, chapterId: string, baseUrl?: string) => {
+    if (
+      typeof comicId !== 'string' ||
+      !comicId ||
+      comicId.length > 80 ||
+      typeof chapterId !== 'string' ||
+      !chapterId ||
+      chapterId.length > 80
+    ) {
+      return { ok: false, urls: [], error: '参数无效' }
+    }
+    return jmcomicImages(comicId, chapterId, baseUrl)
+  })
+
   ipcMain.handle('comic:testSource', async (_e, source: unknown) => {
     const input = source as {
       id?: unknown
@@ -2816,13 +3474,28 @@ function registerIpc(): void {
     if (!input || typeof input !== 'object') return { ok: false, error: '漫画源参数无效' }
     const baseUrl = typeof input.baseUrl === 'string' ? input.baseUrl.trim() : ''
     const id = typeof input.id === 'string' ? input.id.trim() : ''
-    const template = input.template === 'komiic' ? 'komiic' : 'yumanhua'
+    const template =
+      input.template === 'komiic'
+        ? 'komiic'
+        : input.template === 'bikahub'
+          ? 'bikahub'
+          : input.template === 'tptoon'
+            ? 'tptoon'
+            : input.template === 'jmcomic'
+              ? 'jmcomic'
+              : 'yumanhua'
     if (!id || !/^https?:\/\//i.test(baseUrl)) return { ok: false, error: '漫画源地址无效' }
     try {
       const res =
         template === 'komiic'
           ? await komiicRecent(0, '')
-          : await yumanhuaRecent(baseUrl, id)
+          : template === 'bikahub'
+            ? await bikahubComicRecent(baseUrl, id)
+            : template === 'tptoon'
+              ? await tptoonComicRecent(baseUrl, id)
+              : template === 'jmcomic'
+                ? await jmcomicRecent(baseUrl, id)
+                : await yumanhuaRecent(baseUrl, id)
       if (!res.ok || !res.items.length) return { ok: false, error: res.error ?? '没有返回漫画' }
       return { ok: true, count: res.items.length, message: `可用，返回 ${res.items.length} 部` }
     } catch (err) {

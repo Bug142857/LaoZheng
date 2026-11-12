@@ -354,6 +354,11 @@ export function PsitePage({
         }}
         searching={loading && !!query}
         placeholder="搜索视频关键词…"
+        onRefresh={() => {
+          void window.laozheng.forceRefresh('psite').catch(() => {})
+          void load(catId, query, 1)
+        }}
+        refreshing={loading}
       />
 
       {!query && (

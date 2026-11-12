@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronLeft, ExternalLink, Heart, LogIn, LogOut, RefreshCw } from 'lucide-react'
+import { ChevronLeft, ExternalLink, Heart, LogIn, LogOut } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import { EmptyState, Modal, ModuleShortcuts, Pagination } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
@@ -763,6 +763,12 @@ export function LiveRoomsPage({
         }}
         placeholder="搜索直播间 / 主播，或粘贴直播间链接"
         submitLabel="搜索"
+        onRefresh={() => {
+          void window.laozheng.forceRefresh('liveRooms').catch(() => {})
+          setReloadToken((value) => value + 1)
+        }}
+        refreshing={loading}
+        refreshDisabled={mode === 'category' && !areaPicker}
         leading={
           <select
             className="select-inline"
@@ -776,17 +782,6 @@ export function LiveRoomsPage({
               </option>
             ))}
           </select>
-        }
-        extra={
-          <button
-            type="button"
-            className="icon-btn"
-            title="刷新"
-            onClick={() => void loadList(page)}
-            disabled={loading || (mode === 'category' && !areaPicker)}
-          >
-            <RefreshCw size={16} />
-          </button>
         }
       />
 

@@ -45,6 +45,11 @@ const api: LaozhengApi = {
   wallpaperResolve: (source, pageUrl, width, height) =>
     ipcRenderer.invoke('wallpaper:resolve', source, pageUrl, width, height),
   exportWallpaperSources: (sources) => ipcRenderer.invoke('wallpaper:exportSources', sources),
+  meituList: (source, category, page, keyword) =>
+    ipcRenderer.invoke('meitu:list', source, category, page, keyword),
+  meituCategories: (source) => ipcRenderer.invoke('meitu:categories', source),
+  meituDetail: (source, pageUrl) => ipcRenderer.invoke('meitu:detail', source, pageUrl),
+  exportMeituSources: (sources) => ipcRenderer.invoke('meitu:exportSources', sources),
   searchVod: (source, keyword, year) => ipcRenderer.invoke('vod:search', source, keyword, year ?? ''),
   listVod: (source, page, typeId, keyword) =>
     ipcRenderer.invoke('vod:list', source, page, typeId, keyword),
@@ -102,15 +107,19 @@ const api: LaozhengApi = {
   exportMusicSources: (sources) => ipcRenderer.invoke('music:exportSources', sources),
   saveMusicLyrics: (input) => ipcRenderer.invoke('music:saveLyrics', input),
   listDownloads: () => ipcRenderer.invoke('downloads:list'),
+  refreshDownloads: () => ipcRenderer.invoke('downloads:refresh'),
   addDownload: (input) => ipcRenderer.invoke('downloads:add', input),
   removeDownload: (id, deleteFile) => ipcRenderer.invoke('downloads:remove', id, deleteFile),
   cancelDownload: (id) => ipcRenderer.invoke('downloads:cancel', id),
+  pauseDownload: (id) => ipcRenderer.invoke('downloads:pause', id),
+  resumeDownload: (id) => ipcRenderer.invoke('downloads:resume', id),
   openDownloadsDir: (kind) => ipcRenderer.invoke('downloads:openDir', kind),
   downloadRoot: () => ipcRenderer.invoke('downloads:root') as Promise<string>,
   chooseDownloadRoot: () => ipcRenderer.invoke('downloads:chooseRoot'),
   changeDownloadRoot: (root, move) => ipcRenderer.invoke('downloads:changeRoot', root, move),
   cacheInfo: () => ipcRenderer.invoke('app:cacheInfo'),
   clearCache: () => ipcRenderer.invoke('app:clearCache'),
+  forceRefresh: (scope) => ipcRenderer.invoke('cache:forceRefresh', scope),
   chooseCacheDir: () => ipcRenderer.invoke('app:chooseCacheDir'),
   getUiSettings: () => ipcRenderer.invoke('settings:getUi'),
   setUiSettings: (input) => ipcRenderer.invoke('settings:setUi', input),
@@ -136,6 +145,17 @@ const api: LaozhengApi = {
   trackMelonImages: (urls) => ipcRenderer.invoke('melon:trackImages', urls),
   melonImage: (url) => ipcRenderer.invoke('melon:image', url),
   melonDuration: (url) => ipcRenderer.invoke('melon:duration', url),
+  shuangkanCatalog: (source, content, category, page, sort) =>
+    ipcRenderer.invoke('shuangkan:catalog', source, content, category, page, sort),
+  shuangkanSearch: (source, content, keyword, page) =>
+    ipcRenderer.invoke('shuangkan:search', source, content, keyword, page),
+  shuangkanDetail: (source, content, id) =>
+    ipcRenderer.invoke('shuangkan:detail', source, content, id),
+  shuangkanPlay: (source, id) => ipcRenderer.invoke('shuangkan:play', source, id),
+  trackShuangkanImages: (urls, baseUrl) =>
+    ipcRenderer.invoke('shuangkan:trackImages', urls, baseUrl),
+  exportShuangkanSources: (sources) =>
+    ipcRenderer.invoke('shuangkan:exportSources', sources),
   dramaCatalog: (source, genre, page, keyword) =>
     ipcRenderer.invoke('drama:catalog', source, genre, page, keyword),
   dramaDetail: (source, seriesId) => ipcRenderer.invoke('drama:detail', source, seriesId),
@@ -146,6 +166,7 @@ const api: LaozhengApi = {
   novelSearch: (source, keyword) => ipcRenderer.invoke('novel:search', source, keyword),
   novelCategory: (source, categoryId, page) =>
     ipcRenderer.invoke('novel:category', source, categoryId, page),
+  novelCategoryCounts: (source) => ipcRenderer.invoke('novel:categoryCounts', source),
   novelDetail: (source, bookId) => ipcRenderer.invoke('novel:detail', source, bookId),
   novelChapter: (source, bookId, chapterId) =>
     ipcRenderer.invoke('novel:chapter', source, bookId, chapterId),
@@ -210,6 +231,49 @@ const api: LaozhengApi = {
   yumanhuaChapters: (id, baseUrl) => ipcRenderer.invoke('yumanhua:chapters', id, baseUrl),
   yumanhuaImages: (comicId, chapterId, baseUrl) =>
     ipcRenderer.invoke('yumanhua:images', comicId, chapterId, baseUrl),
+  bikahubComicRecent: (baseUrl, sourceId, page) =>
+    ipcRenderer.invoke('bikahub:recent', baseUrl, sourceId, page),
+  bikahubComicHot: (baseUrl, sourceId, page) =>
+    ipcRenderer.invoke('bikahub:hot', baseUrl, sourceId, page),
+  bikahubComicCategory: (categoryId, baseUrl, sourceId, page) =>
+    ipcRenderer.invoke('bikahub:category', categoryId, baseUrl, sourceId, page),
+  bikahubComicCategoryCounts: (baseUrl) =>
+    ipcRenderer.invoke('bikahub:categoryCounts', baseUrl),
+  bikahubComicSearch: (keyword, baseUrl, sourceId) =>
+    ipcRenderer.invoke('bikahub:search', keyword, baseUrl, sourceId),
+  bikahubComicDetail: (id, baseUrl) => ipcRenderer.invoke('bikahub:detail', id, baseUrl),
+  bikahubComicChapters: (id, baseUrl) =>
+    ipcRenderer.invoke('bikahub:chapters', id, baseUrl),
+  bikahubComicImages: (comicId, chapterId, baseUrl) =>
+    ipcRenderer.invoke('bikahub:images', comicId, chapterId, baseUrl),
+  tptoonComicRecent: (baseUrl, sourceId, page) =>
+    ipcRenderer.invoke('tptoon:recent', baseUrl, sourceId, page),
+  tptoonComicHot: (baseUrl, sourceId, page) =>
+    ipcRenderer.invoke('tptoon:hot', baseUrl, sourceId, page),
+  tptoonComicCategory: (categoryId, baseUrl, sourceId, page) =>
+    ipcRenderer.invoke('tptoon:category', categoryId, baseUrl, sourceId, page),
+  tptoonComicCategoryCounts: (baseUrl) =>
+    ipcRenderer.invoke('tptoon:categoryCounts', baseUrl),
+  tptoonComicSearch: (keyword, baseUrl, sourceId) =>
+    ipcRenderer.invoke('tptoon:search', keyword, baseUrl, sourceId),
+  tptoonComicDetail: (id, baseUrl) => ipcRenderer.invoke('tptoon:detail', id, baseUrl),
+  tptoonComicChapters: (id, baseUrl) => ipcRenderer.invoke('tptoon:chapters', id, baseUrl),
+  tptoonComicImages: (comicId, chapterId, baseUrl) =>
+    ipcRenderer.invoke('tptoon:images', comicId, chapterId, baseUrl),
+  jmcomicRecent: (baseUrl, sourceId, page) =>
+    ipcRenderer.invoke('jmcomic:recent', baseUrl, sourceId, page),
+  jmcomicHot: (baseUrl, sourceId, page) =>
+    ipcRenderer.invoke('jmcomic:hot', baseUrl, sourceId, page),
+  jmcomicCategory: (categoryId, baseUrl, sourceId, page) =>
+    ipcRenderer.invoke('jmcomic:category', categoryId, baseUrl, sourceId, page),
+  jmcomicCategoryCounts: (baseUrl) =>
+    ipcRenderer.invoke('jmcomic:categoryCounts', baseUrl),
+  jmcomicSearch: (keyword, baseUrl, sourceId, page) =>
+    ipcRenderer.invoke('jmcomic:search', keyword, baseUrl, sourceId, page),
+  jmcomicDetail: (id, baseUrl) => ipcRenderer.invoke('jmcomic:detail', id, baseUrl),
+  jmcomicChapters: (id, baseUrl) => ipcRenderer.invoke('jmcomic:chapters', id, baseUrl),
+  jmcomicImages: (comicId, chapterId, baseUrl) =>
+    ipcRenderer.invoke('jmcomic:images', comicId, chapterId, baseUrl),
   testComicSource: (source) => ipcRenderer.invoke('comic:testSource', source),
   exportComicSources: (sources) => ipcRenderer.invoke('comic:exportSources', sources),
   wygamerHome: (page) => ipcRenderer.invoke('wygamer:home', page),

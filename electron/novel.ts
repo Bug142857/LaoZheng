@@ -18,6 +18,13 @@ import {
   type NovelTestResult
 } from '../src/shared/novel'
 import { saveNovelFile } from './downloads'
+import {
+  bikahubNovelCategory,
+  bikahubNovelChapter,
+  bikahubNovelDetail,
+  bikahubNovelHome,
+  bikahubNovelSearch
+} from './bikahub'
 
 /**
  * 小说书源解析（笔趣阁系模板）：
@@ -387,6 +394,7 @@ function bookLinkPattern(template: NovelSourceTemplate): RegExp {
     case 'zuizhong':
     case 'banshanren':
     case 'shenpinwu':
+    case 'bikahub':
       // 这些模板使用各自的解析函数，不走通用书名链接匹配
       return /(?!)<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]{1,120}?)<\/a>/gi
   }
@@ -1526,6 +1534,11 @@ function detailMeta(
 
 async function fetchDetail(source: NovelSourceInput, bookId: string): Promise<NovelDetail> {
   const template = source.template
+  if (template === 'bikahub') {
+    const result = await bikahubNovelDetail(baseOf(source), bookId)
+    if (!result.ok || !result.detail) throw new Error(result.error ?? '详情加载失败')
+    return result.detail
+  }
   if (template === 'shenpinwu') return fetchShenpinwuDetail(source, bookId)
   const base = await canonicalBase(source)
 
@@ -1804,6 +1817,8 @@ async function fetchShenpinwuChapter(
 
 async function fetchHome(source: NovelSourceInput): Promise<NovelListResponse> {
   const base = baseOf(source)
+  // 哔咔小说：Nuxt payload 解析，站点挂了会自动走 /go-home 防失联换址
+  if (source.template === 'bikahub') return bikahubNovelHome(base)
   if (source.template === 'shenpinwu') {
     const shenpinwu = await requestShenpinwuPage(`${base}/`)
     const items = parseShenpinwuItems(shenpinwu.html, base, 30)
@@ -1870,6 +1885,7 @@ async function fetchHome(source: NovelSourceInput): Promise<NovelListResponse> {
 
 async function fetchSearch(source: NovelSourceInput, keyword: string): Promise<NovelListResponse> {
   const template = source.template
+  if (template === 'bikahub') return bikahubNovelSearch(baseOf(source), keyword)
   const base = template === 'shenpinwu' ? baseOf(source) : await canonicalBase(source)
   if (template === 'shenpinwu') {
     const page = await requestShenpinwuPage(
@@ -2097,6 +2113,8 @@ function chapterUrl(
       return `${base}/novel/${bookId}/${chapterId}`
     case 'shenpinwu':
       return `${base}/${bookId}/${chapterId}${suffix}.html`
+    case 'bikahub':
+      return `${base}/novel/read/${bookId}/${chapterId}`
   }
 }
 
@@ -2166,6 +2184,7 @@ async function fetchChapter(
   chapterId: string
 ): Promise<NovelChapterResponse> {
   const template = source.template
+  if (template === 'bikahub') return bikahubNovelChapter(baseOf(source), bookId, chapterId)
   if (template === 'shenpinwu') {
     return fetchShenpinwuChapter(source, bookId, chapterId)
   }
@@ -2259,6 +2278,7 @@ async function fetchCategory(
   page: number
 ): Promise<NovelListResponse> {
   const template = source.template
+  if (template === 'bikahub') return bikahubNovelCategory(baseOf(source), categoryId, page)
   const base = template === 'shenpinwu' ? baseOf(source) : await canonicalBase(source)
   if (template === 'shenpinwu') {
     const result = await requestShenpinwuPage(`${base}/class/${categoryId}/${page}/`)

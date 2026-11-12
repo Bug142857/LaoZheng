@@ -21,20 +21,29 @@ export interface DramaSource {
 
 export const XIFAN_DRAMA_SOURCE_ID = 'xifan'
 export const XIFAN_DRAMA_BASE_URL = 'https://xifan-api-cn.youlishipin.com'
+export const ROU07_DRAMA_SOURCE_ID = 'rou07'
+export const ROU07_DRAMA_BASE_URL = 'https://rou07.net'
 
-export const DEFAULT_DRAMA_SOURCES: DramaSource[] = [
-  {
-    id: XIFAN_DRAMA_SOURCE_ID,
-    name: '西饭短剧',
-    enabled: true,
-    builtin: true,
-    baseUrl: XIFAN_DRAMA_BASE_URL,
-    // 内置源均已实测可用：新安装默认显示有效，之后手动测试再覆盖真实结果
-    testStatus: 'ok',
-    testMsg: '可用',
-    testAt: 0
-  }
+const BUILTIN_DRAMA_SOURCES: Array<Pick<DramaSource, 'id' | 'name' | 'baseUrl'>> = [
+  { id: XIFAN_DRAMA_SOURCE_ID, name: '西饭短剧', baseUrl: XIFAN_DRAMA_BASE_URL },
+  { id: ROU07_DRAMA_SOURCE_ID, name: '肉视频短剧', baseUrl: ROU07_DRAMA_BASE_URL }
 ]
+
+export function isBuiltinDramaSource(id: string): boolean {
+  return BUILTIN_DRAMA_SOURCES.some((source) => source.id === id)
+}
+
+export const DEFAULT_DRAMA_SOURCES: DramaSource[] = BUILTIN_DRAMA_SOURCES.map((source) => ({
+  id: source.id,
+  name: source.name,
+  enabled: true,
+  builtin: true,
+  baseUrl: source.baseUrl,
+  // 内置源均已实测可用：新安装默认显示有效，之后手动测试再覆盖真实结果
+  testStatus: 'ok',
+  testMsg: '可用',
+  testAt: 0
+}))
 
 function hostOf(url: string): string {
   try {
@@ -55,8 +64,8 @@ function testFields(source: Partial<DramaSource>): Pick<DramaSource, 'testStatus
 
 /**
  * 备份 / 旧版本数据里可能还留着红果、河马、自定义源：
- * 只保留西饭和用户自己添加的苹果CMS 短剧源。
- * 没有 dramaSources 字段（旧数据 / 手机端备份）时补默认西饭；显式空列表表示用户删光了。
+ * 只保留内置源（西饭 / 肉视频）和用户自己添加的苹果CMS 短剧源。
+ * 没有 dramaSources 字段（旧数据 / 手机端备份）时补默认内置源；显式空列表表示用户删光了。
  */
 export function normalizeDramaSources(raw: unknown): DramaSource[] {
   if (!Array.isArray(raw)) return DEFAULT_DRAMA_SOURCES.map((source) => ({ ...source }))
@@ -65,18 +74,19 @@ export function normalizeDramaSources(raw: unknown): DramaSource[] {
     if (!item || typeof item !== 'object') continue
     const source = item as Partial<DramaSource>
     if (typeof source.id !== 'string' || !source.id) continue
-    if (source.id === XIFAN_DRAMA_SOURCE_ID) {
-      if (out.some((entry) => entry.id === XIFAN_DRAMA_SOURCE_ID)) continue
+    const preset = BUILTIN_DRAMA_SOURCES.find((entry) => entry.id === source.id)
+    if (preset) {
+      if (out.some((entry) => entry.id === source.id)) continue
       const rawBaseUrl = typeof source.baseUrl === 'string' ? source.baseUrl.trim() : ''
       out.push({
-        id: XIFAN_DRAMA_SOURCE_ID,
+        id: source.id,
         name:
           typeof source.name === 'string' && source.name.trim()
             ? source.name.trim()
-            : '西饭短剧',
+            : preset.name,
         enabled: source.enabled !== false,
         builtin: true,
-        baseUrl: /^https?:\/\//i.test(rawBaseUrl) ? rawBaseUrl : XIFAN_DRAMA_BASE_URL,
+        baseUrl: /^https?:\/\//i.test(rawBaseUrl) ? rawBaseUrl : preset.baseUrl,
         ...testFields(source)
       })
       continue
@@ -96,6 +106,12 @@ export function normalizeDramaSources(raw: unknown): DramaSource[] {
       ...testFields(source)
     })
   }
+  // 老用户数据只有西饭：补上肉视频短剧，升级后不用手动添加
+  const xifanIndex = out.findIndex((entry) => entry.id === XIFAN_DRAMA_SOURCE_ID)
+  if (xifanIndex >= 0 && !out.some((entry) => entry.id === ROU07_DRAMA_SOURCE_ID)) {
+    const preset = DEFAULT_DRAMA_SOURCES.find((entry) => entry.id === ROU07_DRAMA_SOURCE_ID)
+    if (preset) out.splice(xifanIndex + 1, 0, { ...preset })
+  }
   return out
 }
 
@@ -109,6 +125,8 @@ export interface DramaSourceInput {
 export interface DramaCategory {
   slug: string
   label: string
+  /** 内置肉视频源直接带分类数量，其它源按需另查 */
+  count?: number
 }
 
 export interface DramaItem {
