@@ -1,7 +1,7 @@
 # 老郑分享 · PC 端项目记忆
 
 > **唯一记忆入口**（PC 端仓库 https://github.com/Bug142857/LaoZheng），换电脑 / 换 AI 账号后从这里恢复上下文。
-> 最后更新：2026-11-12（v0.136 未发版，**下次版本号 0.137**）。
+> 最后更新：2026-11-12（v0.136 已发版，**下次版本号 0.137**）。
 > **读取纪律**：开工只读第 0 节（Read offset 0, limit 140），其余内容按关键词 Grep；**禁止整文件读取本文件**。
 > 历史细节已归档，不要整读：`docs/archive/VERSION_LOG.md`（v0.55~v0.123 流水）、`docs/archive/MODULE_DETAILS.md`（各模块完整实现口径）、`docs/archive/MOBILE_HISTORY.md`（手机端原文）。
 >
@@ -10,7 +10,7 @@
 ### 0. 新窗口先读（当前状态）
 
 - **⛔ 开工纪律（2026-11-11 用户强调，最高优先级）**：① 开工先读本节 + 跑 `git status`（**不要整读本文件与 project_memory.md**）；② 严格执行既有全部规则（版本号先 +1、新功能必带缓存 / 导入导出 / 云同步、各模块口径、发版需用户明说），不得凭印象省略；③ 收尾按「接入内容 → 验证结果 → 剩余限制 → 安装包」四段输出并附真实数据，不得只回「已修复」；④ 每轮结束**仅在出现新硬规则 / 用户新口径时**按「记忆同步净增长为 0」追加（单次 ≤5 行，同时删等量过期内容），不重复抄写既有内容；**平时一律不 commit / push**，用户明确说「发版」才 push（手机端 ShangYin 的「每轮必 push」不适用于 PC 端）。
-- **版本状态**：v0.136 未发版（`package.json` = `0.136.0`）；**下次版本号 0.137**；最新已发版 = v0.109（Release 资产 `LaoZheng-0.109-Setup.exe`，108,100,148 字节，公开 Gist `update.json` 已同步 0.109）。
+- **版本状态**：v0.136 已发版（`package.json` = `0.136.0`）；**下次版本号 0.137**；最新已发版 = v0.136（Release 资产 `LaoZheng-0.136-Setup.exe`，108,137,280 字节，公开 Gist `update.json` 已同步 0.136）。
 - **v0.131→v0.134（未发版）套图模块（原「美图」）**：新增 `meitu` 模块，默认源 魅影画廊 `https://www.jb9.es`（jb9 模板，入口是线路跳转页 `var targets`，解析可用镜像并缓存 30 分钟）+ 雪月映画 `https://taoo.xyz`（taoo 模板，Typecho photograph 主题）；列表 / 分类 / 图集详情（taoo 详情读 `script#virtual-gallery-data`，jb9 详情读 gallery-item 原图链接），图集内可翻页大图、收藏、下载到「套图」目录（v0.134 起由「美图」迁移改名）；源存 `data.meituSources`，片源管理有套图源卡片（增删改 / 导入 / 导出 / 测试 / 启停），列表缓存 `meitu1`；魅影画廊分类平铺展示站点导航全部分类（含下拉细分，去掉深夜电台，slug 作 id，数量仍按站点头尾页折算）；漫画 / 套图的网格浏览卡片右上角有单张下载按钮（直接进下载中心，不用点开）。
 - **v0.124（未发版）皇片镜像信息流**：P站默认 `pList('recommended')` = `/recommended`，可切 推荐/最新/热门；X站默认 `/new/1`（最新），热门 = `/best`（单页），分类页显式 `s:uploaddate` / `s:views`；XH 默认 `/newest`，热门 = `/best`，分类排序段 `/categories/<slug>/newest|best/N`；镜像 chip 顺序 = 排序 chip → 全部 → 分类；X站 38 个分类中文映射 + 站内 `"nbResults"` 数量（2h 内存缓存）；XH 分类过滤 `macanese`（澳门人）。
 - **v0.122（未发版）皇片播放专项**：片源管理 `testMsg` 为空且继承状态与预设一致时借用文案「可用」；`SiteResolver` 新增 `mediaAuth`（rou07 = false，不登记站点鉴权）+ `pickSkMediaUa`（3 个候选 UA 并行探测 playUrl，取返回 200 + `#EXTM3U` 的那个）；`skMediaHosts` 改存完整 `{referer, cookie, ua}`，新增 `noteShuangkanMediaRedirect` + `main.ts` `onBeforeRedirect`，让重定向后的 `jre*.vc*` 网关继承同一份鉴权；hls.js 增加 `manifestLoadingMaxRetry:6 / levelLoadingMaxRetry:6 / fragLoadingMaxRetry:8`，`LEVEL_LOADED` 首分片含 `/tip.` 直接报「站点风控拦截了播放」，不静默播提示片。
@@ -43,7 +43,7 @@
 - **Release 说明必须用 UTF-8**：用 Node `fetch` 或 curl 提交 JSON，不要用 PowerShell `Invoke-RestMethod` 手拼中文（会乱码）。
 - 构建产物 `out/`、安装包 `release/`、`node_modules/` 不入库；`npm run dist` 收尾（`scripts/pack-artifact.cjs`）只保留当前 exe，删除旧安装包 / `latest.yml` / `.blockmap` / `win-unpacked`；应用启动时清空 `userData/updates` 旧包。
 - 发版前必须 `npm run build` 通过；安装包用 `npm run dist`（NSIS，可选安装目录、桌面快捷方式「老郑分享」、`build/installer.nsh` 卸载页可选清除个人数据）。
-- **发版必做（2026-11-03 用户强调）**：发布后必须同步公开 Gist 更新清单 `update.json`（gist id `802551160083623580189fc536724d65`，字段 `version / url / exe / notes`），与当次 Release 完全一致；这是 GitHub API 不可达时检查更新的唯一兜底，漏更用户永远收不到新版。
+- **发版必做（2026-11-03 用户强调）**：发布后必须同步公开 Gist 更新清单 `update.json`（gist id `802551160083623580189fc536724d65`，字段 `version / url / exe / notes`），与当次 Release 完全一致；这是 GitHub API 不可达时检查更新的唯一兜底，漏更用户永远收不到新版。同步方式：环境里的 `GH_TOKEN` 是 App token、改 Gist 会 403，改用 `git credential fill` 取 GCM 凭据（scopes 含 gist/repo/workflow）走 `PATCH /gists/{id}`，Node fetch 需加 `--use-system-ca`。
 - 更新链路：公开 Releases API → 后台下载 exe（检查与下载都先并发探测直连 / gh-proxy.com / ghproxy.net 按延迟选线）→ 打开 NSIS 向导；API 不可达回退 Gist 清单。安装包签名仍未做（无证书，见第 8 节）。
 
 ### 4. 工程结构（当前）
