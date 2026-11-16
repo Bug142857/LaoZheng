@@ -232,6 +232,8 @@ import {
   wygamerResolveDownload,
   wygamerSearch
 } from './wygamer'
+import { emuList, emuSearch, openEmuGame } from './emu'
+import { isEmuPlatform } from '../src/shared/emu'
 import {
   autoZlibLogin,
   openZlibLogin,
@@ -1103,6 +1105,14 @@ function safeFileBase(raw: string): string {
 function broadcastUpdateProgress(progress: UpdateProgress): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('update:progress', progress)
+    // 同步到任务栏：结束 / 失败时清除，大小未知时用不确定态
+    if (progress.error || progress.percent >= 1) {
+      win.setProgressBar(-1)
+    } else if (progress.total > 0) {
+      win.setProgressBar(Math.max(0.01, progress.percent))
+    } else {
+      win.setProgressBar(2)
+    }
   }
 }
 
@@ -1205,16 +1215,47 @@ async function installUpdateInstaller(path: string): Promise<void> {
   setTimeout(() => app.quit(), 900)
 }
 
-/** 启动后静默检查：有直链更新则后台下载，完成后询问是否安装 */
+/** 启动后检查更新：先询问是否更新，确认后才下载，下载完成再确认安装 */
 async function autoUpdateCheck(win: BrowserWindow): Promise<void> {
   const info = await checkUpdateInternal()
   if (!info.ok || !info.hasUpdate || !info.downloadUrl) return
+  if (win.isDestroyed()) return
+  const confirm = await dialog.showMessageBox(win, {
+    type: 'info',
+    title: '发现新版本',
+    message: `发现新版本 ${info.latest}（当前 ${info.current}）`,
+    detail: '是否现在下载并安装？下载完成后会再确认一次，不会自动关闭应用。',
+    buttons: ['立即更新', '稍后'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true
+  })
+  if (confirm.response !== 0) return
   const downloaded = await downloadUpdateInstaller(info.downloadUrl)
-  if (!downloaded.ok || !downloaded.path) return
+  if (!downloaded.ok || !downloaded.path) {
+    // 通知界面收起进度条（失败时没有正常的进度结束事件）
+    broadcastUpdateProgress({
+      received: 0,
+      total: 0,
+      percent: 0,
+      error: downloaded.error ?? '下载失败'
+    })
+    if (!win.isDestroyed()) {
+      await dialog.showMessageBox(win, {
+        type: 'error',
+        title: '更新下载失败',
+        message: '新版本安装包下载失败',
+        detail: downloaded.error ?? '请稍后到设置页手动检查更新重试。',
+        buttons: ['知道了'],
+        noLink: true
+      })
+    }
+    return
+  }
   if (win.isDestroyed()) return
   const answer = await dialog.showMessageBox(win, {
     type: 'info',
-    title: '发现新版本',
+    title: '下载完成',
     message: `新版本 ${info.latest} 已下载完成`,
     detail: '点击「立即安装」会关闭应用并打开安装向导，按提示完成即可。',
     buttons: ['立即安装', '稍后'],
@@ -1289,7 +1330,7 @@ function registerIpc(): void {
   const HOUR = 60 * 60 * 1000
   const DAY = 24 * HOUR
   /** 修改器解析逻辑变更时递增，旧的搜索 / 详情缓存立即失效 */
-  const TRAINER_CACHE_VERSION = 2
+  const TRAINER_CACHE_VERSION = 3
 
   ipcMain.handle('subject:search', (_e, category: SearchCategory, query: string) => {
     if (!SEARCH_CATEGORIES.has(category) || typeof query !== 'string' || query.length > 100) {
@@ -2514,9 +2555,11 @@ function registerIpc(): void {
     novel: ['novel:', 'bikahub:'],
     melon: ['melon:'],
     game: ['wygamer:'],
+    emu: ['emu:'],
     book: ['zlib:'],
     wallpaper: ['wallpaper:'],
     meitu: ['meitu:'],
+    gamecheat: ['trainers:'],
     shuangkan: ['shuangkan:'],
     psite: ['psite:'],
     xsite: ['xsite:']
@@ -3602,6 +3645,38 @@ function registerIpc(): void {
       return { ok: false, error: '参数无效' }
     }
     return wygamerResolveDownload(payUrl)
+  })
+
+  // ---------- 模拟（yikm 小霸王 / GBA / 街机） ----------
+  ipcMain.handle('emu:list', (_e, platform: string, tag: string, page: number) => {
+    if (
+      !isEmuPlatform(platform) ||
+      typeof tag !== 'string' ||
+      tag.length > 40 ||
+      !Number.isInteger(page) ||
+      page < 1 ||
+      page > 5000
+    ) {
+      return { ok: false, items: [], page: 1, lastPage: 0, hasMore: false, error: '参数无效' }
+    }
+    return cachedResponse(`emu:list|v2|${platform}|${tag}|${page}`, 30 * 60 * 1000, () =>
+      emuList(platform, tag, page)
+    )
+  })
+
+  ipcMain.handle('emu:search', (_e, keyword: string) => {
+    if (typeof keyword !== 'string' || !keyword.trim() || keyword.trim().length > 40) {
+      return { ok: false, items: [], error: '请输入 1~40 个字的搜索关键词' }
+    }
+    const query = keyword.trim()
+    return cachedResponse(`emu:search|v2|${query}`, 30 * 60 * 1000, () => emuSearch(query))
+  })
+
+  ipcMain.handle('emu:open', (_e, id: string) => {
+    if (typeof id !== 'string' || !/^\d{1,9}$/.test(id)) {
+      return { ok: false, error: '参数无效' }
+    }
+    return openEmuGame(id)
   })
 
   // ---------- Z-Library ----------

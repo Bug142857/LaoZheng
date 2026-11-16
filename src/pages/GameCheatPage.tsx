@@ -40,6 +40,7 @@ interface CheatCache {
   sourceId: string
   query: string
   page: number
+  pageCount: number
   items: TrainerListItem[]
   hasMore: boolean
 }
@@ -48,6 +49,7 @@ const EMPTY_CACHE: CheatCache = {
   sourceId: 'all',
   query: '',
   page: 1,
+  pageCount: 0,
   items: [],
   hasMore: false
 }
@@ -98,6 +100,7 @@ export function GameCheatPage({
   const [query, setQuery] = useState(cache.query)
   const [input, setInput] = useState(cache.query)
   const [page, setPage] = useState(cache.page)
+  const [pageCount, setPageCount] = useState(Number(cache.pageCount) || 0)
   const [hasMore, setHasMore] = useState(cache.hasMore)
   const [items, setItems] = useState<TrainerListItem[]>(cache.items)
   const [loading, setLoading] = useState(!cache.items.length)
@@ -133,6 +136,7 @@ export function GameCheatPage({
     if (!inputs.length) {
       setItems([])
       setHasMore(false)
+      setPageCount(0)
       setLoading(false)
       setError('没有启用的补丁源')
       return
@@ -143,11 +147,13 @@ export function GameCheatPage({
       if (!res.ok) {
         setItems([])
         setHasMore(false)
+        setPageCount(0)
         setError(res.error ?? '加载失败')
         return
       }
       setItems(res.items)
       setPage(res.page)
+      setPageCount(res.pageCount ?? 0)
       setHasMore(res.hasMore)
       setSourceId(filter)
       setTranslatedTo(res.translatedTo ?? '')
@@ -155,6 +161,7 @@ export function GameCheatPage({
         sourceId: filter,
         query: keyword,
         page: res.page,
+        pageCount: res.pageCount ?? 0,
         items: res.items,
         hasMore: res.hasMore
       })
@@ -163,6 +170,7 @@ export function GameCheatPage({
       if (seq !== requestSeq.current) return
       setItems([])
       setHasMore(false)
+      setPageCount(0)
       setError((err as Error).message)
     } finally {
       if (seq === requestSeq.current) setLoading(false)
@@ -555,7 +563,10 @@ export function GameCheatPage({
         onClear={clearSearch}
         placeholder="搜索游戏名（中英文均可）…"
         disabled={loading}
-        onRefresh={() => void load(sourceId, query, 1)}
+        onRefresh={() => {
+          void window.laozheng.forceRefresh('gamecheat').catch(() => {})
+          void load(sourceId, query, 1)
+        }}
         refreshing={loading}
         leading={
           <select
@@ -636,9 +647,9 @@ export function GameCheatPage({
       {items.length ? (
         <Pagination
           page={page}
+          lastPage={pageCount}
           hasMore={hasMore}
           disabled={loading}
-          showLast={false}
           onChange={(next) => void load(sourceId, query, next)}
         />
       ) : null}

@@ -19,6 +19,8 @@ export interface UpdateProgress {
   percent: number
   /** 当前下载使用的线路名 */
   line?: string
+  /** 下载失败原因；有值表示本条是结束事件，界面应隐藏进度条 */
+  error?: string
 }
 
 export interface UpdateDownloadResult {

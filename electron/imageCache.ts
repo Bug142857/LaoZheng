@@ -14,6 +14,34 @@ import { descrambleJmImage, jmImageNeedsDescramble } from './jmcomicImage'
 
 const SCHEME = 'lzimg'
 const CACHE_CONTROL = 'public, max-age=31536000, immutable'
+/** xhcdn 等图床在并发拉图时会偶发 ECONNRESET：失败后短暂等待重试一次即可恢复 */
+const FETCH_ATTEMPTS = 2
+const RETRY_DELAY_MS = 150
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function fetchImage(target: string, headerFor: (url: string) => Record<string, string>): Promise<Response> {
+  let lastError: unknown = null
+  for (let attempt = 1; attempt <= FETCH_ATTEMPTS; attempt += 1) {
+    try {
+      const res = await fetch(target, {
+        headers: headerFor(target),
+        redirect: 'follow',
+        signal: AbortSignal.timeout(20_000)
+      })
+      // 5xx / 429 是图床临时故障，可以重试；4xx 重试没有意义
+      const retryable = res.status >= 500 || res.status === 429
+      if (res.ok || !retryable || attempt === FETCH_ATTEMPTS) return res
+    } catch (err) {
+      lastError = err
+      if (attempt === FETCH_ATTEMPTS) throw err
+    }
+    await sleep(RETRY_DELAY_MS)
+  }
+  throw lastError ?? new Error('图片请求失败')
+}
 
 export function registerImageCacheScheme(): void {
   protocol.registerSchemesAsPrivileged([
@@ -104,11 +132,7 @@ export function setupImageCacheHandler(headerFor: (url: string) => Record<string
       // 未缓存，走网络
     }
     try {
-      const res = await fetch(target, {
-        headers: headerFor(target),
-        redirect: 'follow',
-        signal: AbortSignal.timeout(20_000)
-      })
+      const res = await fetchImage(target, headerFor)
       // 源站可能返回 4xx 自定义状态（如 472），统一折成 404/502，避免 Chromium 报未知状态
       if (!res.ok) return new Response(null, { status: res.status >= 500 ? 502 : 404 })
       let data: Buffer = Buffer.from(await res.arrayBuffer())

@@ -1,7 +1,7 @@
 # 老郑分享 · PC 端项目记忆
 
 > **唯一记忆入口**（PC 端仓库 https://github.com/Bug142857/LaoZheng），换电脑 / 换 AI 账号后从这里恢复上下文。
-> 最后更新：2026-11-12（v0.136 已发版，**下次版本号 0.137**）。
+> 最后更新：2026-11-16（工作区 v0.150 未发版；最新已发版 v0.136，下次修改 +1 到 0.151）。
 > **读取纪律**：开工只读第 0 节（Read offset 0, limit 140），其余内容按关键词 Grep；**禁止整文件读取本文件**。
 > 历史细节已归档，不要整读：`docs/archive/VERSION_LOG.md`（v0.55~v0.123 流水）、`docs/archive/MODULE_DETAILS.md`（各模块完整实现口径）、`docs/archive/MOBILE_HISTORY.md`（手机端原文）。
 >
@@ -10,15 +10,16 @@
 ### 0. 新窗口先读（当前状态）
 
 - **⛔ 开工纪律（2026-11-11 用户强调，最高优先级）**：① 开工先读本节 + 跑 `git status`（**不要整读本文件与 project_memory.md**）；② 严格执行既有全部规则（版本号先 +1、新功能必带缓存 / 导入导出 / 云同步、各模块口径、发版需用户明说），不得凭印象省略；③ 收尾按「接入内容 → 验证结果 → 剩余限制 → 安装包」四段输出并附真实数据，不得只回「已修复」；④ 每轮结束**仅在出现新硬规则 / 用户新口径时**按「记忆同步净增长为 0」追加（单次 ≤5 行，同时删等量过期内容），不重复抄写既有内容；**平时一律不 commit / push**，用户明确说「发版」才 push（手机端 ShangYin 的「每轮必 push」不适用于 PC 端）。
-- **版本状态**：v0.136 已发版（`package.json` = `0.136.0`）；**下次版本号 0.137**；最新已发版 = v0.136（Release 资产 `LaoZheng-0.136-Setup.exe`，108,137,280 字节，公开 Gist `update.json` 已同步 0.136）。
+- **版本状态**：工作区 **v0.150 未发版**（`package.json` = `0.150.0`，含 0.138 那批未提交改动）；最新已发版 = v0.136（Release 资产 `LaoZheng-0.136-Setup.exe`，108,137,280 字节，公开 Gist `update.json` 已同步 0.136）；发版必须用户明确说「发版」。
 - **v0.131→v0.134（未发版）套图模块（原「美图」）**：新增 `meitu` 模块，默认源 魅影画廊 `https://www.jb9.es`（jb9 模板，入口是线路跳转页 `var targets`，解析可用镜像并缓存 30 分钟）+ 雪月映画 `https://taoo.xyz`（taoo 模板，Typecho photograph 主题）；列表 / 分类 / 图集详情（taoo 详情读 `script#virtual-gallery-data`，jb9 详情读 gallery-item 原图链接），图集内可翻页大图、收藏、下载到「套图」目录（v0.134 起由「美图」迁移改名）；源存 `data.meituSources`，片源管理有套图源卡片（增删改 / 导入 / 导出 / 测试 / 启停），列表缓存 `meitu1`；魅影画廊分类平铺展示站点导航全部分类（含下拉细分，去掉深夜电台，slug 作 id，数量仍按站点头尾页折算）；漫画 / 套图的网格浏览卡片右上角有单张下载按钮（直接进下载中心，不用点开）。
 - **v0.124（未发版）皇片镜像信息流**：P站默认 `pList('recommended')` = `/recommended`，可切 推荐/最新/热门；X站默认 `/new/1`（最新），热门 = `/best`（单页），分类页显式 `s:uploaddate` / `s:views`；XH 默认 `/newest`，热门 = `/best`，分类排序段 `/categories/<slug>/newest|best/N`；镜像 chip 顺序 = 排序 chip → 全部 → 分类；X站 38 个分类中文映射 + 站内 `"nbResults"` 数量（2h 内存缓存）；XH 分类过滤 `macanese`（澳门人）。
-- **v0.122（未发版）皇片播放专项**：片源管理 `testMsg` 为空且继承状态与预设一致时借用文案「可用」；`SiteResolver` 新增 `mediaAuth`（rou07 = false，不登记站点鉴权）+ `pickSkMediaUa`（3 个候选 UA 并行探测 playUrl，取返回 200 + `#EXTM3U` 的那个）；`skMediaHosts` 改存完整 `{referer, cookie, ua}`，新增 `noteShuangkanMediaRedirect` + `main.ts` `onBeforeRedirect`，让重定向后的 `jre*.vc*` 网关继承同一份鉴权；hls.js 增加 `manifestLoadingMaxRetry:6 / levelLoadingMaxRetry:6 / fragLoadingMaxRetry:8`，`LEVEL_LOADED` 首分片含 `/tip.` 直接报「站点风控拦截了播放」，不静默播提示片。
-- **v0.122 第二轮（未发版）**：第一个源偶发失败根因 = 网关 `/api/hls/<id>` 的 **302 被 Chromium 缓存**（重试全回同一坏节点，网络层每次 fetch 会重新分流所以测不出来）；修复 = `VideoPlayer` 的 hls.js `xhrSetup` 只对 `/api/hls/` URL 追加一次性随机参数再 `xhr.open`，`main.ts` 对伪装成 `index.png` 的清单补 `Accept: */*`；第五个源详情页被站点 CDN 缓存约 3 小时、页内 `var stream` 令牌（约 3 小时）常已过期 → `skPpp.ts` 的 `pppDetail` 用 `freshPath()`（`/v/<id>/?t=<随机>`）强制回源，410/403 探活兜底保留。
+- **v0.143（未发版）硬件口径**：条目顺序 系统 → 主板 → 处理器 → 内存 → 显卡 → 显示器 → 硬盘 → 声卡 → 网卡；去掉「型号」卡片与内存 PartNumber；内存按容量 / 代际 / 频率聚合，同规格显示为 `16GB DDR4 2400 MHz (8GB+8GB)`，多规格才加「共 X」；显示器从 `WmiMonitorBasicDisplayParams` 的 EDID 宽高算英寸（如 `24.0 英寸`）；缓存文件改 `system-info-v3.json`。
+- **v0.144（未发版）模拟模块**：导航「模拟」在「游戏」上方；平台顺序 FC / SFC / 街机 / GBA / NDS / MD / DOS / Java / Flash（默认 FC，上次停在其它平台时重开也回 FC；FC `tag=0&e=0`、GBA `tag=11&e=2`、MD `tag=13&e=3`）；页面只有「平台 + 分类」两个原生下拉，不显示前置小字；搜索中也保留下拉，切换任一下拉自动清空搜索并回到对应分类列表（搜索时无「搜索结果」提示与「返回分类」按钮，点搜索框 ✕ 也能回分类）；分类来自站点标签链接（街机 / DOS 无标签只有全部分类）；缺封面统一用 `https://img.1990i.com/fcpic/nopic.png`；搜索走 `/search?name=`（单页返回全部，平台按标签 + 封面路径推断）；点击卡片在独立 `persist:yikm` 窗口游玩（站点自带暂停 / 存档 / 金手指 / 滤镜 / 按键 / 快进 / 重启 / 全屏）；收藏 `module='emu'`；ROM 与存档留在站点窗口；缓存 key 已升 v2。
+- **v0.150（未发版）软件模块**：导航「软件」在「补丁」下方（其下为「硬件」），收录 30 个常用软件官网卡片（点卡片进详情，点卡片右侧链接图标直接打开官网）；详情页含简介、「打开官网下载」按钮和使用经验区（默认只读展示，点「编辑 / 写经验」才进编辑；支持加粗 / 标题 / 列表 / 插图、粘贴文字与截图，截图自动缩到 1400px 转 webp）；保存前白名单清洗 HTML（脚本 / 事件属性 / SVG 丢弃）；笔记存 `data.toolNotes`（键 = 工具 id，值 = HTML），随导入导出与云同步走。
 - **省积分工作流（2026-11-12 用户批准）**：① 探查一次到位——单脚本覆盖全部目标路径，只回 ≤20 行结论（状态 / 选择器计数 / 首条标题），不打印 HTML；② 大输出不进上下文——日志 >30 行走 `context-mode`（`ctx_execute` / `ctx_execute_file`），否则重定向后只读错误行 / 尾部；③ 编辑批量做完再一次 `typecheck` → 一次 `build` → 一轮 e2e（只测用户明确要求 + 新代码路径）→ 最多一次 UI 抽查，不反复重启应用；**e2e 仍可主动跑（2026-11-12 用户确认不采用「只做 typecheck+build」）**，但必须一个脚本覆盖多个功能点、测试资源一律秒级小文件（禁止公网大文件）、临时脚本合并成一个并收尾统一删除；④ 缓存类改动先失效测试缓存再验，长任务拆会话（探查 / 实施分开），独立操作并行发出。
-- **皇片播放鉴权规则（v0.122 第二轮，当前）**：① 提示片有两层根因——站点主域要 Cookie + Referer；**重定向后的 CDN 网关（`jre*.vc*.top/.sbs/.cc/.com` 等共享网关）对 master / variant / 分片 / AES key 每个请求单独鉴权**，任何一跳裸 UA 只回 `player.centercdn.top/tip.ts`（143 字节假清单 / 假 key）。实现：`gohome.ts` 的 `skMediaHosts` 存完整 `{referer, cookie, ua}`；requestSite / psite `getHtml` 成功后登记站点主域；`main.ts` `onBeforeRedirect` 把重定向目标域名继承同一份鉴权；`applyRequestHeaders` 的 skMedia 只对非 image 资源生效。② 肉视频（rou07）`/api/hls` **不能注入站点 Cookie / Referer / 桌面 UA**（网关按 UA 粘性分流到质量不一的边缘节点）：`SiteResolver.mediaAuth=false` 关闭登记，`resolveSkMediaPlay` **串行**探测候选 UA（并行会因会话粘性互相干扰），只登记 UA、**返回原始 `/api/hls/<id>` 入口不锁节点**（锁节点后一次坏节点就整段失败）。③ 网关 302 会被 Chromium 缓存 → hls.js `xhrSetup` 对 `/api/hls/` URL 追加一次性随机参数再 `xhr.open`，让每次请求（含 6 次重试）重新分流。④ 播放器重试 6 / 6 / 8；`LEVEL_LOADED` 检测 `/tip.` 直接报错。⑤ KVS（第五个源）详情页 CDN 缓存约 3 小时，`pppDetail` 必须走 `freshPath()` 回源拿新令牌。⑥ 节点池随时段翻转，rou07 偶发整段不可播属站点端问题，不要用固定 UA / 固定节点解决。
+- **皇片播放鉴权规则（v0.122 第二轮，当前）**：① 提示片有两层根因——站点主域要 Cookie + Referer；**重定向后的 CDN 网关（`jre*.vc*.top/.sbs/.cc/.com` 等共享网关）对 master / variant / 分片 / AES key 每个请求单独鉴权**，任何一跳裸 UA 只回 `player.centercdn.top/tip.ts`（143 字节假清单 / 假 key）。实现：`gohome.ts` 的 `skMediaHosts` 存完整 `{referer, cookie, ua}`；requestSite / psite `getHtml` 成功后登记站点主域；`main.ts` `onBeforeRedirect` 把重定向目标域名继承同一份鉴权；`applyRequestHeaders` 的 skMedia 只对非 image 资源生效。② 肉视频（rou07）`/api/hls` **不能注入站点 Cookie / Referer / 桌面 UA**（网关按 UA 粘性分流到质量不一的边缘节点）：`SiteResolver.mediaAuth=false` 关闭登记，`resolveSkMediaPlay` **串行**探测候选 UA（并行会因会话粘性互相干扰），只登记 UA、**返回原始 `/api/hls/<id>` 入口不锁节点**（锁节点后一次坏节点就整段失败）。③ 网关 302 会被 Chromium 缓存 → hls.js `xhrSetup` 对 `/api/hls/` URL 追加一次性随机参数再 `xhr.open`，让每次请求（含 6 次重试）重新分流，`main.ts` 对伪装成 `index.png` 的清单补 `Accept: */*`。④ 播放器重试 6 / 6 / 8；`LEVEL_LOADED` 检测 `/tip.` 直接报错。⑤ KVS（第五个源）详情页 CDN 缓存约 3 小时，`pppDetail` 必须走 `freshPath()` 回源拿新令牌。⑥ 节点池随时段翻转，rou07 偶发整段不可播属站点端问题，不要用固定 UA / 固定节点解决。
 - **皇片镜像翻页规则（v0.123，当前）**：① 分页条只渲染当前页附近几页（P站只到 1~9），**不要用分页条判断末页**：P站从页面内嵌 `"resultsCount":N`（兼容 `VIDEO_FILTER_resultsCount=N`）反推，`pages = 1 + ceil((N-30)/42)`（第 1 页 30 条、第 2 页起 42 条）；搜索镜像封顶 100 页（101 起 404）、分类实测 ~451 页封顶 451；`PListResponse.totalPages` 与 `hasMore` 以此为准。② PPP（KVS）搜索分页是 AJAX：`?page=N` 无效、`/search/<kw>/N/` 404，必须走 `/search/?q=<kw>&mode=async&function=get_block&block_id=list_videos_videos_list_search_result&q=<kw>&category_ids=&sort_by=&from_videos=N&from_albums=N`，`from_videos` 与 `from_albums` 必须是两个独立参数（`from_videos+from_albums` 恒返回第一页）。③ X站镜像把搜索请求当首页返回，`xvidSearch` 以「标题是否含关键词」判定，不支持就提示「该源不支持搜索，请改用分类浏览」，不返回首页列表或空列表。
-- **导航口径（2026-11-12 v0.134 更新）**：只有一套侧栏「老郑分享」，无「老郑优化」树与品牌切换；硬件（原「电脑信息」，key `sysinfo`）不在导航列表，应用默认页 = 硬件，点侧栏顶部「老郑分享」进入；顺序 清单 → 影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 图书 → 游戏 → 补丁 → 磁力 → 壁纸 → 套图 → 吃瓜 → 皇片（`settings.ts` 的 `NAV_ORDER_VERSION=3` 把旧保存顺序一次性重排为这套，未知 key 留末尾）。片源管理卡片同序：影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 补丁 → 磁力 → 壁纸 → 套图 → 皇片；收藏管理同序（watch → drama → tv → live → music → comic → novel → book → game → trainer → wallpaper → meitu → melon → shuangkan）；下载分区视频置顶，其余音乐 → 漫画 → 小说 → 书籍 → 修改器 → 壁纸 → 套图；首页标题为「下载管理」。整体导入 / 导出按钮在页面左上角；皇片 / 图书导航项都不带「外网」标记（图书的「外网」提示放在图书页标题后）。
+- **导航口径（2026-11-16 v0.150 更新）**：只有一套侧栏「老郑分享」，无「老郑优化」树与品牌切换；应用默认页 = 主页（空白页，key `home`，点侧栏顶部「老郑分享」进入）；硬件（原「电脑信息」，key `sysinfo`）在导航「软件」下方；顺序 清单 → 影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 图书 → 模拟 → 游戏 → 补丁 → 软件 → 硬件 → 磁力 → 壁纸 → 套图 → 吃瓜 → 皇片（`settings.ts` 的 `NAV_ORDER_VERSION=3` 把旧保存顺序一次性重排为这套，未知 key 留末尾）。片源管理卡片同序：影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 补丁 → 磁力 → 壁纸 → 套图 → 皇片；收藏管理同序（watch → drama → tv → live → music → comic → novel → book → emu → game → trainer → wallpaper → meitu → melon → shuangkan）；下载分区视频置顶，其余音乐 → 漫画 → 小说 → 书籍 → 修改器 → 壁纸 → 套图；首页标题为「下载管理」。整体导入 / 导出按钮在页面左上角；皇片 / 图书导航项都不带「外网」标记（图书的「外网」提示放在图书页标题后）。
 - **播放器清晰度规则**：所有视频播放模块必须提供清晰度选择，默认自动选最高档，控件固定在播放器右上角（`VideoPlayer` 的 `.player-quality`，仅多码率 HLS 显示，切源自动重置）。
 - **站点 500 自动恢复规则**：站点返回 500 时自动切到同站可用镜像线路（`requestSite` 前 3 步失败后用真实路径逐个实测同站线路，最多 8 条），无需用户手动操作；成功请求后把 `testStatus:'bad'` 的源自动改回 ok 并提示「已恢复可用」。
 
@@ -70,7 +71,7 @@ src/shared/*.ts         两端共用类型 + normalizeData + 各模块默认源
 src/state/              DataProvider：启动加载、防抖 350ms 保存、replaceData 立即落盘
 src/components/         VideoPlayer（hls.js）/ LivePlayer / DownloadCenter / ui.tsx
 src/pages/              清单 / 搜索 / 影视 / 短剧 / 音乐 / 电视 / 直播 / 吃瓜 / 磁力 / 小说 /
-                        壁纸 / 套图 / 漫画 / 本子 / 图书 / 番号 / P站 / X站 / 皇片 / 游戏 / 补丁 / 硬件 / 设置
+                        壁纸 / 套图 / 漫画 / 本子 / 图书 / 番号 / P站 / X站 / 皇片 / 游戏 / 补丁 / 软件 / 硬件 / 主页 / 设置
 src/utils/data.ts       根清单、递归子清单、条目查询、收藏筛选
 docs/AI_PROJECT_MEMORY.md 本文件（docs/archive/ 为历史归档）
 ```
@@ -92,7 +93,7 @@ docs/AI_PROJECT_MEMORY.md 本文件（docs/archive/ 为历史归档）
 
 ### 6. 当前进度
 
-- 已完成模块（启动默认进入清单，首页模块已于 v0.65 移除）：清单 / 搜索 / 影视（原「观影」，key 仍 `watch`）/ 短剧 / 音乐 / 游戏（无忧）/ 补丁（原「修改器」）/ 电视 / 直播 / 吃瓜 / 磁力 / 小说 / 壁纸 / 套图 / 漫画 / 本子 / 图书（Z-Library）/ 番号 / P站 / X站 / 皇片 / 硬件（默认页）/ 设置；各模块完整功能清单见 `docs/archive/MODULE_DETAILS.md` 附 A。
+- 已完成模块（启动默认进入主页）：清单 / 搜索 / 影视（原「观影」，key 仍 `watch`）/ 短剧 / 音乐 / 游戏（无忧）/ 补丁（原「修改器」）/ 软件 / 电视 / 直播 / 吃瓜 / 磁力 / 小说 / 壁纸 / 套图 / 漫画 / 本子 / 图书（Z-Library）/ 番号 / P站 / X站 / 皇片 / 硬件 / 主页 / 设置；各模块完整功能清单见 `docs/archive/MODULE_DETAILS.md` 附 A。
 - 全局能力：返回栈、模块常驻挂载、`lzimg://` 图片磁盘缓存 + `apiCache`（永久命中 + 静默后台刷新）、全局下载中心（下载前必确认）、收藏管理按模块卡片、云同步 / 导入导出 / 托盘、主题与导航拖动排序。
 
 ### 7. 各模块实现口径（完整细节见 `docs/archive/MODULE_DETAILS.md`，先 Grep 再读）
@@ -136,7 +137,7 @@ docs/AI_PROJECT_MEMORY.md 本文件（docs/archive/ 为历史归档）
 
 #### 7.8 云同步 / 更新（`electron/sync.ts` / `main.ts`）
 - WebDAV：配置 `userData/sync.json`（safeStorage 加密），上传前自动 PROPFIND + 逐级 MKCOL，PUT `{目录}/data.json`，恢复校验 items/lists/listItems。
-- 更新：公开 Releases API → 失败回退 Gist `802551160083623580189fc536724d65`；检查与下载先测速选线（下载用 `Range: bytes=0-0` 只等响应头）；**仓库必须公开**，否则匿名读资产 404。
+- 更新：公开 Releases API → 失败回退 Gist `802551160083623580189fc536724d65`；检查与下载先测速选线（下载用 `Range: bytes=0-0` 只等响应头）；**仓库必须公开**，否则匿名读资产 404。启动检查（v0.145）先弹「立即更新 / 稍后」，确认后才下载，下载完成再弹「立即安装 / 稍后」；下载中（v0.146）窗口顶部显示全局进度浮条 + 任务栏进度，失败立即收起。
 
 #### 7.9 播放与请求层（`electron/main.ts setupRequestRules`）
 - CSP 必须含 `media-src 'self' blob: http: https:` 与 `worker-src blob:`（缺了 hls.js 播放全黑）；`onHeadersReceived` 对 xhr / media 注入 `Access-Control-Allow-Origin: *`。

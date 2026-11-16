@@ -1,11 +1,8 @@
-/**
- * 首页：内容暂时置空。
- * 后续这里会支持用户自定义模块，等模块清单确定后再补充。
- */
+/** 主页：点侧栏顶部「老郑分享」进入，暂留空白，后续再补内容 */
 export function HomePage() {
   return (
     <header className="page-header">
-      <h1 className="page-title">首页</h1>
+      <h1 className="page-title">主页</h1>
     </header>
   )
 }

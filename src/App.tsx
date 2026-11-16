@@ -10,7 +10,9 @@ import {
   BookText,
   Camera,
   Clapperboard,
+  Gamepad,
   Gamepad2,
+  Home,
   Images,
   ListChecks,
   Magnet,
@@ -24,6 +26,7 @@ import {
   Tv,
   Wallpaper,
   Wand2,
+  Wrench,
   type LucideIcon
 } from 'lucide-react'
 import { DataProvider, useData } from './state/DataContext'
@@ -36,6 +39,7 @@ import { DownloadsPage, type DownloadSection } from './pages/DownloadsPage'
 import { ComicPage } from './pages/ComicPage'
 import { NovelPage, type NovelFocus } from './pages/NovelPage'
 import { GamePage } from './pages/GamePage'
+import { EmuPage } from './pages/EmuPage'
 import { BookPage } from './pages/BookPage'
 import { MelonPage } from './pages/MelonPage'
 import { ShuangkanPage } from './pages/ShuangkanPage'
@@ -45,10 +49,12 @@ import { ListsPage } from './pages/ListsPage'
 import { ListDetailPage } from './pages/ListDetailPage'
 import { FavoritesPage } from './pages/FavoritesPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { HomePage } from './pages/HomePage'
 import { SysInfoPage } from './pages/SysInfoPage'
 import { WallpaperPage } from './pages/WallpaperPage'
 import { MeituPage } from './pages/MeituPage'
 import { GameCheatPage, type GameCheatFocus } from './pages/GameCheatPage'
+import { ToolsPage } from './pages/ToolsPage'
 import { EmptyState } from './components/ui'
 import { ImageViewer } from './components/ImageViewer'
 import { DownloadCenter } from './components/DownloadCenter'
@@ -60,6 +66,7 @@ import { syncUiSettings } from './utils/theme'
 import { clearCachePrefix } from './utils/cache'
 
 import type { InnerFav } from './shared/types'
+import type { UpdateProgress } from './shared/update'
 import type { LivePlatformId, LiveRoomFocus } from './shared/livePlatform'
 import {
   isWallpaperSourceId,
@@ -70,6 +77,7 @@ import {
 import { parseMeituFavId, parseMeituFavPayload, type MeituFocus } from './shared/meitu'
 
 type Route =
+  | { name: 'home' }
   | { name: 'watch'; focus?: WatchFocus; searchTitle?: string }
   | { name: 'drama'; focus?: DramaFocus }
   | { name: 'live'; focusUrl?: string }
@@ -81,6 +89,7 @@ type Route =
   | { name: 'shuangkan'; focus?: ShuangkanFocus }
   | { name: 'book'; focusId?: string }
   | { name: 'game'; focusId?: string }
+  | { name: 'emu'; focusId?: string }
   | { name: 'magnet'; searchTitle?: string }
   | { name: 'lists' }
   | { name: 'list'; id: number }
@@ -90,6 +99,7 @@ type Route =
   | { name: 'wallpaper'; focus?: WallpaperFocus }
   | { name: 'meitu'; focus?: MeituFocus }
   | { name: 'gamecheat'; focus?: GameCheatFocus }
+  | { name: 'tools' }
   | { name: 'settings' }
 
 interface FavFocus {
@@ -103,12 +113,14 @@ interface FavFocus {
 
 interface NavItem {
   key:
+    | 'home'
     | 'lists'
     | 'watch'
     | 'drama'
     | 'shuangkan'
     | 'comic'
     | 'novel'
+    | 'emu'
     | 'game'
     | 'book'
     | 'live'
@@ -120,16 +132,17 @@ interface NavItem {
     | 'wallpaper'
     | 'meitu'
     | 'gamecheat'
+    | 'tools'
     | 'settings'
   label: string
   icon: LucideIcon
   ready: boolean
 }
 
-/** 首页「硬件」不放在导航里，点顶部「老郑分享」进入 */
-const HOME_NAV_ITEM: NavItem = { key: 'sysinfo', label: '硬件', icon: MonitorCog, ready: true }
+/** 点顶部「老郑分享」进入主页，主页暂为空白页 */
+const HOME_NAV_ITEM: NavItem = { key: 'home', label: '主页', icon: Home, ready: true }
 
-/** 老郑分享：清单 → 影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 图书 → 游戏 → 补丁 → 磁力 → 壁纸 → 美图 → 吃瓜 → 皇片 */
+/** 老郑分享：清单 → 影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 图书 → 模拟 → 游戏 → 补丁 → 软件 → 硬件 → 磁力 → 壁纸 → 美图 → 吃瓜 → 皇片 */
 const NAV_ITEMS: NavItem[] = [
   { key: 'lists', label: '清单', icon: ListChecks, ready: true },
   { key: 'watch', label: '影视', icon: MonitorPlay, ready: true },
@@ -140,8 +153,11 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'comic', label: '漫画', icon: Images, ready: true },
   { key: 'novel', label: '小说', icon: BookText, ready: true },
   { key: 'book', label: '图书', icon: BookOpen, ready: true },
+  { key: 'emu', label: '模拟', icon: Gamepad, ready: true },
   { key: 'game', label: '游戏', icon: Gamepad2, ready: true },
   { key: 'gamecheat', label: '补丁', icon: Wand2, ready: true },
+  { key: 'tools', label: '软件', icon: Wrench, ready: true },
+  { key: 'sysinfo', label: '硬件', icon: MonitorCog, ready: true },
   { key: 'magnet', label: '磁力', icon: Magnet, ready: true },
   { key: 'wallpaper', label: '壁纸', icon: Wallpaper, ready: true },
   { key: 'meitu', label: '套图', icon: Camera, ready: true },
@@ -183,6 +199,8 @@ function orderedNavItems(items: NavItem[], order?: string[]): NavItem[] {
 
 function leafRoute(key: NavItem['key']): Route {
   switch (key) {
+    case 'home':
+      return { name: 'home' }
     case 'lists':
       return { name: 'lists' }
     case 'watch':
@@ -197,6 +215,8 @@ function leafRoute(key: NavItem['key']): Route {
       return { name: 'novel' }
     case 'game':
       return { name: 'game' }
+    case 'emu':
+      return { name: 'emu' }
     case 'book':
       return { name: 'book' }
     case 'live':
@@ -217,6 +237,8 @@ function leafRoute(key: NavItem['key']): Route {
       return { name: 'meitu' }
     case 'gamecheat':
       return { name: 'gamecheat' }
+    case 'tools':
+      return { name: 'tools' }
     case 'settings':
       return { name: 'settings' }
   }
@@ -243,6 +265,7 @@ const MODULE_SHORTCUTS: Record<string, ShortcutConfig> = {
   live: { fav: 'tv' },
   liveRooms: { fav: 'live' },
   music: { fav: 'music', download: 'music' },
+  emu: { fav: 'emu' },
   game: { fav: 'game' },
   melon: { fav: 'melon', download: 'video' },
   book: { fav: 'book', download: 'book' },
@@ -262,6 +285,7 @@ const MODULE_CACHE_PREFIXES: Record<string, string[]> = {
   novel: ['novel'],
   melon: ['melon'],
   game: ['game'],
+  emu: ['emu'],
   book: ['book'],
   wallpaper: ['wallpaper'],
   meitu: ['meitu'],
@@ -422,9 +446,11 @@ function parseTrainerPayload(raw: string | null): TrainerFavPayload {
 
 function Shell() {
   const { ready, data, update } = useData()
-  const [stack, setStack] = useState<Route[]>([{ name: 'sysinfo' }])
+  const [stack, setStack] = useState<Route[]>([{ name: 'home' }])
   const [notice, setNotice] = useState<string | null>(null)
-  const [visited, setVisited] = useState<string[]>(['sysinfo'])
+  /** 更新包下载进度（启动时确认更新后由主进程广播） */
+  const [updateBar, setUpdateBar] = useState<UpdateProgress | null>(null)
+  const [visited, setVisited] = useState<string[]>(['home'])
   const [navEpoch, setNavEpoch] = useState<Record<string, number>>({})
   /** 点页面标题时递增，用于让需要强制重取数据的页面（如电脑信息）区分普通进入与刷新 */
   const [refreshEpoch, setRefreshEpoch] = useState<Record<string, number>>({})
@@ -535,6 +561,26 @@ function Shell() {
     return () => window.clearTimeout(timer)
   }, [notice])
 
+  /** 更新包下载进度：失败立即收起，下载完成后短暂停留再收起 */
+  useEffect(() => {
+    let hideTimer = 0
+    const off = window.laozheng.onUpdateProgress((progress) => {
+      window.clearTimeout(hideTimer)
+      if (progress.error) {
+        setUpdateBar(null)
+        return
+      }
+      setUpdateBar(progress)
+      if (progress.percent >= 1) {
+        hideTimer = window.setTimeout(() => setUpdateBar(null), 2500)
+      }
+    })
+    return () => {
+      window.clearTimeout(hideTimer)
+      off()
+    }
+  }, [])
+
   if (!ready) {
     return (
       <div className="app">
@@ -572,6 +618,9 @@ function Shell() {
       }
       case 'game':
         pushRoute({ name: 'game', focusId: fav.id })
+        return
+      case 'emu':
+        pushRoute({ name: 'emu', focusId: fav.id })
         return
       case 'book':
         pushRoute({ name: 'book', focusId: fav.id })
@@ -928,8 +977,8 @@ function Shell() {
         <button
           className="sidebar-brand"
           onClick={() => openNav(HOME_NAV_ITEM)}
-          title="回到硬件首页"
-          aria-label="老郑分享，点击回到硬件首页"
+          title="回到主页"
+          aria-label="老郑分享，点击回到主页"
         >
           <span className="brand-mark">郑</span>
           <span className="brand-title">老郑分享</span>
@@ -942,6 +991,12 @@ function Shell() {
       </aside>
 
       <main className="content" ref={contentRef} onClick={onContentClick}>
+        {shownKeys.includes('home') ? (
+          <div {...slot('home')}>
+            <HomePage />
+          </div>
+        ) : null}
+
         {shownKeys.includes('lists') ? (
           <div {...slot('lists')}>
             <ListsPage
@@ -1073,6 +1128,17 @@ function Shell() {
           </div>
         ) : null}
 
+        {shownKeys.includes('emu') ? (
+          <div {...slot('emu')}>
+            <EmuPage
+              onNotice={setNotice}
+              focusId={route.name === 'emu' ? route.focusId : undefined}
+              resetSignal={navEpoch.emu}
+              {...shortcuts('emu')}
+            />
+          </div>
+        ) : null}
+
         {shownKeys.includes('game') ? (
           <div {...slot('game')}>
             <GamePage
@@ -1143,6 +1209,12 @@ function Shell() {
           </div>
         ) : null}
 
+        {shownKeys.includes('tools') ? (
+          <div {...slot('tools')}>
+            <ToolsPage onNotice={setNotice} resetSignal={navEpoch.tools} />
+          </div>
+        ) : null}
+
         {shownKeys.includes('settings') ? (
           <div {...slot('settings')}>
             <SettingsPage
@@ -1201,6 +1273,26 @@ function Shell() {
         }}
       />
       <ImageViewer onNotice={setNotice} />
+      {updateBar ? (
+        <div className="update-progress" role="status">
+          <div className="update-progress-text">
+            {updateBar.percent >= 1
+              ? '更新包下载完成'
+              : updateBar.total > 0
+                ? `正在下载更新 · ${Math.round(updateBar.percent * 100)}%`
+                : `正在下载更新 · ${Math.round(updateBar.received / 1024 / 1024)} MB`}
+            {updateBar.percent < 1 && updateBar.line ? ` · 线路 ${updateBar.line}` : ''}
+          </div>
+          <div className="update-progress-track">
+            <div
+              className={`update-progress-fill${
+                updateBar.total > 0 || updateBar.percent >= 1 ? '' : ' indeterminate'
+              }`}
+              style={{ width: `${Math.round((updateBar.percent || 0) * 100)}%` }}
+            />
+          </div>
+        </div>
+      ) : null}
       {notice ? <div className="toast">{notice}</div> : null}
     </div>
   )

@@ -19,7 +19,8 @@ interface RawBoard {
 interface RawMemory {
   capacity?: number
   speed?: number
-  part?: string
+  /** SMBIOSMemoryType：26 = DDR4，34 = DDR5 等 */
+  type?: number
 }
 
 interface RawGpu {
@@ -31,9 +32,17 @@ interface RawGpu {
 }
 
 interface RawMonitor {
+  instance?: string
   manufacturer?: string
   name?: string
   year?: number
+}
+
+interface RawMonitorParams {
+  instance?: string
+  /** EDID 物理宽 / 高（厘米） */
+  widthCm?: number
+  heightCm?: number
 }
 
 interface RawDesktopMonitor {
@@ -66,8 +75,6 @@ interface RawNic {
 }
 
 interface RawSystemInfo {
-  manufacturer?: string
-  model?: string
   totalMemory?: number
   osCaption?: string
   osDisplayVersion?: string
@@ -78,6 +85,7 @@ interface RawSystemInfo {
   memory?: RawMemory[] | RawMemory
   gpu?: RawGpu[] | RawGpu
   monitor?: RawMonitor[] | RawMonitor
+  monitorParams?: RawMonitorParams[] | RawMonitorParams
   desktopMonitor?: RawDesktopMonitor[] | RawDesktopMonitor
   disk?: RawDisk[] | RawDisk
   physicalDisk?: RawPhysicalDisk[] | RawPhysicalDisk
@@ -122,6 +130,7 @@ $board = @(Get-CimInstance Win32_BaseBoard)
 $memory = @(Get-CimInstance Win32_PhysicalMemory)
 $gpu = @(Get-CimInstance Win32_VideoController)
 $monitor = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID)
+$monitorParams = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorBasicDisplayParams)
 $desktopMonitor = @(Get-CimInstance Win32_DesktopMonitor)
 $disk = @(Get-CimInstance Win32_DiskDrive)
 $physicalDisk = @(Get-CimInstance -Namespace root\Microsoft\Windows\Storage -ClassName MSFT_PhysicalDisk)
@@ -142,8 +151,6 @@ foreach ($key in @(Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{
   if ($size -gt 0 -and -not $vramMap.ContainsKey($desc)) { $vramMap[$desc] = $size }
 }
 $payload = [pscustomobject]@{
-  manufacturer = "$($cs.Manufacturer)"
-  model = "$($cs.Model)"
   totalMemory = [double]$cs.TotalPhysicalMemory
   osCaption = "$($os.Caption)"
   osDisplayVersion = $osDisplayVersion
@@ -151,7 +158,7 @@ $payload = [pscustomobject]@{
   osArch = "$($os.OSArchitecture)"
   cpu = @($cpu | ForEach-Object { [pscustomobject]@{ name = "$($_.Name)"; cores = [int]$_.NumberOfCores; threads = [int]$_.NumberOfLogicalProcessors } })
   board = @($board | ForEach-Object { [pscustomobject]@{ manufacturer = "$($_.Manufacturer)"; product = "$($_.Product)" } })
-  memory = @($memory | ForEach-Object { [pscustomobject]@{ capacity = [double]$_.Capacity; speed = [int]$_.Speed; part = "$($_.PartNumber)" } })
+  memory = @($memory | ForEach-Object { [pscustomobject]@{ capacity = [double]$_.Capacity; speed = [int]$_.Speed; type = [int]$_.SMBIOSMemoryType } })
   gpu = @($gpu | ForEach-Object {
     $name = "$($_.Name)".Trim()
     $vram = 0
@@ -159,7 +166,8 @@ $payload = [pscustomobject]@{
     if (-not $vram) { $vram = [double]$_.AdapterRAM }
     [pscustomobject]@{ name = $name; driver = "$($_.DriverVersion)"; vram = $vram; width = [int]$_.CurrentHorizontalResolution; height = [int]$_.CurrentVerticalResolution }
   })
-  monitor = @($monitor | ForEach-Object { [pscustomobject]@{ manufacturer = (TextFromBytes $_.ManufacturerName); name = (TextFromBytes $_.UserFriendlyName); year = [int]$_.YearOfManufacture } })
+  monitor = @($monitor | ForEach-Object { [pscustomobject]@{ instance = "$($_.InstanceName)"; manufacturer = (TextFromBytes $_.ManufacturerName); name = (TextFromBytes $_.UserFriendlyName); year = [int]$_.YearOfManufacture } })
+  monitorParams = @($monitorParams | ForEach-Object { [pscustomobject]@{ instance = "$($_.InstanceName)"; widthCm = [int]$_.MaxHorizontalImageSize; heightCm = [int]$_.MaxVerticalImageSize } })
   desktopMonitor = @($desktopMonitor | ForEach-Object { [pscustomobject]@{ name = "$($_.Name)"; width = [int]$_.ScreenWidth; height = [int]$_.ScreenHeight } })
   disk = @($disk | ForEach-Object { [pscustomobject]@{ index = [int]$_.Index; model = "$($_.Model)"; size = [double]$_.Size } })
   physicalDisk = @($physicalDisk | ForEach-Object { [pscustomobject]@{ deviceId = "$($_.DeviceId)"; mediaType = [int]$_.MediaType; busType = [int]$_.BusType } })
@@ -173,7 +181,8 @@ let cached: SystemInfoResult | null = null
 let diskLoaded = false
 
 function cacheFile(): string {
-  return join(app.getPath('userData'), 'system-info.json')
+  // v3：主板 / 处理器顺序调整，旧缓存不再复用
+  return join(app.getPath('userData'), 'system-info-v3.json')
 }
 
 function normalizeCached(value: unknown): SystemInfoResult | null {
@@ -277,9 +286,29 @@ function vendorModel(manufacturer: string, model: string): string {
   return model.toLowerCase().includes(manufacturer.toLowerCase()) ? model : `${manufacturer} ${model}`
 }
 
-function buildEntries(raw: RawSystemInfo): SystemInfoEntry[] {
-  const modelLines = [vendorModel(clean(raw.manufacturer), clean(raw.model))].filter(Boolean)
+/** SMBIOSMemoryType → 内存代际 */
+const MEMORY_TYPES: Record<number, string> = {
+  20: 'DDR',
+  21: 'DDR2',
+  22: 'DDR2',
+  24: 'DDR3',
+  26: 'DDR4',
+  27: 'LPDDR',
+  28: 'LPDDR2',
+  29: 'LPDDR3',
+  30: 'LPDDR4',
+  34: 'DDR5',
+  35: 'LPDDR5'
+}
 
+/** 内存容量紧凑写法：8GB / 16GB，便于拼成 (8GB+8GB) */
+function compactBytes(bytes: number): string {
+  return formatBytes(bytes)
+    .replace(/\s+/g, '')
+    .replace(/\.0(?=[KMGT]B$)/, '')
+}
+
+function buildEntries(raw: RawSystemInfo): SystemInfoEntry[] {
   const osCaption = clean(raw.osCaption).replace(/^Microsoft\s+/i, '')
   const osLines = [
     joinParts([
@@ -310,27 +339,38 @@ function buildEntries(raw: RawSystemInfo): SystemInfoEntry[] {
     .filter(Boolean)
 
   const memoryModules = toArray(raw.memory)
-    .map((memory) =>
-      joinParts([
-        num(memory.capacity) > 0 ? formatBytes(num(memory.capacity)) : '',
-        num(memory.speed) > 0 ? `${num(memory.speed)} MHz` : '',
-        clean(memory.part)
-      ])
-    )
-    .filter(Boolean)
-  const moduleTotal = toArray(raw.memory).reduce(
-    (sum, memory) => sum + num(memory.capacity),
-    0
-  )
+    .filter((memory) => num(memory.capacity) > 0)
+    .map((memory) => ({
+      capacity: num(memory.capacity),
+      speed: num(memory.speed),
+      type: MEMORY_TYPES[num(memory.type)] ?? ''
+    }))
+  const memoryGroups = new Map<string, { capacity: number; speed: number; type: string; count: number }>()
+  for (const module of memoryModules) {
+    const key = `${module.capacity}|${module.type}|${module.speed}`
+    const group = memoryGroups.get(key)
+    if (group) group.count += 1
+    else memoryGroups.set(key, { ...module, count: 1 })
+  }
+  const moduleTotal = memoryModules.reduce((sum, memory) => sum + memory.capacity, 0)
   const totalMemory = moduleTotal || num(raw.totalMemory)
-  const memoryLines =
-    memoryModules.length > 1 && totalMemory > 0
-      ? [`共 ${formatBytes(totalMemory)}`, ...memoryModules]
-      : memoryModules.length > 0
-        ? memoryModules
-        : totalMemory > 0
-          ? [`共 ${formatBytes(totalMemory)}`]
-          : []
+  const memoryLines = [...memoryGroups.values()].map((group) => {
+    const total = group.capacity * group.count
+    const detail = [group.type, group.speed > 0 ? `${group.speed} MHz` : '']
+      .filter(Boolean)
+      .join(' ')
+    const suffix =
+      group.count > 1
+        ? ` (${Array.from({ length: group.count }, () => compactBytes(group.capacity)).join('+')})`
+        : ''
+    return `${compactBytes(total)}${detail ? ` ${detail}` : ''}${suffix}`
+  })
+  if (memoryGroups.size > 1 && totalMemory > 0) {
+    memoryLines.unshift(`共 ${compactBytes(totalMemory)}`)
+  }
+  if (memoryLines.length === 0 && totalMemory > 0) {
+    memoryLines.push(`共 ${compactBytes(totalMemory)}`)
+  }
 
   const gpus = toArray(raw.gpu)
   const gpuLines = gpus
@@ -354,6 +394,19 @@ function buildEntries(raw: RawSystemInfo): SystemInfoEntry[] {
     )
     .find(Boolean)
 
+  const monitorSizes = new Map<string, number>()
+  for (const params of toArray(raw.monitorParams)) {
+    const widthCm = num(params.widthCm)
+    const heightCm = num(params.heightCm)
+    if (widthCm <= 0 || heightCm <= 0) continue
+    const inches = Math.sqrt(widthCm * widthCm + heightCm * heightCm) / 2.54
+    if (inches < 5 || inches > 100) continue
+    monitorSizes.set(clean(params.instance), Math.round(inches * 10) / 10)
+  }
+  const sizeList = [...monitorSizes.values()]
+  const fallbackSize = sizeList.length === 1 ? sizeList[0] : 0
+  const sizeText = (value: number): string => (value > 0 ? `${value.toFixed(1)} 英寸` : '')
+
   const monitorLines = toArray(raw.monitor)
     .map((monitor) => {
       const name = clean(monitor.name)
@@ -362,7 +415,12 @@ function buildEntries(raw: RawSystemInfo): SystemInfoEntry[] {
         name && vendor && !name.toLowerCase().startsWith(vendor.toLowerCase())
           ? `${vendor} ${name}`
           : name || vendor
-      return joinParts([label, num(monitor.year) > 0 ? `${num(monitor.year)} 年` : ''])
+      const inches = monitorSizes.get(clean(monitor.instance)) ?? fallbackSize
+      return joinParts([
+        label,
+        num(monitor.year) > 0 ? `${num(monitor.year)} 年` : '',
+        sizeText(inches)
+      ])
     })
     .filter(Boolean)
   if (monitorLines.length === 0) {
@@ -373,7 +431,8 @@ function buildEntries(raw: RawSystemInfo): SystemInfoEntry[] {
             clean(monitor.name),
             num(monitor.width) > 0 && num(monitor.height) > 0
               ? `${num(monitor.width)} × ${num(monitor.height)}`
-              : ''
+              : '',
+            sizeText(fallbackSize)
           ])
         )
         .filter(Boolean)
@@ -436,10 +495,9 @@ function buildEntries(raw: RawSystemInfo): SystemInfoEntry[] {
   })
 
   return [
-    entry('model', '型号', modelLines),
     entry('os', '系统', osLines),
-    entry('cpu', '处理器', cpuLines),
     entry('board', '主板', boardLines),
+    entry('cpu', '处理器', cpuLines),
     entry('memory', '内存', memoryLines),
     entry('gpu', '显卡', gpuLines),
     entry('monitor', '显示器', monitorLines),

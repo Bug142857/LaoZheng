@@ -45,6 +45,8 @@ const SHARE_NAV_ORDER = [
   'book',
   'game',
   'gamecheat',
+  'tools',
+  'sysinfo',
   'magnet',
   'wallpaper',
   'meitu',
@@ -93,7 +95,7 @@ export function navOrderSettings(): Record<string, string[]> {
 
 /**
  * 导航顺序升级（v3）：顺序口径改为
- * 清单 → 影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 图书 → 游戏 → 补丁 → 磁力 → 壁纸 → 美图 → 吃瓜 → 皇片。
+ * 清单 → 影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 图书 → 游戏 → 补丁 → 软件 → 硬件 → 磁力 → 壁纸 → 美图 → 吃瓜 → 皇片。
  * 已下线模块等未知 key 保留在末尾，不丢数据。
  */
 function upgradeNavOrder(order: Record<string, string[]>): Record<string, string[]> {

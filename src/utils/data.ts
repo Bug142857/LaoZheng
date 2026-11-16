@@ -148,6 +148,7 @@ export const FAV_MODULE_LABELS: Record<string, string> = {
   shuangkan: '皇片',
   novel: '小说',
   book: '图书',
+  emu: '模拟',
   game: '游戏',
   trainer: '补丁',
   live: '直播',

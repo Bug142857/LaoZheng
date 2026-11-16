@@ -207,16 +207,59 @@ function parseFlingList(html: string, base: string, source: NormalizedSource, pa
   }
 }
 
+/** 风灵月影列表每页 15 条；WordPress 分页条只有上一页/下一页，总数走 REST 头折算 */
+const FLING_PAGE_SIZE = 15
+const flingCountCache = new Map<string, { at: number; count: number }>()
+
+async function flingPostCount(source: NormalizedSource, keyword: string): Promise<number> {
+  const key = `${source.baseUrl}|${keyword}`
+  const cached = flingCountCache.get(key)
+  if (cached && Date.now() - cached.at < 30 * 60 * 1000) return cached.count
+  try {
+    let query = ''
+    if (keyword) {
+      query = `search=${encodeURIComponent(keyword)}`
+    } else {
+      const catRes = await fetch(`${source.baseUrl}/wp-json/wp/v2/categories?slug=trainer`, {
+        headers: { 'User-Agent': UA },
+        signal: AbortSignal.timeout(15_000)
+      })
+      if (!catRes.ok) return 0
+      const categories = (await catRes.json()) as { id?: number }[]
+      const categoryId = categories[0]?.id
+      if (!categoryId) return 0
+      query = `categories=${categoryId}`
+    }
+    const res = await fetch(
+      `${source.baseUrl}/wp-json/wp/v2/posts?${query}&per_page=1&_fields=id`,
+      {
+        headers: { 'User-Agent': UA },
+        signal: AbortSignal.timeout(15_000)
+      }
+    )
+    if (!res.ok) return 0
+    const total = Number(res.headers.get('x-wp-total') ?? 0)
+    const count = Number.isFinite(total) && total > 0 ? total : 0
+    flingCountCache.set(key, { at: Date.now(), count })
+    return count
+  } catch {
+    return 0
+  }
+}
+
 async function flingSearch(
   source: NormalizedSource,
   keyword: string,
   page: number
-): Promise<{ items: TrainerListItem[]; hasMore: boolean }> {
+): Promise<{ items: TrainerListItem[]; hasMore: boolean; page: number; pageCount: number }> {
   const url = keyword
     ? `${source.baseUrl}/page/${page}/?s=${encodeURIComponent(keyword)}`
     : `${source.baseUrl}/category/trainer/page/${page}/`
   const html = await fetchText(url, `${source.baseUrl}/`)
-  return parseFlingList(html, source.baseUrl, source, page)
+  const parsed = parseFlingList(html, source.baseUrl, source, page)
+  const total = await flingPostCount(source, keyword)
+  const pageCount = total > 0 ? Math.ceil(total / FLING_PAGE_SIZE) : 0
+  return { ...parsed, pageCount }
 }
 
 function parseFlingDetail(
@@ -391,18 +434,18 @@ async function megagamesSearch(
   source: NormalizedSource,
   keyword: string,
   page: number
-): Promise<{ items: TrainerListItem[]; hasMore: boolean }> {
+): Promise<{ items: TrainerListItem[]; hasMore: boolean; pageCount: number }> {
   // MegaGames 搜索结果只有一页，翻页直接用空结果
-  if (page > 1) return { items: [], hasMore: false }
+  if (page > 1) return { items: [], hasMore: false, pageCount: 0 }
   if (keyword) {
     const html = await fetchText(
       `${source.baseUrl}/results?query=${encodeURIComponent(keyword)}`,
       `${source.baseUrl}/`
     )
-    return parseMegaSearch(html, source.baseUrl, source)
+    return { ...parseMegaSearch(html, source.baseUrl, source), pageCount: 0 }
   }
   const html = await fetchText(`${source.baseUrl}/trainers`, `${source.baseUrl}/`)
-  return parseMegaList(html, source.baseUrl, source)
+  return { ...parseMegaList(html, source.baseUrl, source), pageCount: 0 }
 }
 
 function megaVersion(title: string): string {
@@ -564,6 +607,41 @@ function decodeThunder(raw: string): string {
 
 /* ---------- 3DM ---------- */
 
+/** 3DM 列表页没有封面，按详情页 og:image 补齐；成功缓存 6 小时，失败 10 分钟后重试 */
+const COVER_TTL = 6 * 60 * 60 * 1000
+const COVER_FAIL_TTL = 10 * 60 * 1000
+const trainerCoverCache = new Map<string, { at: number; cover: string | null }>()
+
+async function fetch3dmCover(url: string): Promise<string | null> {
+  const cached = trainerCoverCache.get(url)
+  if (cached && Date.now() - cached.at < (cached.cover ? COVER_TTL : COVER_FAIL_TTL)) {
+    return cached.cover
+  }
+  try {
+    const html = await fetchText(url, 'https://dl.3dmgame.com/')
+    const cover =
+      /<meta[^>]+property=["']og:image["'][^>]*content=["']([^"']+)["']/i.exec(html)?.[1]?.trim() ??
+      ''
+    const value = /^https?:\/\//i.test(cover) ? cover : null
+    trainerCoverCache.set(url, { at: Date.now(), cover: value })
+    return value
+  } catch {
+    trainerCoverCache.set(url, { at: Date.now(), cover: null })
+    return null
+  }
+}
+
+async function enrich3dmCovers(items: TrainerListItem[]): Promise<void> {
+  await runWithLimit(
+    items.filter((item) => !item.cover),
+    4,
+    async (item) => {
+      const cover = await fetch3dmCover(item.url)
+      if (cover) item.cover = cover
+    }
+  )
+}
+
 function parse3dmList(html: string, source: NormalizedSource, page: number) {
   const doc = parse(html)
   const items: TrainerListItem[] = []
@@ -589,24 +667,29 @@ function parse3dmList(html: string, source: NormalizedSource, page: number) {
       sourceName: source.name
     })
   }
-  return { items, hasMore: Boolean(doc.querySelector('.pagination .next a')), page }
+  // 分页条带「末页」链接：patch_26_1323 → 共 1323 页
+  const lastHref = doc.querySelector('.pagination li.last a')?.getAttribute('href') ?? ''
+  const pageCount = Number(/patch_\d+_(\d+)\/?$/.exec(lastHref)?.[1] ?? 0) || page
+  return { items, hasMore: Boolean(doc.querySelector('.pagination .next a')), page, pageCount }
 }
 
 async function threeDMBrowse(source: NormalizedSource, page: number) {
   let url = `${source.baseUrl}/`
   if (page > 1) {
-    if (!/_1\/?$/.test(source.baseUrl)) return { items: [], hasMore: false, page }
+    if (!/_1\/?$/.test(source.baseUrl)) return { items: [], hasMore: false, page, pageCount: 0 }
     url = `${source.baseUrl.replace(/_1\/?$/, `_${page}`)}/`
   }
   const html = await fetchText(url, `${source.baseUrl}/`)
-  return parse3dmList(html, source, page)
+  const parsed = parse3dmList(html, source, page)
+  await enrich3dmCovers(parsed.items)
+  return parsed
 }
 
 async function threeDMSearch(
   source: NormalizedSource,
   keyword: string,
   page: number
-): Promise<{ items: TrainerListItem[]; hasMore: boolean; page: number }> {
+): Promise<{ items: TrainerListItem[]; hasMore: boolean; page: number; pageCount: number }> {
   if (!keyword) return threeDMBrowse(source, page)
   const want = sourceCategory(source) === 'save' ? '存档解锁' : '修改器'
   // 3DM 站内搜索按词匹配，带上分区关键词才能把同类补丁搜出来
@@ -642,7 +725,8 @@ async function threeDMSearch(
       })
     }
     const total = Number(/total\s*:\s*(\d+)/.exec(html)?.[1] ?? 0)
-    return { items, hasMore: total > page, page }
+    await enrich3dmCovers(items)
+    return { items, hasMore: total > page, page, pageCount: 0 }
   }
   const combined = keyword.includes(want === '修改器' ? '修改器' : '存档')
     ? keyword
@@ -889,8 +973,10 @@ async function gamerskyList(source: NormalizedSource, page: number) {
       parsed.count > 0 && parsed.pageSize > 0
         ? page * parsed.pageSize < parsed.count
         : Boolean(parse(html).querySelector('.Page .nexe'))
+    const pageCount =
+      parsed.count > 0 && parsed.pageSize > 0 ? Math.ceil(parsed.count / parsed.pageSize) : 0
     await enrichGamerskyCovers(parsed.items)
-    return { items: parsed.items, hasMore, page }
+    return { items: parsed.items, hasMore, page, pageCount }
   }
   const node = gamerskyNodes.get(source.baseUrl)
   if (!node?.nodeId) {
@@ -898,7 +984,7 @@ async function gamerskyList(source: NormalizedSource, page: number) {
     await gamerskyList(source, 1)
   }
   const ready = gamerskyNodes.get(source.baseUrl)
-  if (!ready?.nodeId) return { items: [], hasMore: false, page }
+  if (!ready?.nodeId) return { items: [], hasMore: false, page, pageCount: 0 }
   const jsondata = JSON.stringify({
     type: 'updatenodelabel',
     isCache: true,
@@ -915,11 +1001,13 @@ async function gamerskyList(source: NormalizedSource, page: number) {
   if (!body) throw new Error('游民星空分页接口返回异常')
   const data = JSON.parse(body) as { totalPages?: number; body?: string }
   const parsed = parseGamerskyList(String(data.body ?? ''), source)
+  const pageCount = Number(data.totalPages ?? 0)
   await enrichGamerskyCovers(parsed.items)
   return {
     items: parsed.items,
-    hasMore: Number(data.totalPages ?? 0) > page,
-    page
+    hasMore: pageCount > page,
+    page,
+    pageCount
   }
 }
 
@@ -927,9 +1015,9 @@ async function gamerskySearch(
   source: NormalizedSource,
   keyword: string,
   page: number
-): Promise<{ items: TrainerListItem[]; hasMore: boolean; page: number }> {
+): Promise<{ items: TrainerListItem[]; hasMore: boolean; page: number; pageCount: number }> {
   if (!keyword) return gamerskyList(source, page)
-  if (page > 1) return { items: [], hasMore: false, page }
+  if (page > 1) return { items: [], hasMore: false, page, pageCount: 0 }
   const category = sourceCategory(source) === 'save' ? 'sav' : 'tools'
   const html = await fetchText(
     `https://so.gamersky.com/all/down/${category}?s=${encodeURIComponent(keyword)}`,
@@ -958,7 +1046,7 @@ async function gamerskySearch(
     })
   }
   await enrichGamerskyCovers(items)
-  return { items, hasMore: false, page }
+  return { items, hasMore: false, page, pageCount: 0 }
 }
 
 function parseGamerskyDetail(
@@ -1070,19 +1158,23 @@ function parseAli213List(html: string, source: NormalizedSource, page: number) {
       sourceName: source.name
     })
   }
-  return { items, hasMore: Boolean(doc.querySelector('.fenye .nextpage')), page }
+  // 分页条带「尾页」：class1_1105.html / list_search.php?...&page=6
+  const lastHref = doc.querySelector('.fenye a.endpage')?.getAttribute('href') ?? ''
+  const pageCount =
+    Number(/_(\d+)\.html/.exec(lastHref)?.[1] ?? /page=(\d+)/.exec(lastHref)?.[1] ?? 0) || page
+  return { items, hasMore: Boolean(doc.querySelector('.fenye .nextpage')), page, pageCount }
 }
 
 async function ali213Search(
   source: NormalizedSource,
   keyword: string,
   page: number
-): Promise<{ items: TrainerListItem[]; hasMore: boolean; page: number }> {
+): Promise<{ items: TrainerListItem[]; hasMore: boolean; page: number; pageCount: number }> {
   let url = source.baseUrl
   if (keyword) {
     url = `https://patch.ali213.net/list_search.php?sword=${encodeURIComponent(keyword)}&classid=${ali213ClassId(source)}&page=${page}`
   } else if (page > 1) {
-    if (!/_1\.html$/i.test(source.baseUrl)) return { items: [], hasMore: false, page }
+    if (!/_1\.html$/i.test(source.baseUrl)) return { items: [], hasMore: false, page, pageCount: 0 }
     url = source.baseUrl.replace(/_1\.html$/i, `_${page}.html`)
   }
   const html = await fetchText(url, 'https://patch.ali213.net/')
@@ -1261,6 +1353,7 @@ export async function searchTrainers(
   const items: TrainerListItem[] = []
   const seen = new Set<string>()
   let hasMore = false
+  let pageCount = 0
   const errors: string[] = []
   for (const result of results) {
     if (result.status === 'rejected') {
@@ -1268,6 +1361,7 @@ export async function searchTrainers(
       continue
     }
     hasMore = hasMore || result.value.hasMore
+    pageCount = Math.max(pageCount, result.value.pageCount ?? 0)
     for (const item of result.value.items) {
       const key = titleKey(item.title) || item.url
       if (seen.has(key)) continue
@@ -1284,6 +1378,7 @@ export async function searchTrainers(
         items: [],
         page: safePage,
         hasMore: false,
+        pageCount,
         ...translatedInfo,
         error: errors[0] || '所有修改器源都不可用'
       }
@@ -1293,11 +1388,12 @@ export async function searchTrainers(
       items: [],
       page: safePage,
       hasMore: false,
+      pageCount,
       ...translatedInfo,
       error: query ? '没有找到匹配的补丁' : undefined
     }
   }
-  return { ok: true, items, page: safePage, hasMore, ...translatedInfo }
+  return { ok: true, items, page: safePage, hasMore, pageCount, ...translatedInfo }
 }
 
 export async function trainerDetail(

@@ -153,18 +153,60 @@ function textBadness(text: string): number {
   return score
 }
 
+/**
+ * 最终小说网等站点首次访问会回 503 + JS WAF 挑战页：
+ * 页面里带 `var token='…'`，浏览器只是把它写成 waf_challenge Cookie 后重载。
+ * 这里直接取 token 带上 Cookie 重试，并按域名缓存 4 分钟，避免每个请求都多打一次。
+ */
+const WAF_COOKIE_TTL = 4 * 60 * 1000
+const wafCookies = new Map<string, { cookie: string; at: number }>()
+
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin
+  } catch {
+    return ''
+  }
+}
+
+function wafTokenOf(html: string): string {
+  return /var\s+token\s*=\s*'([A-Za-z0-9_-]{16,})'/.exec(html)?.[1] ?? ''
+}
+
+function mergedCookie(base: string, extra: string): string {
+  if (!base) return extra
+  if (!extra) return base
+  return `${base}; ${extra}`
+}
+
 async function requestPage(url: string, init: RequestInit = {}): Promise<Page> {
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      'User-Agent': UA,
-      Accept: 'text/html,application/xhtml+xml',
-      'Accept-Language': 'zh-CN,zh;q=0.9',
-      ...(init.headers as Record<string, string> | undefined)
-    },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(TIMEOUT_MS)
-  })
+  const origin = originOf(url)
+  const headers: Record<string, string> = {
+    'User-Agent': UA,
+    Accept: 'text/html,application/xhtml+xml',
+    'Accept-Language': 'zh-CN,zh;q=0.9',
+    ...(init.headers as Record<string, string> | undefined)
+  }
+  const cached = wafCookies.get(origin)
+  if (cached && Date.now() - cached.at < WAF_COOKIE_TTL) {
+    headers.Cookie = mergedCookie(headers.Cookie ?? '', cached.cookie)
+  }
+  const request = (withHeaders: Record<string, string>): Promise<Response> =>
+    fetch(url, {
+      ...init,
+      headers: withHeaders,
+      redirect: 'follow',
+      signal: AbortSignal.timeout(TIMEOUT_MS)
+    })
+  let res = await request(headers)
+  if (res.status === 503) {
+    const challenge = await res.text()
+    const token = wafTokenOf(challenge)
+    if (!token) throw new Error('HTTP 503')
+    const cookie = `waf_challenge=${token}`
+    wafCookies.set(origin, { cookie, at: Date.now() })
+    res = await request({ ...headers, Cookie: mergedCookie(headers.Cookie ?? '', cookie) })
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const buffer = Buffer.from(await res.arrayBuffer())
   return {

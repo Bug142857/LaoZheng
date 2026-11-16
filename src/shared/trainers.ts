@@ -202,6 +202,8 @@ export interface TrainerSearchResponse {
   page: number
   /** 是否还有下一页（任一源还有下一页） */
   hasMore: boolean
+  /** 各源里最靠后的末页；源不提供总数时省略 */
+  pageCount?: number
   /** 中文关键词自动翻译后的英文名，用于页面提示 */
   translatedFrom?: string
   translatedTo?: string

@@ -214,6 +214,12 @@ import type {
 } from './meitu'
 import { DEFAULT_MEITU_SOURCES, normalizeMeituSources } from './meitu'
 import { DEFAULT_SHUANGKAN_SOURCES, normalizeShuangkanSources } from './shuangkan'
+import type {
+  EmuListResponse,
+  EmuOpenResponse,
+  EmuPlatformId,
+  EmuSearchResponse
+} from './emu'
 
 export interface CollectionItem {
   id: number
@@ -337,6 +343,8 @@ export interface AppData {
   meituSources: MeituSource[]
   /** 爽看源（肉视频站点），随备份与云同步一起走 */
   shuangkanSources: ShuangkanSource[]
+  /** 软件模块的使用经验笔记（键 = 工具 id，值 = 富文本 HTML），随备份与云同步一起走 */
+  toolNotes: Record<string, string>
 }
 
 export interface ImportResult {
@@ -906,6 +914,9 @@ export interface LaozhengApi {
   wygamerCategories: () => Promise<GameCategoriesResponse>
   wygamerDetail: (id: string) => Promise<GameDetailResponse>
   wygamerResolveDownload: (payUrl: string) => Promise<GameResolveResponse>
+  emuList: (platform: EmuPlatformId, tag: string, page: number) => Promise<EmuListResponse>
+  emuSearch: (keyword: string) => Promise<EmuSearchResponse>
+  emuOpen: (id: string) => Promise<EmuOpenResponse>
   zlibStatus: () => Promise<ZlibStatusResponse>
   zlibLogin: () => Promise<ZlibLoginResult>
   zlibLogout: () => Promise<ZlibStatusResponse>
@@ -944,7 +955,8 @@ export const EMPTY_DATA: AppData = {
   livePlatformSources: DEFAULT_LIVE_PLATFORM_SOURCES,
   wallpaperSources: DEFAULT_WALLPAPER_SOURCES,
   meituSources: DEFAULT_MEITU_SOURCES,
-  shuangkanSources: DEFAULT_SHUANGKAN_SOURCES
+  shuangkanSources: DEFAULT_SHUANGKAN_SOURCES,
+  toolNotes: {}
 }
 
 /**
@@ -966,6 +978,16 @@ function normalizeLists(raw: unknown): ItemList[] {
 function objectRows<T>(raw: unknown): T[] {
   if (!Array.isArray(raw)) return []
   return raw.filter((entry): entry is T => !!entry && typeof entry === 'object')
+}
+
+/** 软件笔记兜底：只保留字符串值，空笔记不保留（界面按「没写过」处理） */
+function normalizeToolNotes(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.trim()) out[key] = value
+  }
+  return out
 }
 
 export function normalizeData(raw: unknown): AppData {
@@ -1001,7 +1023,9 @@ export function normalizeData(raw: unknown): AppData {
     // 美图源缺失时补魅影画廊 / 雪月映画；删空不补回
     meituSources: normalizeMeituSources(o.meituSources),
     // 爽看源缺失时补内置肉视频；删空不补回
-    shuangkanSources: normalizeShuangkanSources(o.shuangkanSources)
+    shuangkanSources: normalizeShuangkanSources(o.shuangkanSources),
+    // 软件模块的使用经验笔记；缺失时为空
+    toolNotes: normalizeToolNotes(o.toolNotes)
   }
   // 2026-11-04 v0.85：按用户要求暂时下线「无损音乐」默认源，
   // 老数据里由 v0.83 自动补进来的内置 hi 源在这里移除（手动添加的同地址源 id 不同，不受影响）
