@@ -152,6 +152,11 @@ const api: LaozhengApi = {
   shuangkanDetail: (source, content, id) =>
     ipcRenderer.invoke('shuangkan:detail', source, content, id),
   shuangkanPlay: (source, id) => ipcRenderer.invoke('shuangkan:play', source, id),
+  shuangkanMirrors: (adapter, measure) =>
+    ipcRenderer.invoke('shuangkan:mirrors', adapter, measure),
+  comicMirrors: (template, measure) =>
+    ipcRenderer.invoke('comic:mirrors', template, measure),
+  probeSourceLatency: (url) => ipcRenderer.invoke('sources:latency', url),
   trackShuangkanImages: (urls, baseUrl) =>
     ipcRenderer.invoke('shuangkan:trackImages', urls, baseUrl),
   exportShuangkanSources: (sources) =>
@@ -223,8 +228,8 @@ const api: LaozhengApi = {
   yumanhuaRecent: (baseUrl, sourceId) =>
     ipcRenderer.invoke('yumanhua:recent', baseUrl, sourceId),
   yumanhuaHot: (baseUrl, sourceId) => ipcRenderer.invoke('yumanhua:hot', baseUrl, sourceId),
-  yumanhuaCategory: (categoryId, baseUrl, sourceId) =>
-    ipcRenderer.invoke('yumanhua:category', categoryId, baseUrl, sourceId),
+  yumanhuaCategory: (categoryId, baseUrl, sourceId, page) =>
+    ipcRenderer.invoke('yumanhua:category', categoryId, baseUrl, sourceId, page),
   yumanhuaSearch: (keyword, baseUrl, sourceId) =>
     ipcRenderer.invoke('yumanhua:search', keyword, baseUrl, sourceId),
   yumanhuaDetail: (id, baseUrl) => ipcRenderer.invoke('yumanhua:detail', id, baseUrl),
@@ -283,6 +288,7 @@ const api: LaozhengApi = {
   wygamerDetail: (id) => ipcRenderer.invoke('wygamer:detail', id),
   wygamerResolveDownload: (payUrl) => ipcRenderer.invoke('wygamer:resolveDownload', payUrl),
   emuList: (platform, tag, page) => ipcRenderer.invoke('emu:list', platform, tag, page),
+  emuTagCounts: (platform) => ipcRenderer.invoke('emu:tagCounts', platform),
   emuSearch: (keyword) => ipcRenderer.invoke('emu:search', keyword),
   emuOpen: (id) => ipcRenderer.invoke('emu:open', id),
   zlibStatus: () => ipcRenderer.invoke('zlib:status'),

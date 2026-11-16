@@ -16,6 +16,8 @@ export const GO_COOKIE = 'x-index-auth=authed'
 export const GO_PH_COOKIE =
   'x-index-auth=authed; accessAgeDisclaimerPH=1; age_verified=1; accessPH=1'
 export const GO_HOME = 'https://x99dh.net/'
+/** 导航站备用域名：x99dh 偶尔连不上时用 99dh，两者是同一套优选数据 */
+const GO_HOMES = [GO_HOME, 'https://99dh.net/']
 
 const TIMEOUT_MS = 20_000
 const PROBE_TIMEOUT_MS = 8_000
@@ -160,6 +162,35 @@ export interface GoSite {
 let sitesCache: { at: number; list: GoSite[] } | null = null
 let sitesTask: Promise<GoSite[]> | null = null
 
+/** 单个导航站域名 → 全部站点与线路 */
+async function fetchSites(home: string): Promise<GoSite[]> {
+  const html = await fetchText(home, home, {
+    timeout: PROBE_TIMEOUT_MS,
+    allowErrorStatus: true
+  })
+  const matched = /["'](JTVC[A-Za-z0-9+/=]{80,})["']/.exec(html)
+  if (!matched) return []
+  const json = decodeURIComponent(Buffer.from(matched[1], 'base64').toString('utf8'))
+  const list = JSON.parse(json) as Array<{
+    name?: string
+    url?: string
+    urls?: Array<{ url?: string; testUrl?: string }>
+  }>
+  const out: GoSite[] = []
+  for (const entry of list) {
+    const origins: string[] = []
+    const push = (raw?: string): void => {
+      const origin = originOf(raw)
+      if (origin && !origins.includes(origin)) origins.push(origin)
+    }
+    push(entry?.url)
+    for (const item of entry?.urls ?? []) push(item?.url || item?.testUrl)
+    if (!origins.length) continue
+    out.push({ name: String(entry?.name ?? ''), origins })
+  }
+  return out
+}
+
 /** 导航站发布的全部站点与线路，缓存 10 分钟 */
 export async function goSites(force = false): Promise<GoSite[]> {
   if (!force && sitesCache && Date.now() - sitesCache.at < SITES_TTL) return sitesCache.list
@@ -167,31 +198,9 @@ export async function goSites(force = false): Promise<GoSite[]> {
   let task: Promise<GoSite[]>
   task = (async () => {
     try {
-      const html = await fetchText(GO_HOME, GO_HOME, {
-        timeout: PROBE_TIMEOUT_MS,
-        allowErrorStatus: true
-      })
-      const matched = /["'](JTVC[A-Za-z0-9+/=]{80,})["']/.exec(html)
-      if (!matched) return []
-      const json = decodeURIComponent(Buffer.from(matched[1], 'base64').toString('utf8'))
-      const list = JSON.parse(json) as Array<{
-        name?: string
-        url?: string
-        urls?: Array<{ url?: string; testUrl?: string }>
-      }>
-      const out: GoSite[] = []
-      for (const entry of list) {
-        const origins: string[] = []
-        const push = (raw?: string): void => {
-          const origin = originOf(raw)
-          if (origin && !origins.includes(origin)) origins.push(origin)
-        }
-        push(entry?.url)
-        for (const item of entry?.urls ?? []) push(item?.url || item?.testUrl)
-        if (!origins.length) continue
-        out.push({ name: String(entry?.name ?? ''), origins })
-      }
-      return out
+      // 两个域名并发取，优先用拿到数据的那个（x99dh 偶发连不上时 99dh 仍可用）
+      const lists = await Promise.all(GO_HOMES.map((home) => fetchSites(home).catch(() => [])))
+      return lists.find((list) => list.length > 0) ?? []
     } catch {
       return []
     }
@@ -225,6 +234,43 @@ export async function pickMirror(
     routes.map(async (route) => ({ route, ok: await probeSite(route, cookie) }))
   )
   return results.find((item) => item.ok)?.route ?? null
+}
+
+export interface NavMirrorLatency {
+  url: string
+  /** 探活成功时的往返耗时；超时 / 失败为 null */
+  ms: number | null
+}
+
+/**
+ * 导航站里某个站点的全部优选线路 + 实测延迟。
+ * 用于片源管理的「优选地址」下拉：让用户按 ms 手动挑最快的线路。
+ */
+export async function mirrorLatencies(
+  match: RegExp,
+  options: { cookie?: string; nodeFetch?: boolean } = {}
+): Promise<NavMirrorLatency[]> {
+  const routes = await routesFor(match)
+  if (!routes.length) return []
+  const results = await Promise.all(
+    routes.slice(0, 60).map(async (url) => {
+      const started = Date.now()
+      let ms: number | null = null
+      try {
+        const body = await fetchText(`${url}/status.html`, `${url}/`, {
+          timeout: PROBE_TIMEOUT_MS,
+          cookie: options.cookie,
+          nodeFetch: options.nodeFetch
+        })
+        if (body.trim().toLowerCase() === 'ok') ms = Date.now() - started
+      } catch {
+        // 打不开 / 返回异常都按超时展示
+      }
+      return { url, ms }
+    })
+  )
+  // 可用的按延迟升序排前面，超时的排最后
+  return results.sort((a, b) => (a.ms ?? Number.MAX_SAFE_INTEGER) - (b.ms ?? Number.MAX_SAFE_INTEGER))
 }
 
 /** 一个站点地址的解析与缓存：先试默认地址，失败再到导航站找同名站点的其他线路 */

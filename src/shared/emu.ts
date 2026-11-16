@@ -70,6 +70,16 @@ export interface EmuListResponse {
   error?: string
 }
 
+/** 平台下各分类的数量与总页数（主进程缓存 24 小时） */
+export interface EmuTagCountsResponse {
+  ok: boolean
+  /** tag 值 → 游戏数量；'' 表示全部分类 */
+  counts: Record<string, number>
+  /** tag 值 → 总页数 */
+  pages: Record<string, number>
+  error?: string
+}
+
 export interface EmuOpenResponse {
   ok: boolean
   error?: string

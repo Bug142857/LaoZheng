@@ -59,11 +59,13 @@ import type {
 import { normalizeMagnetSearchCache } from './magnet'
 import type {
   MusicLyricsSaveResult,
+  MusicLxPlatform,
   MusicQuality,
   MusicResolveResponse,
   MusicSearchResponse,
   MusicSource,
   MusicSourceInput,
+  MusicSourceKind,
   MusicTestResult
 } from './music'
 import {
@@ -92,9 +94,11 @@ import type {
   MelonListResponse
 } from './melon'
 import type {
+  SkAdapter,
   SkCatalogResponse,
   SkContent,
   SkDetailResponse,
+  SkMirrorResponse,
   SkPlayResponse,
   SkSort,
   ShuangkanSource,
@@ -124,7 +128,12 @@ import type {
   YumanhuaImagesResponse,
   YumanhuaListResponse
 } from './yumanhua'
-import type { ComicSource, ComicSourceInput } from './comicSources'
+import type {
+  ComicMirrorResponse,
+  ComicSource,
+  ComicSourceInput,
+  ComicSourceTemplate
+} from './comicSources'
 import {
   ADDED_COMIC_SOURCES,
   DEFAULT_COMIC_SOURCES,
@@ -218,7 +227,8 @@ import type {
   EmuListResponse,
   EmuOpenResponse,
   EmuPlatformId,
-  EmuSearchResponse
+  EmuSearchResponse,
+  EmuTagCountsResponse
 } from './emu'
 
 export interface CollectionItem {
@@ -384,6 +394,8 @@ export interface AllSourcesBundle {
     id?: string
     name: string
     baseUrl: string
+    kind?: MusicSourceKind
+    platforms?: MusicLxPlatform[]
     enabled?: boolean
   }[]
   novelSources?: {
@@ -430,6 +442,7 @@ export interface AllSourcesBundle {
     id?: string
     name: string
     baseUrl: string
+    adapter?: SkAdapter
     enabled?: boolean
   }[]
 }
@@ -747,6 +760,12 @@ export interface LaozhengApi {
     id: string
   ) => Promise<SkDetailResponse>
   shuangkanPlay: (source: ShuangkanSourceRef, id: string) => Promise<SkPlayResponse>
+  shuangkanMirrors: (adapter: SkAdapter, measure?: boolean) => Promise<SkMirrorResponse>
+  comicMirrors: (
+    template: ComicSourceTemplate,
+    measure?: boolean
+  ) => Promise<ComicMirrorResponse>
+  probeSourceLatency: (url: string) => Promise<number | null>
   trackShuangkanImages: (urls: string[], baseUrl?: string) => Promise<void>
   exportShuangkanSources: (sources: {
     id?: string
@@ -804,7 +823,8 @@ export interface LaozhengApi {
   yumanhuaCategory: (
     categoryId: string,
     baseUrl?: string,
-    sourceId?: string
+    sourceId?: string,
+    page?: number
   ) => Promise<YumanhuaListResponse>
   yumanhuaSearch: (
     keyword: string,
@@ -915,6 +935,7 @@ export interface LaozhengApi {
   wygamerDetail: (id: string) => Promise<GameDetailResponse>
   wygamerResolveDownload: (payUrl: string) => Promise<GameResolveResponse>
   emuList: (platform: EmuPlatformId, tag: string, page: number) => Promise<EmuListResponse>
+  emuTagCounts: (platform: EmuPlatformId) => Promise<EmuTagCountsResponse>
   emuSearch: (keyword: string) => Promise<EmuSearchResponse>
   emuOpen: (id: string) => Promise<EmuOpenResponse>
   zlibStatus: () => Promise<ZlibStatusResponse>

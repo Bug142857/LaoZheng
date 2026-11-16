@@ -386,6 +386,12 @@ export async function lxSourceMeta(scriptUrl: string): Promise<LxScriptMeta> {
   return task
 }
 
+/** 清理缓存时丢弃已加载的脚本运行时，下次搜索重新下载并使用最新脚本 */
+export function clearLxSourceCache(): void {
+  runtimes.clear()
+  platformCache.clear()
+}
+
 export function lxQualityFromType(type: string): MusicQuality | null {
   const key = String(type ?? '').trim().toLowerCase()
   if (!key) return null

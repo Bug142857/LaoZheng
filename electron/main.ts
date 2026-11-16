@@ -89,6 +89,7 @@ import { isMeituTemplate, type MeituSourceRef } from '../src/shared/meitu'
 import { meituCategories, meituDetail, meituList } from './meitu'
 
 import { resolveMusic, resolveLegacyMusic, searchMusic, testMusicSource } from './music'
+import { clearLxSourceCache } from './lxSource'
 import type { MusicSourceInput } from '../src/shared/music'
 import { collectSystemInfo } from './sysinfo'
 import {
@@ -143,10 +144,12 @@ import {
   shuangkanDetail,
   shuangkanImageAuth,
   shuangkanMediaAuth,
+  shuangkanMirrors,
   shuangkanPlay,
   shuangkanSearch,
   trackShuangkanImages
 } from './shuangkan'
+import { mirrorLatencies, routesFor } from './gohome'
 import { defaultSkSort, inferSkAdapter, isSkAdapter, isSkSort } from '../src/shared/shuangkan'
 import type { ShuangkanSourceRef } from '../src/shared/shuangkan'
 import { dramaCatalog, dramaDetail, dramaPlay } from './drama'
@@ -200,6 +203,7 @@ import {
   bikahubComicImages,
   bikahubComicRecent,
   bikahubComicSearch,
+  bikahubMirrorList,
   bikahubNovelCategoryCounts
 } from './bikahub'
 import {
@@ -210,7 +214,8 @@ import {
   tptoonComicHot,
   tptoonComicImages,
   tptoonComicRecent,
-  tptoonComicSearch
+  tptoonComicSearch,
+  tptoonMirrorList
 } from './tptoon'
 import {
   jmcomicCategory,
@@ -232,7 +237,7 @@ import {
   wygamerResolveDownload,
   wygamerSearch
 } from './wygamer'
-import { emuList, emuSearch, openEmuGame } from './emu'
+import { emuList, emuSearch, emuTagCounts, openEmuGame } from './emu'
 import { isEmuPlatform } from '../src/shared/emu'
 import {
   autoZlibLogin,
@@ -848,7 +853,9 @@ const USER_DATA_CACHE_DIRS = [
   'DawnCache',
   'DawnGraphiteCache',
   'DawnWebGPUCache',
-  'blob_storage'
+  'blob_storage',
+  // 洛雪音源脚本缓存：清理缓存后下次搜索重新下载
+  'lx-sources'
 ]
 
 /** 图片 / 接口缓存目录：跟随设置里的缓存目录 */
@@ -950,6 +957,8 @@ async function clearCache(): Promise<CacheClearResult> {
     await clearDataCache(cacheRoot())
     // apiCache 还有内存副本：不清掉的话，删了磁盘仍会命中旧数据
     clearApiCacheMemory()
+    // 洛雪音源脚本已加载进内存：一并丢弃，避免仅删磁盘后仍继续用旧脚本
+    clearLxSourceCache()
     await cleanupUpdatesDir()
     // 有下载任务在跑时不能删 .part，否则正在写入的文件会被直接删掉
     if (!hasRunningDownloads()) {
@@ -1675,7 +1684,10 @@ function registerIpc(): void {
           name: typeof s.name === 'string' ? s.name : '',
           baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
           template:
-            s.template === 'komiic' || s.template === 'bikahub' || s.template === 'tptoon'
+            s.template === 'komiic' ||
+            s.template === 'bikahub' ||
+            s.template === 'tptoon' ||
+            s.template === 'jmcomic'
               ? s.template
               : 'yumanhua',
           enabled: s.enabled !== false
@@ -1929,7 +1941,16 @@ function registerIpc(): void {
           id: typeof s.id === 'string' ? s.id : '',
           name: typeof s.name === 'string' ? s.name : '',
           baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
-          enabled: s.enabled !== false
+          enabled: s.enabled !== false,
+          // 洛雪脚本源的类型与平台偏好：缺失时由地址 / 脚本自动推断，有则原样带走
+          ...(s.kind === 'lx' || s.kind === 'site' ? { kind: s.kind } : {}),
+          ...(Array.isArray(s.platforms)
+            ? {
+                platforms: s.platforms.filter(
+                  (item): item is string => typeof item === 'string'
+                )
+              }
+            : {})
         }))
         .filter((s) => /^https?:\/\//i.test(s.baseUrl))
       const novelSources = rowsOf('novelSources')
@@ -1954,7 +1975,8 @@ function registerIpc(): void {
             s.template === 'yumanhua' ||
             s.template === 'komiic' ||
             s.template === 'bikahub' ||
-            s.template === 'tptoon'
+            s.template === 'tptoon' ||
+            s.template === 'jmcomic'
               ? s.template
               : '',
           enabled: s.enabled !== false
@@ -1999,7 +2021,9 @@ function registerIpc(): void {
           id: typeof s.id === 'string' ? s.id : '',
           name: typeof s.name === 'string' ? s.name : '',
           baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
-          enabled: s.enabled !== false
+          enabled: s.enabled !== false,
+          // 短域名镜像（x123 / xv123）无法按域名推断站点，必须带上源类型
+          ...(isSkAdapter(s.adapter) ? { adapter: s.adapter } : {})
         }))
         .filter((s) => /^https?:\/\//i.test(s.baseUrl))
       const payload = {
@@ -2766,6 +2790,78 @@ function registerIpc(): void {
     )
   })
 
+  // 导航站优选地址：片源管理修改皇片源时按延迟选线路
+  ipcMain.handle('shuangkan:mirrors', (_e, adapter: unknown, measure: unknown) => {
+    if (!isSkAdapter(adapter)) {
+      return { ok: false, measured: false, mirrors: [], error: '未知的源类型' }
+    }
+    // measure 不传时默认测速；打开修改弹窗会显式传 false 只拿线路列表，点刷新按钮才传 true
+    return shuangkanMirrors(adapter, measure !== false)
+  })
+
+  // 漫画源的优选线路：禁漫天堂 / 头牌漫画 / 哔咔各有自己的地址发布页
+  ipcMain.handle('comic:mirrors', async (_e, template: unknown, measure: unknown) => {
+    // measure 不传时默认测速；弹窗打开时显式传 false 只拿线路列表
+    const shouldMeasure = measure !== false
+    if (template === 'jmcomic') {
+      const match = /禁漫天堂/
+      if (!shouldMeasure) {
+        const urls = (await routesFor(match)).slice(0, 60)
+        return urls.length
+          ? { ok: true, measured: false, mirrors: urls.map((url) => ({ url, ms: null })) }
+          : {
+              ok: false,
+              measured: false,
+              mirrors: [],
+              error: '导航站没有返回禁漫天堂的优选地址'
+            }
+      }
+      const mirrors = await mirrorLatencies(match)
+      return mirrors.length
+        ? { ok: true, measured: true, mirrors }
+        : { ok: false, measured: true, mirrors: [], error: '导航站没有返回禁漫天堂的优选地址' }
+    }
+    if (template === 'tptoon' || template === 'bikahub') {
+      try {
+        const mirrors =
+          template === 'tptoon'
+            ? await tptoonMirrorList(shouldMeasure)
+            : await bikahubMirrorList(shouldMeasure)
+        return mirrors.length
+          ? { ok: true, measured: shouldMeasure, mirrors }
+          : { ok: false, measured: shouldMeasure, mirrors: [], error: '没有解析到可用的镜像地址' }
+      } catch (err) {
+        return {
+          ok: false,
+          measured: shouldMeasure,
+          mirrors: [],
+          error: err instanceof Error ? err.message : '读取镜像地址失败'
+        }
+      }
+    }
+    return { ok: false, measured: false, mirrors: [], error: '该漫画源没有镜像地址' }
+  })
+
+  // 片源管理测延迟：只等到响应头就返回（不读正文），避免把整页 / 整图下载完
+  ipcMain.handle('sources:latency', async (_e, rawUrl: unknown) => {
+    if (typeof rawUrl !== 'string' || !/^https?:\/\//i.test(rawUrl)) return null
+    const started = Date.now()
+    try {
+      const res = await session.defaultSession.fetch(rawUrl, {
+        method: 'GET',
+        headers: { 'User-Agent': VOD_UA, Accept: '*/*' },
+        redirect: 'follow',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(6000)
+      })
+      const ms = Date.now() - started
+      void res.body?.cancel().catch(() => undefined)
+      return ms
+    } catch {
+      return null
+    }
+  })
+
   // 导出皇片源为 JSON
   ipcMain.handle('shuangkan:exportSources', async (_e, sources: unknown) => {
     const list = Array.isArray(sources) ? sources : []
@@ -3199,16 +3295,22 @@ function registerIpc(): void {
     )
   )
 
-  ipcMain.handle('yumanhua:category', (_e, categoryId: string, baseUrl?: string, sourceId?: string) => {
-    if (typeof categoryId !== 'string' || !/^\d{1,3}$/.test(categoryId)) {
-      return { ok: false, items: [], error: '参数无效' }
+  ipcMain.handle(
+    'yumanhua:category',
+    (_e, categoryId: string, baseUrl?: string, sourceId?: string, page?: number) => {
+      if (typeof categoryId !== 'string' || !/^\d{1,3}$/.test(categoryId)) {
+        return { ok: false, items: [], error: '参数无效' }
+      }
+      const current = Number.isFinite(page)
+        ? Math.max(1, Math.min(999, Math.floor(page as number)))
+        : 1
+      return cachedResponse(
+        `yumanhua:category|${categoryId}|${baseUrl ?? ''}|${sourceId ?? ''}|${current}`,
+        15 * 60 * 1000,
+        () => yumanhuaCategory(categoryId, baseUrl, sourceId, current)
+      )
     }
-    return cachedResponse(
-      `yumanhua:category|${categoryId}|${baseUrl ?? ''}|${sourceId ?? ''}`,
-      15 * 60 * 1000,
-      () => yumanhuaCategory(categoryId, baseUrl, sourceId)
-    )
-  })
+  )
 
   ipcMain.handle('yumanhua:search', (_e, keyword: string, baseUrl?: string, sourceId?: string) => {
     if (typeof keyword !== 'string' || !keyword.trim() || keyword.length > 40) {
@@ -3661,6 +3763,15 @@ function registerIpc(): void {
     }
     return cachedResponse(`emu:list|v2|${platform}|${tag}|${page}`, 30 * 60 * 1000, () =>
       emuList(platform, tag, page)
+    )
+  })
+
+  ipcMain.handle('emu:tagCounts', (_e, platform: string) => {
+    if (!isEmuPlatform(platform)) {
+      return { ok: false, counts: {}, pages: {}, error: '参数无效' }
+    }
+    return cachedResponse(`emu:tagCounts|v1|${platform}`, 24 * 60 * 60 * 1000, () =>
+      emuTagCounts(platform)
     )
   })
 

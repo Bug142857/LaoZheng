@@ -17,6 +17,8 @@ export interface TptoonCategory {
 export interface TptoonCategoryCountsResponse {
   ok: boolean
   counts: Record<string, number>
+  /** 分类 slug → 总页数（update / ranking 也用这两个键给出总页数） */
+  pages?: Record<string, number>
   error?: string
 }
 

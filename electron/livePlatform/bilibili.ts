@@ -144,10 +144,11 @@ export async function bilibiliCategoryRooms(
   page = 1
 ): Promise<LiveListResult> {
   try {
+    // 旧接口 getListByAreaID 只认父分区，子分类会返回空；getRoomList 需要 platform=web 才按 area_id 过滤
     const res = await fetchJson<{ code: number; message?: string; data?: unknown }>(
-      `${API}/room/v1/Area/getListByAreaID?areaId=${encodeURIComponent(
-        areaId
-      )}&parent_area_id=${encodeURIComponent(parentId)}&sort=online&pageSize=30&page=${page}`,
+      `${API}/room/v1/Area/getRoomList?platform=web&parent_area_id=${encodeURIComponent(
+        parentId
+      )}&area_id=${encodeURIComponent(areaId)}&sort_type=online&page=${page}&page_size=30`,
       { headers: await headers() }
     )
     if (res.code !== 0) throw new Error(res.message || 'B站分区列表加载失败')

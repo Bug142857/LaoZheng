@@ -9,14 +9,19 @@ import {
   type SkDetailResponse,
   type SkEpisode,
   type SkItem,
+  type SkMirrorResponse,
   type SkPlayResponse,
   type SkSort
 } from '../src/shared/shuangkan'
 import {
+  GO_COOKIE,
+  GO_PH_COOKIE,
   SiteResolver,
   absoluteUrl,
   attr,
+  mirrorLatencies,
   requestSite,
+  routesFor,
   text,
   trackImages
 } from './gohome'
@@ -471,5 +476,57 @@ export async function shuangkanPlay(
     return { ok: true, url: await resolveRou07Play(url) }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : '播放失败' }
+  }
+}
+
+/* ---------------- 导航站优选地址（片源管理手动选线路） ---------------- */
+
+const MIRROR_MATCH: Record<SkAdapter, RegExp> = {
+  rou07: /肉视频|肉視頻/,
+  pornhub: /pornhub/i,
+  xvid: /xvid/i,
+  xhamster: /xhamster/i,
+  ppp: /亚洲素人精选/
+}
+
+/** 拉取某个源类型在导航站里的全部优选线路；measure=false 时只返回列表，不逐个测速 */
+export async function shuangkanMirrors(
+  adapter: SkAdapter,
+  measure = true
+): Promise<SkMirrorResponse> {
+  try {
+    if (!measure) {
+      const routes = (await routesFor(MIRROR_MATCH[adapter])).slice(0, 60)
+      if (!routes.length) {
+        return {
+          ok: false,
+          measured: false,
+          mirrors: [],
+          error: '导航站没有返回该站点的优选地址，请稍后再试'
+        }
+      }
+      return { ok: true, measured: false, mirrors: routes.map((url) => ({ url, ms: null })) }
+    }
+    const mirrors = await mirrorLatencies(MIRROR_MATCH[adapter], {
+      cookie: adapter === 'pornhub' ? GO_PH_COOKIE : GO_COOKIE,
+      // XVIDEOS 镜像会把 Chromium 请求判成 404/500，和正文请求一样走 Node 网络栈
+      nodeFetch: adapter === 'xvid'
+    })
+    if (!mirrors.length) {
+      return {
+        ok: false,
+        measured: true,
+        mirrors: [],
+        error: '导航站没有返回该站点的优选地址，请稍后再试'
+      }
+    }
+    return { ok: true, measured: true, mirrors }
+  } catch (err) {
+    return {
+      ok: false,
+      measured: measure,
+      mirrors: [],
+      error: err instanceof Error ? err.message : '读取导航站优选地址失败'
+    }
   }
 }

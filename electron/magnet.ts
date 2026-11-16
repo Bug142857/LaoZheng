@@ -44,7 +44,8 @@ const WEBVIEW_TIMEOUT = 22_000
 const MAX_DETAIL_FETCH = 24
 const SOURCE_SEARCH_BUDGET = 45_000
 const ALL_SEARCH_BUDGET = 30_000
-const TEST_BUDGET = 45_000
+/** 源测试只验证搜索页能否解析，不抓详情页磁链，避免一次测试拖到几十秒 */
+const TEST_BUDGET = 15_000
 const STATE_VERSION = 4
 
 const FALLBACK_AD_WORDS = [
@@ -812,25 +813,28 @@ export async function testMagnetSource(source: MagnetSource): Promise<MagnetTest
     return { ok: false, count: 0, message: '资源库参数无效', testAt }
   }
   try {
-    const result = await searchMagnetSource(
-      source,
-      'saw',
-      1,
-      { blockAds: false, smartSearch: false, dedupe: true },
-      TEST_BUDGET
-    )
-    const message = result.ok
-      ? result.items.length > 0
-        ? `可用 · ${result.items.length} 条`
-        : '可用 · 0 条（可能被反爬或站点改版）'
-      : result.error ?? '测试失败'
+    // 只取搜索页并解析条目；完整搜索才会继续抓详情页磁链。
+    // 详情页最多 24 个、每个 10s 超时，是磁力源测试比其它源慢几十秒的根因。
+    const parsed = await fetchAndParse(source, 'saw', 1, Date.now() + TEST_BUDGET)
+    if (parsed.error) {
+      appendMagnetLog(
+        'TEST',
+        `name=${source.name} url=${source.searchUrl} ok=false count=0 ms=${
+          Date.now() - started
+        } message=${parsed.error}`
+      )
+      return { ok: false, count: 0, message: parsed.error, testAt }
+    }
+    const count = parsed.items.length
+    const message =
+      count > 0 ? `可用 · 列表 ${count} 条` : '可用 · 0 条（可能被反爬或站点改版）'
     appendMagnetLog(
       'TEST',
-      `name=${source.name} url=${source.searchUrl} ok=${result.ok} count=${result.items.length} ms=${
+      `name=${source.name} url=${source.searchUrl} ok=true count=${count} ms=${
         Date.now() - started
       } message=${message}`
     )
-    return { ok: result.ok, count: result.items.length, message, testAt }
+    return { ok: true, count, message, testAt }
   } catch (err) {
     const message = errorText(err)
     appendMagnetLog(

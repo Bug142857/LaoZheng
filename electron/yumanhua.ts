@@ -42,6 +42,46 @@ function basesFor(baseUrl?: string): { desktop: string; mobile: string } {
 }
 const imageCache = new Map<string, { urls: string[]; at: number }>()
 const IMAGE_TTL = 10 * 60 * 1000
+/** 分类接口每页 20 条，站点最多只放 5 页（p=1~5，第 6 页返回 -1） */
+const YUMANHUA_CATEGORY_PAGES = 5
+const lastPageCache = new Map<string, { page: number; at: number }>()
+const LAST_PAGE_TTL = 6 * 60 * 60 * 1000
+const originCache = new Map<string, { origin: string; at: number }>()
+const ORIGIN_TTL = 5 * 60 * 1000
+
+/** 同一个站点按主机 / 协议生成候选地址：有的网络只放行 m 站或 http */
+function urlVariants(url: string): string[] {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return [url]
+  }
+  const host = parsed.hostname
+  const hosts: string[] = []
+  if (host.startsWith('m.')) hosts.push(host, `www.${host.slice(2)}`, host.slice(2))
+  else if (host.startsWith('www.')) hosts.push(host, `m.${host.slice(4)}`, host.slice(4))
+  else hosts.push(host, `www.${host}`, `m.${host}`)
+  const protocols = [parsed.protocol, parsed.protocol === 'http:' ? 'https:' : 'http:']
+  const out: string[] = []
+  for (const protocol of protocols) {
+    for (const name of hosts) {
+      const next = new URL(parsed.toString())
+      next.protocol = protocol
+      next.hostname = name
+      out.push(next.toString())
+    }
+  }
+  return out
+}
+
+function originFor(candidate: string): string {
+  try {
+    return new URL(candidate).origin
+  } catch {
+    return ''
+  }
+}
 
 function decodeEntities(value: string): string {
   return value
@@ -62,20 +102,63 @@ function attr(node: { getAttribute: (name: string) => string | undefined } | nul
   return node?.getAttribute(name)?.trim() ?? ''
 }
 
-async function fetchHtml(url: string, init: RequestInit = {}, referer?: string): Promise<{ html: string; status: number }> {
-  const res = await session.defaultSession.fetch(url, {
-    ...init,
-    headers: {
-      'User-Agent': UA,
-      Accept: 'text/html,application/xhtml+xml',
-      'Accept-Language': 'zh-CN,zh;q=0.9',
-      Referer: referer ?? `${basesFor().mobile}/`,
-      ...(init.headers as Record<string, string> | undefined)
-    },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(TIMEOUT_MS)
-  })
-  return { html: await res.text(), status: res.status }
+async function fetchHtml(
+  url: string,
+  init: RequestInit = {},
+  referer?: string
+): Promise<{ html: string; status: number; url: string }> {
+  const candidates = urlVariants(url)
+  const hostKey = (() => {
+    try {
+      return new URL(url).hostname.replace(/^(www|m)\./i, '')
+    } catch {
+      return url
+    }
+  })()
+  const remembered = originCache.get(hostKey)
+  if (remembered && Date.now() - remembered.at < ORIGIN_TTL) {
+    const index = candidates.findIndex((candidate) => originFor(candidate) === remembered.origin)
+    if (index > 0) candidates.unshift(candidates.splice(index, 1)[0])
+  }
+  let lastError: Error | null = null
+  for (const [index, candidate] of candidates.entries()) {
+    const origin = originFor(candidate)
+    let nextReferer = referer
+    if (referer && origin) {
+      try {
+        const ref = new URL(referer)
+        ref.protocol = new URL(candidate).protocol
+        ref.hostname = new URL(candidate).hostname
+        nextReferer = ref.toString()
+      } catch {
+        nextReferer = `${origin}/`
+      }
+    } else if (!referer && origin) {
+      nextReferer = `${origin}/`
+    }
+    try {
+      const res = await session.defaultSession.fetch(candidate, {
+        ...init,
+        headers: {
+          'User-Agent': UA,
+          Accept: 'text/html,application/xhtml+xml',
+          'Accept-Language': 'zh-CN,zh;q=0.9',
+          ...(init.headers as Record<string, string> | undefined),
+          ...(nextReferer ? { Referer: nextReferer } : {})
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(index === 0 ? TIMEOUT_MS : 8_000)
+      })
+      if (res.ok) {
+        originCache.set(hostKey, { origin, at: Date.now() })
+        return { html: await res.text(), status: res.status, url: candidate }
+      }
+      lastError = new Error(`HTTP ${res.status}`)
+    } catch (err) {
+      lastError = err as Error
+    }
+  }
+  throw lastError ?? new Error('站点无法访问')
 }
 
 function slugFromHref(href: string): string {
@@ -190,6 +273,84 @@ function parseSearchItems(html: string, sourceId = 'yumanhua'): YumanhuaComic[] 
   return items
 }
 
+/** 分类「点击加载更多」接口：POST /data/sort（s=分类, p=页码），每页 20 条 */
+function parseCategoryApiItems(rawText: string, sourceId: string): YumanhuaComic[] {
+  let data: unknown
+  try {
+    data = (JSON.parse(rawText) as { data?: unknown }).data
+  } catch {
+    return []
+  }
+  if (!Array.isArray(data)) return []
+  const items: YumanhuaComic[] = []
+  const seen = new Set<string>()
+  for (const raw of data) {
+    const row = raw as Record<string, unknown>
+    const slug = String(row.id ?? '').trim()
+    const name = text(String(row.name ?? ''))
+    if (!/^[A-Za-z0-9]{1,40}$/.test(slug) || !name || seen.has(slug)) continue
+    seen.add(slug)
+    const cover = String(row.imgurl ?? '').trim()
+    items.push({
+      id: yumanhuaId(slug, sourceId),
+      title: name,
+      cover: /^https?:\/\//i.test(cover) ? cover : '',
+      author: text(String(row.author ?? '')),
+      tags: [],
+      status: '',
+      latest: text(String(row.remarks ?? '')),
+      intro: text(String(row.intro ?? ''))
+    })
+  }
+  return items
+}
+
+async function categoryLastPage(
+  categoryId: string,
+  baseUrl: string | undefined,
+  firstCount: number
+): Promise<number> {
+  if (firstCount < YUMANHUA_PAGE_SIZE) return 1
+  const { mobile } = basesFor(baseUrl)
+  const key = `${mobile}|${categoryId}`
+  const cached = lastPageCache.get(key)
+  if (cached && Date.now() - cached.at < LAST_PAGE_TTL) return cached.page
+  const fetchPage = async (page: number): Promise<number> => {
+    const res = await fetchHtml(
+      `${mobile}/data/sort`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: `s=${encodeURIComponent(categoryId)}&p=${page}`
+      },
+      `${mobile}/sort/${categoryId}`
+    )
+    return parseCategoryApiItems(res.html, 'yumanhua').length
+  }
+  let last = 1
+  try {
+    if ((await fetchPage(YUMANHUA_CATEGORY_PAGES)) > 0) {
+      last = YUMANHUA_CATEGORY_PAGES
+    } else {
+      let low = 1
+      let high = YUMANHUA_CATEGORY_PAGES
+      while (high - low > 1) {
+        const mid = Math.floor((low + high) / 2)
+        if ((await fetchPage(mid)) > 0) low = mid
+        else high = mid
+      }
+      last = low
+    }
+  } catch {
+    return 1
+  }
+  lastPageCache.set(key, { page: last, at: Date.now() })
+  return last
+}
+
 export async function yumanhuaRecent(
   baseUrl?: string,
   sourceId = 'yumanhua'
@@ -225,16 +386,37 @@ export async function yumanhuaHot(
 export async function yumanhuaCategory(
   categoryId: string,
   baseUrl?: string,
-  sourceId = 'yumanhua'
+  sourceId = 'yumanhua',
+  page = 1
 ): Promise<YumanhuaListResponse> {
   try {
     if (!/^\d{1,3}$/.test(categoryId)) throw new Error('分类参数无效')
+    const current = Math.max(1, Math.min(999, Number.isFinite(page) ? Math.floor(page) : 1))
     const { mobile } = basesFor(baseUrl)
+    if (current > 1) {
+      const api = await fetchHtml(
+        `${mobile}/data/sort`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Requested-With': 'XMLHttpRequest'
+          },
+          body: `s=${encodeURIComponent(categoryId)}&p=${current}`
+        },
+        `${mobile}/sort/${categoryId}`
+      )
+      const items = parseCategoryApiItems(api.html, sourceId)
+      if (!items.length) throw new Error('该分类没有更多漫画')
+      const totalPages = await categoryLastPage(categoryId, baseUrl, YUMANHUA_PAGE_SIZE)
+      return { ok: true, items, hasMore: current < totalPages, totalPages }
+    }
     const { html, status } = await fetchHtml(`${mobile}/sort/${categoryId}`, {}, `${mobile}/`)
     if (status !== 200) throw new Error(`HTTP ${status}`)
     const items = parseRankItems(html, sourceId)
     if (!items.length) throw new Error('该分类没有返回漫画')
-    return { ok: true, items, hasMore: false }
+    const totalPages = await categoryLastPage(categoryId, baseUrl, items.length)
+    return { ok: true, items, hasMore: totalPages > 1, totalPages }
   } catch (err) {
     return { ok: false, items: [], error: err instanceof Error ? err.message : '加载失败' }
   }
@@ -385,14 +567,12 @@ export async function yumanhuaImages(
   if (!/^[A-Za-z0-9]{1,40}$/.test(slug) || !/^[A-Za-z0-9]{1,40}$/.test(chapterId)) {
     return { ok: false, urls: [], error: '章节参数无效' }
   }
-  const { mobile } = basesFor(baseUrl)
+  const { mobile, desktop } = basesFor(baseUrl)
   const key = `${mobile}/${slug}/${chapterId}`
   const cached = imageCache.get(key)
   if (cached && Date.now() - cached.at < IMAGE_TTL) return { ok: true, urls: cached.urls }
   try {
-    const urls = await evaluateRenderedPage<string[]>(
-      `${mobile}/${slug}/${chapterId}.html`,
-      `(async () => {
+    const script = `(async () => {
         for (let i = 0; i < 40; i++) {
           const nodes = Array.from(document.querySelectorAll('.main_img img'))
           const list = nodes.map((img) => img.getAttribute('data-src') || img.getAttribute('src') || '').filter(Boolean)
@@ -400,9 +580,18 @@ export async function yumanhuaImages(
           await new Promise((resolve) => setTimeout(resolve, 250))
         }
         return []
-      })()`,
-      { waitMs: 500 }
-    )
+      })()`
+    let urls: string[] = []
+    try {
+      urls = await evaluateRenderedPage<string[]>(`${mobile}/${slug}/${chapterId}.html`, script, {
+        waitMs: 500
+      })
+    } catch {
+      // m 站打不开时换回桌面站再试一次
+      urls = await evaluateRenderedPage<string[]>(`${desktop}/${slug}/${chapterId}.html`, script, {
+        waitMs: 500
+      })
+    }
     const clean = urls
       .map((url) => String(url ?? '').trim())
       .filter((url) => /^https?:\/\//i.test(url) && !/load\.gif|loaderr\.gif/i.test(url))

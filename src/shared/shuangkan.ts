@@ -147,6 +147,30 @@ export const SK_PPP_BASE = 'https://591av.ws'
 
 export const SK_ADAPTERS: SkAdapter[] = ['rou07', 'pornhub', 'xvid', 'xhamster', 'ppp']
 
+/** 源类型对应的导航站站点名（优选地址下拉里显示） */
+export const SK_ADAPTER_LABEL: Record<SkAdapter, string> = {
+  rou07: '肉视频',
+  pornhub: 'P站',
+  xvid: 'X站',
+  xhamster: 'xhamster',
+  ppp: '亚洲素人精选'
+}
+
+/** 导航站优选线路 + 实测延迟 */
+export interface SkMirrorOption {
+  url: string
+  /** 探活成功时的往返毫秒数；超时 / 失败为 null */
+  ms: number | null
+}
+
+export interface SkMirrorResponse {
+  ok: boolean
+  mirrors: SkMirrorOption[]
+  /** 是否已实测延迟；false 时 ms 全部为 null，表示只拿到了线路列表 */
+  measured: boolean
+  error?: string
+}
+
 export function isSkAdapter(value: unknown): value is SkAdapter {
   return typeof value === 'string' && (SK_ADAPTERS as string[]).includes(value)
 }
@@ -162,22 +186,16 @@ export function inferSkAdapter(baseUrl: string): SkAdapter {
   if (/pornhub/.test(host)) return 'pornhub'
   if (/xvideos/.test(host)) return 'xvid'
   if (/xhamster/.test(host)) return 'xhamster'
+  // 导航站里的短域名镜像：x123 = XVIDEOS，xv123 = xhamster
+  if (/(^|\.)x123\./.test(host) || /(^|\.)(xvideos163|91xvideos)\./.test(host)) return 'xvid'
+  if (/(^|\.)xv123\./.test(host)) return 'xhamster'
   if (/(^|\.)(591av|91-av)\./.test(host)) return 'ppp'
+  // 肉视频镜像都是 rou 开头（rou07 / rou66 / rou1 / rouxxx 等）
+  if (/(^|\.)rou/.test(host)) return 'rou07'
   return 'rou07'
 }
 
 export const DEFAULT_SHUANGKAN_SOURCES: ShuangkanSource[] = [
-  {
-    id: SK_BUILTIN_SOURCE_ID,
-    name: '肉视频',
-    baseUrl: SK_DEFAULT_BASE,
-    enabled: true,
-    builtin: true,
-    adapter: 'rou07',
-    testStatus: 'ok',
-    testMsg: '可用',
-    testAt: 0
-  },
   {
     id: 'pornhub',
     name: 'P站',
@@ -221,8 +239,22 @@ export const DEFAULT_SHUANGKAN_SOURCES: ShuangkanSource[] = [
     testStatus: 'ok',
     testMsg: '可用',
     testAt: 0
+  },
+  {
+    id: SK_BUILTIN_SOURCE_ID,
+    name: '肉视频',
+    baseUrl: SK_DEFAULT_BASE,
+    enabled: true,
+    builtin: true,
+    adapter: 'rou07',
+    testStatus: 'ok',
+    testMsg: '可用',
+    testAt: 0
   }
 ]
+
+/** 内置源默认顺序：P站 → X站 → xhamster → 亚洲素人精选 → 肉视频 */
+const SHUANGKAN_SOURCE_ORDER = ['pornhub', 'xvid', 'xhamster', 'ppp', SK_BUILTIN_SOURCE_ID]
 
 export function toShuangkanSourceRef(source: ShuangkanSource): ShuangkanSourceRef {
   return {
@@ -296,5 +328,11 @@ export function normalizeShuangkanSources(raw: unknown): ShuangkanSource[] {
     ids.add(preset.id)
     urls.add(preset.baseUrl)
   }
+  // 老数据也重排内置源：P站排最前，肉视频放最后；自定义源保持原相对顺序排在后面
+  const rankOf = (id: string): number => {
+    const index = SHUANGKAN_SOURCE_ORDER.indexOf(id)
+    return index >= 0 ? index : SHUANGKAN_SOURCE_ORDER.length
+  }
+  rows.sort((a, b) => rankOf(a.id) - rankOf(b.id))
   return rows
 }

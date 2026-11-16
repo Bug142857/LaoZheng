@@ -26,7 +26,7 @@ import {
 } from '../shared/yumanhua'
 import { DEFAULT_COMIC_SOURCES, type ComicSource, type ComicSourceTemplate } from '../shared/comicSources'
 import { BIKAHUB_COMIC_CATEGORIES, bikahubComicSourceId } from '../shared/bikahub'
-import { TPTOON_CATEGORIES, tptoonComicSourceId } from '../shared/tptoon'
+import { TPTOON_CATEGORIES, TPTOON_PAGE_SIZE, tptoonComicSourceId } from '../shared/tptoon'
 import { JMCOMIC_CATEGORIES, jmcomicComicSourceId } from '../shared/jmcomic'
 
 type Mode = 'recent' | 'hot' | 'category' | 'search'
@@ -299,6 +299,7 @@ export function ComicPage({
     initialTemplate === 'komiic' ? categoryCache : categoriesForTemplate(initialTemplate)
   )
   const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({})
+  const [categoryPages, setCategoryPages] = useState<Record<string, number>>({})
   const [mode, setMode] = useState<Mode>(sourceInitialMode)
   const [categoryId, setCategoryId] = useState(
     initialTemplate === 'komiic' ? cache.categoryId : ''
@@ -394,7 +395,7 @@ export function ComicPage({
                   recent: () => window.laozheng.yumanhuaRecent(baseUrl, sid),
                   hot: () => window.laozheng.yumanhuaHot(baseUrl, sid),
                   category: (category: string) =>
-                    window.laozheng.yumanhuaCategory(category, baseUrl, sid),
+                    window.laozheng.yumanhuaCategory(category, baseUrl, sid, nextPage),
                   search: (keyword: string) =>
                     window.laozheng.yumanhuaSearch(keyword, baseUrl, sid)
                 }
@@ -575,14 +576,11 @@ export function ComicPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 哔咔 / 头牌 / 禁漫分类数量：哔咔取分类页 total，头牌二分探末页，禁漫按末页折算（主进程缓存 24 小时）
+  // 哔咔 / 头牌分类数量：哔咔取分类页 total，头牌二分探末页（主进程缓存 24 小时）
   useEffect(() => {
     setCategoryCounts({})
-    if (
-      activeTemplate !== 'bikahub' &&
-      activeTemplate !== 'tptoon' &&
-      activeTemplate !== 'jmcomic'
-    ) {
+    setCategoryPages({})
+    if (activeTemplate !== 'bikahub' && activeTemplate !== 'tptoon') {
       return
     }
     let alive = true
@@ -590,12 +588,14 @@ export function ComicPage({
     const load =
       activeTemplate === 'bikahub'
         ? window.laozheng.bikahubComicCategoryCounts(baseUrl)
-        : activeTemplate === 'tptoon'
-          ? window.laozheng.tptoonComicCategoryCounts(baseUrl)
-          : window.laozheng.jmcomicCategoryCounts(baseUrl)
+        : window.laozheng.tptoonComicCategoryCounts(baseUrl)
     void load
       .then((res) => {
-        if (alive && res.ok) setCategoryCounts(res.counts)
+        if (alive && res.ok) {
+          setCategoryCounts(res.counts)
+          const pages = (res as { pages?: Record<string, number> }).pages
+          if (pages) setCategoryPages(pages)
+        }
       })
       .catch(() => undefined)
     return () => {
@@ -872,11 +872,21 @@ export function ComicPage({
   const progressKey = (id: string): string => `comic/${id}`
   const progress = detail ? data.readProgress[progressKey(detail.comic.id)] : undefined
   const resumeChapter = detail?.chapters.find((c) => c.id === progress)
-  /** 分类模式能算出总页数；最近 / 热门只能点「尾页」时探测 */
+  /** 分类模式能算出总页数；头牌用后台探到的末页，最近 / 热门分别对应 update / ranking */
+  const tptoonPageKey =
+    mode === 'recent' ? 'update' : mode === 'hot' ? 'ranking' : categoryId
+  const tptoonLastPage =
+    activeTemplate === 'tptoon'
+      ? (categoryPages[tptoonPageKey] ??
+        (categoryCounts[tptoonPageKey] > 0
+          ? Math.ceil(categoryCounts[tptoonPageKey] / TPTOON_PAGE_SIZE)
+          : 0))
+      : 0
   const categoryLastPage =
     mode === 'category'
       ? Math.ceil((categories.find((c) => c.id === categoryId)?.count ?? 0) / KOMIIC_PAGE_SIZE)
       : 0
+  const effectiveLastPage = tptoonLastPage || categoryLastPage || lastPage
 
   const openChapter = async (chapter: ChapterView) => {
     const comic = detail?.comic
@@ -1369,7 +1379,9 @@ export function ComicPage({
                 onClick={() => void load('category', c.id, '', 1)}
               >
                 {c.name}
-                {count > 0 ? <span className="chip-count">{count}</span> : null}
+                {activeTemplate !== 'jmcomic' && count > 0 ? (
+                  <span className="chip-count">{count}</span>
+                ) : null}
               </button>
             )
           })}
@@ -1430,10 +1442,8 @@ export function ComicPage({
           ) : (
             <Pagination
               page={pageNum}
-              lastPage={categoryLastPage || lastPage}
-              onLast={
-                categoryLastPage > 0 || lastPage > 0 ? undefined : () => void goLastPage()
-              }
+              lastPage={effectiveLastPage}
+              onLast={effectiveLastPage > 0 ? undefined : () => void goLastPage()}
               hasMore={hasMore}
               disabled={loading}
               onChange={(next) => void load(mode, categoryId, query, next)}

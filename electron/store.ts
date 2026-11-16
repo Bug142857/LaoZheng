@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
-import { readFile, writeFile, rename, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, rename, mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AppData, EMPTY_DATA, normalizeData, stripNullFields } from '../src/shared/types'
 
@@ -37,22 +37,38 @@ function tempPath(target: string): string {
   return `${target}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
 }
 
+/**
+ * 保存序号：多个保存请求可能乱序完成（例如退出前的同步落盘晚于此前发起的异步保存），
+ * 用最后落盘序号保证过期数据不会把更新的数据覆盖回磁盘。
+ */
+let saveSeq = 0
+let lastWrittenSeq = 0
+
 /** 写临时文件再替换，避免写入中断把 data.json 写坏 */
 export async function saveData(data: AppData): Promise<void> {
+  const seq = ++saveSeq
   const target = dataFilePath()
   await mkdir(app.getPath('userData'), { recursive: true })
   const tmp = tempPath(target)
   await writeFile(tmp, JSON.stringify(data, null, 2), 'utf8')
+  // 写盘期间已有更晚的保存落地：这次旧数据直接丢弃
+  if (lastWrittenSeq > seq) {
+    await rm(tmp, { force: true }).catch(() => undefined)
+    return
+  }
   await rename(tmp, target)
+  lastWrittenSeq = seq
 }
 
 /** 退出前同步落盘：防止防抖队列里的最后一次修改随窗口关闭一起丢掉 */
 export function saveDataSync(data: AppData): void {
+  const seq = ++saveSeq
   const target = dataFilePath()
   mkdirSync(app.getPath('userData'), { recursive: true })
   const tmp = tempPath(target)
   writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
   renameSync(tmp, target)
+  lastWrittenSeq = seq
 }
 
 /** 从手机端导出的 JSON 读取（格式 version 1，必须有 items / lists / listItems） */

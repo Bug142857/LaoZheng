@@ -19,6 +19,7 @@ import type {
   YumanhuaImagesResponse,
   YumanhuaListResponse
 } from '../src/shared/yumanhua'
+import type { ComicMirrorOption } from '../src/shared/comicSources'
 
 /**
  * 头牌漫画（tptoon.net）客户端。
@@ -595,7 +596,10 @@ export async function tptoonComicImages(
 
 /* ---------------- 分类数量 ---------------- */
 
-const countsCache = new Map<string, { counts: Record<string, number>; at: number }>()
+const countsCache = new Map<
+  string,
+  { counts: Record<string, number>; pages: Record<string, number>; at: number }
+>()
 const COUNTS_TTL = 24 * 60 * 60 * 1000
 /** 分类最多翻到这么多页，防止站点异常时无限探测 */
 const COUNTS_MAX_PAGE = 4096
@@ -619,10 +623,13 @@ async function categoryPageItems(
 }
 
 /** 站点不显示分类总数：二分探到最后一页，再按 30 条/页折算 */
-async function categoryCount(baseUrl: string | undefined, categoryId: string): Promise<number> {
+async function categoryCount(
+  baseUrl: string | undefined,
+  categoryId: string
+): Promise<{ count: number; lastPage: number }> {
   const first = await categoryPageItems(baseUrl, categoryId, 1)
-  if (first === null) return -1
-  if (first === 0) return 0
+  if (first === null) return { count: -1, lastPage: 0 }
+  if (first === 0) return { count: 0, lastPage: 0 }
   let low = 1
   let lowItems = first
   let high = 2
@@ -643,7 +650,7 @@ async function categoryCount(baseUrl: string | undefined, categoryId: string): P
       high = mid
     }
   }
-  return (low - 1) * TPTOON_PAGE_SIZE + lowItems
+  return { count: (low - 1) * TPTOON_PAGE_SIZE + lowItems, lastPage: low }
 }
 
 export async function tptoonComicCategoryCounts(
@@ -652,29 +659,62 @@ export async function tptoonComicCategoryCounts(
   const cacheKey = originOf(baseUrl) || TPTOON_DEFAULT_BASE
   const cached = countsCache.get(cacheKey)
   if (cached && Date.now() - cached.at < COUNTS_TTL) {
-    return { ok: true, counts: cached.counts }
+    return { ok: true, counts: cached.counts, pages: cached.pages }
   }
   try {
     const counts: Record<string, number> = {}
-    const queue = [...TPTOON_CATEGORIES]
+    const pages: Record<string, number> = {}
+    // 最近 / 热门列表也用 update / ranking 路径，一并算出总页数
+    const queue = [...TPTOON_CATEGORIES.map((item) => item.id), 'update', 'ranking']
     const worker = async (): Promise<void> => {
       for (;;) {
-        const category = queue.shift()
-        if (!category) return
+        const categoryId = queue.shift()
+        if (!categoryId) return
         try {
-          counts[category.id] = await categoryCount(baseUrl, category.id)
+          const stat = await categoryCount(baseUrl, categoryId)
+          counts[categoryId] = stat.count
+          if (stat.lastPage > 0) pages[categoryId] = stat.lastPage
         } catch (err) {
           // 单个分类网络失败只标记 -1，其他分类继续
           if (err instanceof TptoonNetworkError) throw err
-          counts[category.id] = -1
+          counts[categoryId] = -1
         }
       }
     }
-    await Promise.all(Array.from({ length: 4 }, worker))
-    countsCache.set(cacheKey, { counts, at: Date.now() })
-    return { ok: true, counts }
+    await Promise.all(Array.from({ length: 8 }, worker))
+    countsCache.set(cacheKey, { counts, pages, at: Date.now() })
+    return { ok: true, counts, pages }
   } catch (err) {
-    return { ok: false, counts: {}, error: errorText(err) }
+    return { ok: false, counts: {}, pages: {}, error: errorText(err) }
   }
+}
+
+/* ---------------- 优选地址（片源管理下拉） ---------------- */
+
+/**
+ * 头牌漫画的镜像来自自己的防失联页 tpmh8.cc。
+ * measure=false 时只返回线路列表，打开修改弹窗时不会逐个探测。
+ */
+export async function tptoonMirrorList(measure = false): Promise<ComicMirrorOption[]> {
+  const discovered = await discoverRoutes()
+  const urls: string[] = []
+  const push = (raw: string): void => {
+    const origin = originOf(raw)
+    if (origin && !urls.includes(origin)) urls.push(origin)
+  }
+  push(TPTOON_DEFAULT_BASE)
+  for (const url of discovered) push(url)
+  const routes = urls.slice(0, 40)
+  if (!measure) return routes.map((url) => ({ url, ms: null }))
+  const results = await Promise.all(
+    routes.map(async (url) => {
+      const started = Date.now()
+      const ok = await probeSite(url)
+      return { url, ms: ok ? Date.now() - started : null }
+    })
+  )
+  return results.sort(
+    (a, b) => (a.ms ?? Number.MAX_SAFE_INTEGER) - (b.ms ?? Number.MAX_SAFE_INTEGER)
+  )
 }
 

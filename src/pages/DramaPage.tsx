@@ -102,10 +102,17 @@ export function DramaPage({
     .map((source) => `${source.id}:${source.baseUrl ?? ''}`)
     .join(',')
 
-  const initialCache = useMemo(() => loadCache<DramaCache>(cacheKeyOf(''), EMPTY_CACHE), [])
+  /** 默认进入西饭短剧；没有西饭源时才回落到全部源 */
+  const defaultScope = available.some((source) => source.id === XIFAN_DRAMA_SOURCE_ID)
+    ? XIFAN_DRAMA_SOURCE_ID
+    : ''
+  const initialCache = useMemo(
+    () => loadCache<DramaCache>(cacheKeyOf(defaultScope), EMPTY_CACHE),
+    [defaultScope]
+  )
 
-  /** 空字符串 = 全部源（和影视一致，默认全部源） */
-  const [sourceId, setSourceId] = useState('')
+  /** 空字符串 = 全部源；默认西饭短剧 */
+  const [sourceId, setSourceId] = useState(defaultScope)
   const [genre, setGenre] = useState(initialCache.genre)
   const [categories, setCategories] = useState<DramaCategory[]>(initialCache.categories)
   const [genreCounts, setGenreCounts] = useState<Record<string, number>>({})
@@ -315,6 +322,17 @@ export function DramaPage({
     if (sourcesChanged || !cached.items.length) void load(sourceId, nextGenre, 1, '')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceId, availableKey])
+
+  // 数据异步加载完成后再落一次默认源：首帧 sources 可能还是空数组
+  const defaultAppliedRef = useRef(false)
+  useEffect(() => {
+    if (defaultAppliedRef.current || !available.length) return
+    defaultAppliedRef.current = true
+    if (!sourceId && available.some((source) => source.id === XIFAN_DRAMA_SOURCE_ID)) {
+      setSourceId(XIFAN_DRAMA_SOURCE_ID)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableKey])
 
   // 分类数量：只有苹果CMS 源能拿到精确总数，内置源接口不返回总数就不显示
   const countsKey = `${sourceId}|${categories.map((category) => category.slug).join('|')}`

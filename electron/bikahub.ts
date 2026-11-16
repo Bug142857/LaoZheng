@@ -26,6 +26,7 @@ import type {
   YumanhuaImagesResponse,
   YumanhuaListResponse
 } from '../src/shared/yumanhua'
+import type { ComicMirrorOption } from '../src/shared/comicSources'
 
 /**
  * 哔咔（bikahub.net）小说 / 漫画客户端。
@@ -785,4 +786,37 @@ export async function bikahubComicCategoryCounts(
   baseUrl?: string
 ): Promise<BikahubCategoryCountsResponse> {
   return fetchCategoryCounts(baseUrl, 'comic', BIKAHUB_COMIC_CATEGORIES)
+}
+
+/* ---------------- 优选地址（片源管理下拉） ---------------- */
+
+/**
+ * 哔咔的镜像来自站点自己的 /go-home 防失联页。
+ * measure=false 时只返回线路列表，打开修改弹窗时不会逐个探测。
+ */
+export async function bikahubMirrorList(measure = false): Promise<ComicMirrorOption[]> {
+  const discovered = await discoverRoutes(BIKAHUB_DEFAULT_BASE)
+  const urls: string[] = []
+  const push = (raw: string): void => {
+    const origin = originOf(raw)
+    if (origin && !urls.includes(origin)) urls.push(origin)
+  }
+  push(BIKAHUB_DEFAULT_BASE)
+  if (discovered.length) {
+    for (const url of discovered) push(url)
+  } else {
+    for (const url of GOHOME_HOSTS) push(url)
+  }
+  const routes = urls.slice(0, 40)
+  if (!measure) return routes.map((url) => ({ url, ms: null }))
+  const results = await Promise.all(
+    routes.map(async (url) => {
+      const started = Date.now()
+      const ok = await probeSite(url)
+      return { url, ms: ok ? Date.now() - started : null }
+    })
+  )
+  return results.sort(
+    (a, b) => (a.ms ?? Number.MAX_SAFE_INTEGER) - (b.ms ?? Number.MAX_SAFE_INTEGER)
+  )
 }

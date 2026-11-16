@@ -50,6 +50,11 @@ const cache: ListCache = (() => {
 })()
 
 let tagCache: Record<string, EmuTag[]> = loadCache<Record<string, EmuTag[]>>('emu.tags.v2', {})
+let countCache: Record<string, { counts: Record<string, number>; pages: Record<string, number> }> =
+  {}
+
+/** 站点每页 20 条，用于把分类数量换算成总页数 */
+const EMU_PAGE_SIZE = 20
 
 export function EmuPage({
   onNotice,
@@ -71,6 +76,13 @@ export function EmuPage({
   const [page, setPage] = useState(cache.page)
   const [items, setItems] = useState<EmuGameItem[]>(cache.items)
   const [tags, setTags] = useState<Record<string, EmuTag[]>>(tagCache)
+  const [tagCounts, setTagCounts] = useState<Record<string, number>>(
+    countCache[cache.platform]?.counts ?? {}
+  )
+  const [tagPages, setTagPages] = useState<Record<string, number>>(
+    countCache[cache.platform]?.pages ?? {}
+  )
+  const [lastPage, setLastPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(!cache.loaded)
   const [error, setError] = useState<string | null>(null)
@@ -96,6 +108,7 @@ export function EmuPage({
     setPage(res.page)
     setItems(res.items)
     setHasMore(res.hasMore)
+    setLastPage(res.lastPage ?? 0)
     if (res.tags?.length) {
       tagCache = { ...tagCache, [nextPlatform]: res.tags }
       saveCache('emu.tags.v2', tagCache)
@@ -148,6 +161,31 @@ export function EmuPage({
     else void load(cache.platform, cache.tag, cache.page)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // 分类数量 / 总页数：站点不显示，主进程请求超大页码拿末页后折算（缓存 24 小时）
+  useEffect(() => {
+    let alive = true
+    const cached = countCache[platform]
+    if (cached) {
+      setTagCounts(cached.counts)
+      setTagPages(cached.pages)
+    } else {
+      setTagCounts({})
+      setTagPages({})
+    }
+    void window.laozheng
+      .emuTagCounts(platform)
+      .then((res) => {
+        if (!alive || !res.ok) return
+        countCache = { ...countCache, [platform]: { counts: res.counts, pages: res.pages } }
+        setTagCounts(res.counts)
+        setTagPages(res.pages)
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [platform])
 
   useEffect(() => {
     if (resetSignal === undefined) return
@@ -282,10 +320,13 @@ export function EmuPage({
           value={tag}
           onChange={(event) => void load(platform, event.target.value, 1)}
         >
-          <option value="">全部分类</option>
+          <option value="">
+            全部分类{tagCounts[''] > 0 ? `（${tagCounts['']}）` : ''}
+          </option>
           {platformTags.map((item) => (
             <option key={item.value} value={item.value}>
               {item.name}
+              {tagCounts[item.value] > 0 ? `（${tagCounts[item.value]}）` : ''}
             </option>
           ))}
         </select>
@@ -361,7 +402,10 @@ export function EmuPage({
           {mode === 'list' ? (
             <Pagination
               page={page}
-              lastPage={0}
+              lastPage={
+                tagPages[tag] ??
+                (tagCounts[tag] > 0 ? Math.ceil(tagCounts[tag] / EMU_PAGE_SIZE) : lastPage)
+              }
               hasMore={hasMore}
               disabled={loading}
               showLast={false}

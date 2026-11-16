@@ -79,7 +79,8 @@ export function ShuangkanPage({
     [data.shuangkanSources]
   )
   const [initial] = useState(() => {
-    const first = sources[0]
+    // 默认先显示 P站；肉视频排在最后
+    const first = sources.find((entry) => entry.id === 'pornhub') ?? sources[0]
     const adapter: SkAdapter = first
       ? first.adapter ?? inferSkAdapter(first.baseUrl)
       : 'rou07'

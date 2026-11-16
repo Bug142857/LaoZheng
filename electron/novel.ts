@@ -86,7 +86,43 @@ async function canonicalBase(source: NovelSourceInput): Promise<string> {
     const page = await requestPage(`${base}/`)
     return rememberBase(base, page.finalUrl)
   } catch {
+    // 有的网络只放行 http 或 https：首站失败时换协议再探一次
+    const alt = alternateBase(base)
+    if (alt) {
+      try {
+        const page = await requestPage(`${alt}/`)
+        return rememberBase(base, page.finalUrl)
+      } catch {
+        // 两种协议都不通，回原地址让调用方报错
+      }
+    }
     return base
+  }
+}
+
+function alternateBase(base: string): string {
+  try {
+    const url = new URL(base)
+    if (url.protocol === 'http:') url.protocol = 'https:'
+    else if (url.protocol === 'https:') url.protocol = 'http:'
+    else return ''
+    return url.origin
+  } catch {
+    return ''
+  }
+}
+
+/** 首页请求：主地址失败时换协议重试，并把能用的落地域名记住 */
+async function requestHomePage(source: NovelSourceInput): Promise<{ page: Page; base: string }> {
+  const base = baseOf(source)
+  try {
+    const page = await requestPage(`${base}/`, { headers: { Referer: `${base}/` } })
+    return { page, base: rememberBase(base, page.finalUrl) }
+  } catch (err) {
+    const alt = alternateBase(base)
+    if (!alt) throw err
+    const page = await requestPage(`${alt}/`, { headers: { Referer: `${alt}/` } })
+    return { page, base: rememberBase(base, page.finalUrl) }
   }
 }
 
@@ -1134,6 +1170,69 @@ function parseXhLikeSearchItems(html: string, base: string, mode: XhLikeMode): N
   return items
 }
 
+/** 黄易新站分类页 /xclass/<n>/<page>.html：每页 20 本 */
+function parseXhytdCategoryItems(html: string, base: string): NovelItem[] {
+  const root = parse(html)
+  const items: NovelItem[] = []
+  const seen = new Set<string>()
+  for (const block of root.querySelectorAll('.hot_sale')) {
+    const link = block.querySelector('.bookinfo a') ?? block.querySelector('a')
+    const bookId = xhLikeBookId(attrValue(link, 'href'), 'xhytd')
+    const title =
+      block.querySelector('.title')?.text.trim() ||
+      block.querySelector('.bookinfo a')?.text.trim() ||
+      ''
+    if (!bookId || !title || seen.has(bookId)) continue
+    seen.add(bookId)
+    items.push({
+      bookId,
+      title,
+      author: block.querySelector('.author a')?.text.trim() ?? '',
+      cover:
+        absoluteUrl(
+          base,
+          attrValue(block.querySelector('.bookimg img'), 'data-original') ||
+            attrValue(block.querySelector('.bookimg img'), 'src')
+        ) || xhLikeCover(base, bookId),
+      status: ''
+    })
+  }
+  return items
+}
+
+/** 无极新站的小说大全列表：/xiaoshuodaquan/<n>.html 一次性列出整类书目 */
+const ajnnanFullCache = new Map<string, { items: NovelItem[]; at: number }>()
+const AJNNAN_FULL_TTL = 30 * 60 * 1000
+const AJNNAN_FULL_PAGE_SIZE = 60
+
+async function fetchAjnnanFullCategory(base: string, index: string): Promise<NovelItem[]> {
+  const key = `${originOf(base)}|${index}`
+  const cached = ajnnanFullCache.get(key)
+  if (cached && Date.now() - cached.at < AJNNAN_FULL_TTL) return cached.items
+  const page = await requestPage(`${base}/xiaoshuodaquan/${index}.html`, {
+    headers: { Referer: `${base}/` }
+  })
+  const root = parse(page.html)
+  const items: NovelItem[] = []
+  const seen = new Set<string>()
+  for (const row of root.querySelectorAll('.novellist li')) {
+    const link = row.querySelector('a')
+    const bookId = /^\/(\d+_\d+)\/?$/.exec(attrValue(link, 'href'))?.[1] ?? ''
+    const title = link?.text.trim() ?? ''
+    if (!bookId || !title || seen.has(bookId)) continue
+    seen.add(bookId)
+    items.push({
+      bookId,
+      title,
+      author: '',
+      cover: xhLikeCover(base, bookId),
+      status: ''
+    })
+  }
+  ajnnanFullCache.set(key, { items, at: Date.now() })
+  return items
+}
+
 async function fetchXhLikeDetail(
   base: string,
   bookId: string,
@@ -1163,7 +1262,7 @@ async function fetchXhLikeDetail(
     }
     chapterLinks = best.querySelectorAll('dd a')
   }
-  const chapters: NovelChapter[] = []
+  let chapters: NovelChapter[] = []
   for (const link of chapterLinks) {
     const chapterId = /(\d+)\.html$/.exec(attrValue(link, 'href'))?.[1] ?? ''
     const name = link.text.trim()
@@ -1171,18 +1270,40 @@ async function fetchXhLikeDetail(
       chapters.push({ id: chapterId, name, index: 0 })
     }
   }
+  // 黄易新站是移动模板：详情页没有 #info / #list，完整目录在 /{dir}/{id}/all.html
+  if (!chapters.length && mode === 'xhytd') {
+    try {
+      const all = await requestPage(`${base}/${path}/all.html`, { headers: { Referer: `${base}/` } })
+      const allRoot = parse(all.html)
+      const chapterPattern = new RegExp(`^/${escapeRe(path)}/(\\d+)\\.html$`)
+      for (const link of allRoot.querySelectorAll('a')) {
+        const chapterId = chapterPattern.exec(attrValue(link, 'href'))?.[1] ?? ''
+        const name = link.text.trim()
+        if (chapterId && name && !CHAPTER_NAV_NAMES.test(name)) {
+          chapters.push({ id: chapterId, name, index: 0 })
+        }
+      }
+    } catch {
+      // 完整目录取不到时保留详情页已有的章节
+    }
+  }
+  const metaTitle = metas['og:novel:book_name'] || metas['og:title'] || ''
+  const rawCover = metas['og:image'] || ''
+  const metaCover =
+    rawCover && !/nocov|no-cover|default/i.test(rawCover) ? absoluteUrl(base, rawCover) : ''
   return {
     bookId,
     title:
-      root.querySelector('#info h1')?.text.trim() ||
-      metas['og:title'] ||
-      `书籍 ${bookId}`,
-    author: root.querySelector('#info p a')?.text.trim() ?? '',
+      root.querySelector('#info h1')?.text.trim() || metaTitle || `书籍 ${bookId}`,
+    author: root.querySelector('#info p a')?.text.trim() || metas['og:novel:author'] || '',
     cover:
       absoluteUrl(base, attrValue(root.querySelector('#fmimg img'), 'src')) ||
+      metaCover ||
       xhLikeCover(base, bookId),
-    intro: htmlToText(root.querySelector('#intro')?.innerHTML ?? ''),
-    category,
+    intro:
+      htmlToText(root.querySelector('#intro')?.innerHTML ?? '') ||
+      cleanIntro(metas['og:description'] || metas['description'] || '', 'xhytd'),
+    category: category || metas['og:novel:category'] || '',
     status,
     latestChapter:
       info[info.length - 1]?.querySelector('a')?.text.trim() ||
@@ -1867,8 +1988,9 @@ async function fetchHome(source: NovelSourceInput): Promise<NovelListResponse> {
     if (!items.length) throw new Error('站点没有返回可解析的推荐书目')
     return { ok: true, items }
   }
-  const page = await requestPage(`${base}/`, { headers: { Referer: `${base}/` } })
-  const canonical = rememberBase(base, page.finalUrl)
+  const home = await requestHomePage(source)
+  const page = home.page
+  const canonical = home.base
   if (source.template === 'bqquge') {
     const items = parseBqItems(page.html, canonical, 30)
     if (!items.length) throw new Error('站点没有返回可解析的推荐书目')
@@ -2203,6 +2325,12 @@ function extractChapterText(template: NovelSourceTemplate, html: string): string
       if (text) return text
     }
   }
+  if (template === 'xhytd') {
+    // 黄易新站（wap.aihytd.com）正文在 #chaptercontent，老镜像仍是 #content
+    return (
+      htmlToText(sectionOf(html, '#chaptercontent')) || htmlToText(sectionOf(html, '#content'))
+    )
+  }
   const selector =
     template === 'biqugeco'
       ? '.RBGsectionThree-content'
@@ -2314,6 +2442,16 @@ function parseQishuCategoryItems(html: string, limit = 30): NovelItem[] {
   return items
 }
 
+/** 从分页链接里取最大页码；站点不显示总页数时用它换算 hasMore / totalPages */
+function maxPageIn(html: string, pattern: RegExp): number {
+  let max = 1
+  for (const match of html.matchAll(pattern)) {
+    const page = Number(match[1])
+    if (Number.isFinite(page) && page > max) max = page
+  }
+  return max
+}
+
 async function fetchCategory(
   source: NovelSourceInput,
   categoryId: string,
@@ -2326,58 +2464,93 @@ async function fetchCategory(
     const result = await requestShenpinwuPage(`${base}/class/${categoryId}/${page}/`)
     const items = parseShenpinwuItems(result.html, base, 100)
     if (!items.length) throw new Error('该分类没有返回书目')
-    return {
-      ok: true,
-      items,
-      hasMore:
-        items.length >= 30 ||
-        result.html.includes(`/class/${categoryId}/${page + 1}/`)
-    }
+    const totalPages = maxPageIn(
+      result.html,
+      new RegExp(`/class/${escapeRe(categoryId)}/(\\d+)/`, 'g')
+    )
+    return { ok: true, items, hasMore: page < totalPages, totalPages }
   }
   if (template === 'mayi') {
     const result = await requestPage(`${base}/${categoryId}/`, {
       headers: { Referer: `${base}/` }
     })
-    const items = parseMayiHomeItems(result.html, base, 30)
+    // 蚂蚁文学分类页没有分页，页面本身只有 60 多本推荐，全部展示
+    const items = parseMayiHomeItems(result.html, base, 80)
     if (!items.length) throw new Error('该分类没有返回书目')
-    return { ok: true, items, hasMore: false }
+    return { ok: true, items, hasMore: false, totalPages: 1 }
+  }
+  if (template === 'xhytd') {
+    const matched = /^xc([1-8])$/.exec(categoryId)
+    if (!matched) throw new Error('分类参数无效')
+    const url = `${base}/xclass/${matched[1]}/${page}.html`
+    const result = await requestPage(url, { headers: { Referer: `${base}/` } })
+    const items = parseXhytdCategoryItems(result.html, base)
+    if (!items.length) throw new Error('该分类没有返回书目')
+    const pageText =
+      parse(result.html).querySelector('.page_txt')?.getAttribute('value') ?? ''
+    const counted = Number(/(\d+)\s*\/\s*(\d+)/.exec(pageText)?.[2] ?? 0)
+    const totalPages =
+      counted > 0
+        ? counted
+        : maxPageIn(result.html, new RegExp(`/xclass/${matched[1]}/(\\d+)\\.html`, 'g'))
+    return { ok: true, items, hasMore: page < totalPages, totalPages }
+  }
+  if (template === 'ajnnan') {
+    const matched = /^du([1-7])$/.exec(categoryId)
+    if (!matched) throw new Error('分类参数无效')
+    const all = await fetchAjnnanFullCategory(base, matched[1])
+    if (!all.length) throw new Error('该分类没有返回书目')
+    const totalPages = Math.max(1, Math.ceil(all.length / AJNNAN_FULL_PAGE_SIZE))
+    const start = (page - 1) * AJNNAN_FULL_PAGE_SIZE
+    const items = all.slice(start, start + AJNNAN_FULL_PAGE_SIZE)
+    if (!items.length) throw new Error('该分类没有更多书目')
+    return { ok: true, items, hasMore: page < totalPages, totalPages }
   }
   if (template === '95dushu') {
-    const url =
-      page > 1
+    const mulu = /^mulu(\d{1,2})$/.exec(categoryId)
+    const url = mulu
+      ? `${base}/mulu/${mulu[1]}-${page}.html`
+      : page > 1
         ? `${base}/modules/article/articlelist.php?fullflag=1&page=${page}`
         : `${base}/${categoryId}/`
     const result = await requestPage(url, { headers: { Referer: `${base}/` } })
-    const items = parse95CategoryItems(result.html, base)
+    const items = parse95CategoryItems(result.html, base, 60)
     if (!items.length) throw new Error('该分类没有返回书目')
-    return {
-      ok: true,
-      items,
-      hasMore: result.html.includes(`fullflag=1&page=${page + 1}`)
-    }
+    const totalPages = mulu
+      ? maxPageIn(result.html, new RegExp(`/mulu/${mulu[1]}-(\\d+)\\.html`, 'g'))
+      : maxPageIn(result.html, /fullflag=1&page=(\d+)/g)
+    return { ok: true, items, hasMore: page < totalPages, totalPages }
   }
   if (template === 'xuanhuange') {
     const url = `${base}/sort${categoryId}/${page}/`
     const result = await requestPage(url, { headers: { Referer: `${base}/` } })
     const items = parseXhSearchItems(result.html, base)
     if (!items.length) throw new Error('该分类没有返回书目')
-    return { ok: true, items, hasMore: result.html.includes(`/sort${categoryId}/${page + 1}/`) }
+    const totalPages = maxPageIn(
+      result.html,
+      new RegExp(`/sort${escapeRe(categoryId)}/(\\d+)/`, 'g')
+    )
+    return { ok: true, items, hasMore: page < totalPages, totalPages }
   }
   if (template === 'qishu5wa') {
     const url = `${base}/sort/${categoryId}_${page}/`
     const result = await requestPage(url, { headers: { Referer: `${base}/` } })
-    const items = parseQishuCategoryItems(result.html)
+    const items = parseQishuCategoryItems(result.html, 60)
     if (!items.length) throw new Error('该分类没有返回书目')
-    return { ok: true, items, hasMore: result.html.includes(`/sort/${categoryId}_${page + 1}/`) }
+    const totalPages = maxPageIn(
+      result.html,
+      new RegExp(`/sort/${escapeRe(categoryId)}_(\\d+)/`, 'g')
+    )
+    return { ok: true, items, hasMore: page < totalPages, totalPages }
   }
   if (template === 'bqquge') {
     const url = page > 1 ? `${base}/${categoryId}/${page}` : `${base}/${categoryId}`
     const result = await requestPage(url, { headers: { Referer: `${base}/` } })
     const items = parseBqItems(result.html, base)
     const pageText = parse(result.html).querySelector('.page')?.text ?? ''
-    const total = Number(/(\d+)\s*\/\s*(\d+)/.exec(pageText)?.[2] ?? 0)
+    const totalPages = Math.max(1, Number(/(\d+)\s*\/\s*(\d+)/.exec(pageText)?.[2] ?? 0))
     if (!items.length) throw new Error('该分类没有返回书目')
-    return { ok: true, items, hasMore: total > page }
+    return { ok: true, items, hasMore: page < totalPages, totalPages }
   }
   if (template === 'zuizhong') {
     const url = `${base}/yuedu/${categoryId}/${page}.html`
@@ -2385,18 +2558,19 @@ async function fetchCategory(
     const items = parseZzListItems(result.html)
     if (!items.length) throw new Error('该分类没有返回书目')
     await fillZzMeta(base, items)
-    return {
-      ok: true,
-      items,
-      hasMore: result.html.includes(`/yuedu/${categoryId}/${page + 1}.html`)
-    }
+    const totalPages = maxPageIn(
+      result.html,
+      new RegExp(`/yuedu/${escapeRe(categoryId)}/(\\d+)\\.html`, 'g')
+    )
+    return { ok: true, items, hasMore: page < totalPages, totalPages }
   }
   if (template === 'banshanren') {
     const url = `${base}/all/0-${categoryId}-0-0-0-0-1-${page}/`
     const result = await requestPage(url, { headers: { Referer: `${base}/` } })
     const items = parseBsListItems(result.html, base)
     if (!items.length) throw new Error('该分类没有返回书目')
-    return { ok: true, items, hasMore: result.html.includes(`-1-${page + 1}/`) }
+    const totalPages = maxPageIn(result.html, /-1-(\d+)\//g)
+    return { ok: true, items, hasMore: page < totalPages, totalPages }
   }
   return { ok: false, items: [], error: '该源不支持分类浏览' }
 }

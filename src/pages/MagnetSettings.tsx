@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, ChevronUp, Download, Pencil, Plus, RefreshCw, Trash2, Upload } from 'lucide-react'
+import { ArrowUpDown, ChevronDown, ChevronUp, Download, Pencil, Plus, RefreshCw, Trash2, Upload } from 'lucide-react'
 import type {
   MagnetApiMapping,
   MagnetEncodeType,
@@ -36,6 +36,51 @@ function statusClass(source: MagnetSource): string {
   if (source.testStatus === 'ok') return 'ok'
   if (source.testStatus === 'failed') return 'warn'
   return ''
+}
+
+/** 测试结果后追加真实访问延迟（ms）；测不到延迟时不写「超时」误导 */
+function withMs(message: string, ms: number | null | undefined): string {
+  return ms != null ? `${message} · ${Math.max(1, Math.round(ms))}ms` : message
+}
+
+/** 旧版本写进数据的「· 超时」在展示时去掉 */
+function testMsgText(message?: string | null): string {
+  return (message ?? '未测试').replace(/\s*·\s*超时\s*$/, '')
+}
+
+function probeLatency(url?: string | null): Promise<number | null | undefined> {
+  if (!url || !/^https?:\/\//i.test(url)) return Promise.resolve(undefined)
+  return window.laozheng.probeSourceLatency(url).catch(() => null)
+}
+
+/** 从测试文案末尾解析延迟（123ms）；没有测速结果返回 null */
+function sourceMs(source: { testMsg?: string | null }): number | null {
+  const matched = /·\s*(\d+)ms\s*$/.exec(source.testMsg ?? '')
+  return matched ? Number(matched[1]) : null
+}
+
+/** 0 = 有效（ok），1 = 未测试，2 = 无效 */
+function sourceGroup(source: { testStatus?: string | null }): number {
+  if (source.testStatus === 'ok') return 0
+  if (source.testStatus === 'failed' || source.testStatus === 'dead') return 2
+  return 1
+}
+
+/** 有效的源按测速延迟升序；未测试 / 无效的源保持原相对顺序排后面 */
+function byPreferredOrder<T extends { testMsg?: string | null; testStatus?: string | null }>(
+  list: T[]
+): T[] {
+  return [...list].sort((a, b) => {
+    const group = sourceGroup(a) - sourceGroup(b)
+    if (group !== 0) return group
+    if (sourceGroup(a) !== 0) return 0
+    return (sourceMs(a) ?? Number.MAX_SAFE_INTEGER) - (sourceMs(b) ?? Number.MAX_SAFE_INTEGER)
+  })
+}
+
+/** 磁力源地址是 {keyword} / {page} 模板，测延迟时替换成和测试一致的首页地址 */
+function magnetProbeUrl(searchUrl: string): string {
+  return searchUrl.replace(/\{keyword\}/g, 'saw').replace(/\{page\}/g, '1')
 }
 
 function newSourceId(): string {
@@ -135,14 +180,17 @@ export function MagnetSettings({ onNotice }: { onNotice: (text: string) => void 
 
   const testSource = async (source: MagnetSource): Promise<void> => {
     setTestingId(source.id)
+    const latency = probeLatency(magnetProbeUrl(source.searchUrl))
     try {
       const result = await window.laozheng.testMagnetSource(source)
-      applyTestResult(source, result.ok, result.message, result.testAt)
+      const message = withMs(result.message, await latency)
+      applyTestResult(source, result.ok, message, result.testAt)
       await window.laozheng.saveMagnetSources(sourcesRef.current)
-      onNotice(`${source.name}：${result.message}`)
+      onNotice(`${source.name}：${message}`)
     } catch (err) {
-      applyTestResult(source, false, (err as Error).message, Date.now())
-      onNotice(`${source.name}：${(err as Error).message}`)
+      const message = withMs((err as Error).message, await latency)
+      applyTestResult(source, false, message, Date.now())
+      onNotice(`${source.name}：${message}`)
     } finally {
       setTestingId(null)
     }
@@ -164,14 +212,15 @@ export function MagnetSettings({ onNotice }: { onNotice: (text: string) => void 
         const source = queue.shift()
         if (!source) return
         setTestingId(source.id)
+        const latency = probeLatency(magnetProbeUrl(source.searchUrl))
         try {
           const result = await window.laozheng.testMagnetSource(source)
           if (result.ok) ok += 1
           else bad += 1
-          applyTestResult(source, result.ok, result.message, result.testAt)
+          applyTestResult(source, result.ok, withMs(result.message, await latency), result.testAt)
         } catch (err) {
           bad += 1
-          applyTestResult(source, false, (err as Error).message, Date.now())
+          applyTestResult(source, false, withMs((err as Error).message, await latency), Date.now())
         }
       }
     }
@@ -181,6 +230,12 @@ export function MagnetSettings({ onNotice }: { onNotice: (text: string) => void 
     setTestingId(null)
     setTestingAll(false)
     onNotice(`磁力源测试完成：可用 ${ok} 个 · 失败 ${bad} 个`)
+  }
+
+  const sortByPreferred = async (): Promise<void> => {
+    const next = byPreferredOrder(sourcesRef.current)
+    await persistSources(next)
+    onNotice('已按优选顺序排列')
   }
 
   const saveSource = async (source: MagnetSource): Promise<void> => {
@@ -268,6 +323,14 @@ export function MagnetSettings({ onNotice }: { onNotice: (text: string) => void 
               >
                 <RefreshCw size={15} /> {testingAll ? '测试中…' : '整体测试'}
               </button>
+              <button
+                className="btn"
+                disabled={sources.length < 2}
+                onClick={() => void sortByPreferred()}
+                title="有效的源按测速延迟从快到慢排列，无效的排后面；磁力模块的源下拉同步生效"
+              >
+                <ArrowUpDown size={15} /> 优选排序
+              </button>
               <button className="btn" disabled={sources.length === 0} onClick={() => void exportSources()}>
                 <Download size={15} /> 导出
               </button>
@@ -289,7 +352,7 @@ export function MagnetSettings({ onNotice }: { onNotice: (text: string) => void 
                         {source.needProxy ? <span className="badge">需代理</span> : null}
                       </div>
                       <div className="row-meta">{hostOf(source.searchUrl)}</div>
-                      <div className="row-meta">{source.testMsg ?? '未测试'}</div>
+                      <div className="row-meta">{testMsgText(source.testMsg)}</div>
                     </div>
                     <button
                       className="btn"

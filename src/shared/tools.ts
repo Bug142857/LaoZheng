@@ -56,12 +56,12 @@ export const TOOL_ITEMS: ToolItem[] = [
     desc: '基于 Chromium 的国产双核浏览器，兼容 Chrome 扩展与扩展商店，支持 IE 内核切换，适合网银、政务等老旧站点。'
   },
   {
-    id: 'catcatch',
-    name: '猫抓嗅探',
-    url: 'https://www.crxsoso.com/webstore/detail/jfedfbgedapdagkghmgibemcoggfppbb',
+    id: 'adguard',
+    name: 'AdGuard',
+    url: 'https://www.crxsoso.com/webstore/detail/bgnkhhnnamicmpeenaelnjfhikgbkllg',
     category: '浏览器与扩展',
-    icon: 'Cat',
-    desc: '浏览器视频嗅探扩展，自动识别网页中的视频、音频与图片资源，支持 M3U8 合并下载，是保存网页视频的常用工具。'
+    icon: 'ShieldBan',
+    desc: '老牌广告拦截扩展，能过滤网页广告、视频贴片、弹窗和跟踪脚本，支持自定义规则；桌面版还可做系统级过滤。'
   },
   {
     id: 'simpletrans',
@@ -72,20 +72,28 @@ export const TOOL_ITEMS: ToolItem[] = [
     desc: '轻量浏览器翻译扩展，支持划词翻译、整页翻译与多翻译引擎切换，界面简洁，可自定义快捷键。'
   },
   {
-    id: 'adguard',
-    name: 'AdGuard',
-    url: 'https://www.crxsoso.com/webstore/detail/bgnkhhnnamicmpeenaelnjfhikgbkllg',
+    id: 'quantiwen',
+    name: '全提问',
+    url: 'https://www.crxsoso.com/webstore/detail/phlefbnhphgfijeabpgjlbcpedpdonef',
     category: '浏览器与扩展',
-    icon: 'ShieldBan',
-    desc: '老牌广告拦截扩展，能过滤网页广告、视频贴片、弹窗和跟踪脚本，支持自定义规则；桌面版还可做系统级过滤。'
+    icon: 'Sparkles',
+    desc: '多 AI 并行提问扩展：输入一次问题，同时发给 DeepSeek、GPT、豆包等 12 个 AI 助手并排对比答案，交叉验证避免单一模型胡编，提问记录只存本地。'
   },
   {
-    id: 'imagus',
-    name: 'Imagus',
-    url: 'https://www.crxsoso.com/webstore/detail/immpkjjlgappgfkkfieppnmlhakdmaab',
+    id: 'imagusreborn',
+    name: 'Imagus Reborn',
+    url: 'https://www.crxsoso.com/webstore/detail/fcjmgeodgobggcppooncdagfkogfffdm',
     category: '浏览器与扩展',
     icon: 'Image',
-    desc: '鼠标悬停预览扩展：光标停在缩略图或链接上即可放大查看原图 / 视频，无需逐个点开新标签页，并支持自定义站点规则。'
+    desc: 'Imagus 的维护分支，光标停在缩略图或链接上即可放大查看原图 / 视频，筛选器规则更新更及时；安装后需在扩展详情启用「允许用户脚本」开关才会生效。'
+  },
+  {
+    id: 'catcatch',
+    name: '猫抓嗅探',
+    url: 'https://www.crxsoso.com/webstore/detail/jfedfbgedapdagkghmgibemcoggfppbb',
+    category: '浏览器与扩展',
+    icon: 'Cat',
+    desc: '浏览器视频嗅探扩展，自动识别网页中的视频、音频与图片资源，支持 M3U8 合并下载，是保存网页视频的常用工具。'
   },
   {
     id: 'telegram',

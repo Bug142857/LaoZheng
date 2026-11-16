@@ -8,7 +8,8 @@ import {
   type EmuOpenResponse,
   type EmuPlatformId,
   type EmuSearchResponse,
-  type EmuTag
+  type EmuTag,
+  type EmuTagCountsResponse
 } from '../src/shared/emu'
 
 /**
@@ -174,19 +175,30 @@ async function fetchHtml(url: string): Promise<string> {
 }
 
 /** 解析目录页：卡片、分类标签、是否还有下一页 */
+function pagerInfo(doc: ReturnType<typeof parse>): { lastPage: number; hasMore: boolean } {
+  let lastPage = 1
+  let hasMore = false
+  const pager = doc.querySelector('nav ul.pager')
+  if (!pager) return { lastPage, hasMore }
+  for (const li of pager.querySelectorAll('li')) {
+    const label = (li.querySelector('a')?.text ?? li.text).replace(/\s+/g, '').trim()
+    if (label.includes('下一页')) {
+      hasMore = !(li.getAttribute('class') ?? '').includes('disabled')
+      continue
+    }
+    const value = Number(label.replace(/,/g, ''))
+    if (Number.isFinite(value) && value > lastPage) lastPage = value
+  }
+  return { lastPage, hasMore }
+}
+
 function parseList(
   html: string,
   platform: EmuPlatformId
-): { items: EmuGameItem[]; hasMore: boolean; tags: EmuTag[] } {
+): { items: EmuGameItem[]; hasMore: boolean; lastPage: number; tags: EmuTag[] } {
   const doc = parse(html)
   const items = collectCards(doc, platform)
-
-  let hasMore = false
-  for (const li of doc.querySelectorAll('nav ul.pager li')) {
-    if (!li.text.includes('下一页')) continue
-    hasMore = !(li.getAttribute('class') ?? '').includes('disabled')
-    break
-  }
+  const { lastPage, hasMore } = pagerInfo(doc)
 
   const tags: EmuTag[] = []
   const def = platformOf(platform)
@@ -208,7 +220,62 @@ function parseList(
     }
   }
 
-  return { items, hasMore, tags }
+  return { items, hasMore, lastPage, tags }
+}
+
+/** 站点不显示总页数：请求一个超大页码会被夹到末页，用末页页码 + 末页条数折算总数 */
+const EMU_PAGE_SIZE = 20
+const EMU_COUNTS_MAX_PAGE = 99_999
+const tagCountsCache = new Map<
+  string,
+  { counts: Record<string, number>; pages: Record<string, number>; at: number }
+>()
+const TAG_COUNTS_TTL = 24 * 60 * 60 * 1000
+
+async function tagStat(
+  platform: EmuPlatformId,
+  tag: string
+): Promise<{ count: number; lastPage: number }> {
+  const html = await fetchHtml(buildListUrl(platform, tag, EMU_COUNTS_MAX_PAGE))
+  const doc = parse(html)
+  const items = collectCards(doc, platform).length
+  const { lastPage } = pagerInfo(doc)
+  return {
+    count: Math.max(0, (Math.max(1, lastPage) - 1) * EMU_PAGE_SIZE + items),
+    lastPage: Math.max(1, lastPage)
+  }
+}
+
+export async function emuTagCounts(platform: EmuPlatformId): Promise<EmuTagCountsResponse> {
+  const cached = tagCountsCache.get(platform)
+  if (cached && Date.now() - cached.at < TAG_COUNTS_TTL) {
+    return { ok: true, counts: cached.counts, pages: cached.pages }
+  }
+  try {
+    const listHtml = await fetchHtml(buildListUrl(platform, '', 1))
+    const tags = parseList(listHtml, platform).tags
+    const counts: Record<string, number> = {}
+    const pages: Record<string, number> = {}
+    const queue = ['', ...tags.map((tag) => tag.value)]
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const tag = queue.shift()
+        if (tag === undefined) return
+        try {
+          const stat = await tagStat(platform, tag)
+          counts[tag] = stat.count
+          pages[tag] = stat.lastPage
+        } catch {
+          counts[tag] = -1
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: 3 }, worker))
+    tagCountsCache.set(platform, { counts, pages, at: Date.now() })
+    return { ok: true, counts, pages }
+  } catch (err) {
+    return { ok: false, counts: {}, pages: {}, error: (err as Error).message }
+  }
 }
 
 export async function emuList(
@@ -223,7 +290,7 @@ export async function emuList(
       ok: true,
       items: parsed.items,
       page,
-      lastPage: 0,
+      lastPage: parsed.hasMore ? 0 : page,
       hasMore: parsed.hasMore,
       tags: parsed.tags
     }

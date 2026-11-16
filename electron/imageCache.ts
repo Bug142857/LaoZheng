@@ -17,20 +17,63 @@ const CACHE_CONTROL = 'public, max-age=31536000, immutable'
 /** xhcdn 等图床在并发拉图时会偶发 ECONNRESET：失败后短暂等待重试一次即可恢复 */
 const FETCH_ATTEMPTS = 2
 const RETRY_DELAY_MS = 150
+/**
+ * 同一图床并发上限：一次列表刷新会同时请求几十张封面（xhamster 一页 46 张），
+ * 全量并发时 xhcdn 会直接断开一部分连接，表现为「刷新后有几张封面一直不显示，
+ * 切分类再回来才恢复」。按浏览器同款 6 并发限流后实测 0 失败。
+ */
+const HOST_CONCURRENCY = 6
+
+/** 各图床的并发信号量；waiter 被唤醒时名额直接转交，active 不变 */
+const hostSlots = new Map<string, { active: number; waiters: Array<() => void> }>()
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function hostOf(target: string): string {
+  try {
+    return new URL(target).hostname.toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+async function withHostSlot<T>(host: string, task: () => Promise<T>): Promise<T> {
+  if (!host) return task()
+  let slot = hostSlots.get(host)
+  if (!slot) {
+    slot = { active: 0, waiters: [] }
+    hostSlots.set(host, slot)
+  }
+  if (slot.active >= HOST_CONCURRENCY) {
+    await new Promise<void>((resolve) => slot!.waiters.push(resolve))
+  } else {
+    slot.active += 1
+  }
+  try {
+    return await task()
+  } finally {
+    const next = slot.waiters.shift()
+    if (next) next()
+    else slot.active -= 1
+    // 空闲图床不保留信号量，避免长期积累
+    if (slot.active === 0 && slot.waiters.length === 0) hostSlots.delete(host)
+  }
+}
+
 async function fetchImage(target: string, headerFor: (url: string) => Record<string, string>): Promise<Response> {
   let lastError: unknown = null
+  const host = hostOf(target)
   for (let attempt = 1; attempt <= FETCH_ATTEMPTS; attempt += 1) {
     try {
-      const res = await fetch(target, {
-        headers: headerFor(target),
-        redirect: 'follow',
-        signal: AbortSignal.timeout(20_000)
-      })
+      const res = await withHostSlot(host, () =>
+        fetch(target, {
+          headers: headerFor(target),
+          redirect: 'follow',
+          signal: AbortSignal.timeout(20_000)
+        })
+      )
       // 5xx / 429 是图床临时故障，可以重试；4xx 重试没有意义
       const retryable = res.status >= 500 || res.status === 429
       if (res.ok || !retryable || attempt === FETCH_ATTEMPTS) return res

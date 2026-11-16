@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
+  ArrowUpDown,
   ChevronDown,
   ChevronUp,
   Download,
@@ -38,7 +39,7 @@ import {
   type TrainerSource,
   type TrainerSourceType
 } from '../shared/trainers'
-import type { MusicSource } from '../shared/music'
+import type { MusicLxPlatform, MusicSource } from '../shared/music'
 import {
   NOVEL_SOURCE_TEMPLATE_LABEL,
   NOVEL_SOURCE_TEMPLATE_OPTIONS,
@@ -48,6 +49,7 @@ import {
 } from '../shared/novel'
 import {
   inferComicTemplate,
+  type ComicMirrorOption,
   type ComicSource,
   type ComicSourceInput,
   type ComicSourceTemplate
@@ -57,6 +59,7 @@ import { clearModuleCaches } from '../utils/cache'
 import {
   WALLPAPER_SOURCE_TEMPLATES,
   inferWallpaperTemplate,
+  isWallpaperTemplate,
   toWallpaperSourceRef,
   wallpaperTemplateLabel,
   type WallpaperSource,
@@ -64,13 +67,19 @@ import {
   type WallpaperSourceTemplate
 } from '../shared/wallpaper'
 import {
+  SK_ADAPTER_LABEL,
   SK_DEFAULT_BASE,
+  inferSkAdapter,
+  isSkAdapter,
   toShuangkanSourceRef,
+  type SkAdapter,
+  type SkMirrorOption,
   type ShuangkanSource
 } from '../shared/shuangkan'
 import {
   MEITU_SOURCE_TEMPLATES,
   inferMeituTemplate,
+  isMeituTemplate,
   meituTemplateLabel,
   toMeituSourceRef,
   type MeituSource,
@@ -167,6 +176,96 @@ function newLiveSourceId(url: string): string {
 
 function sourceSummary(total: number, enabled: number, ok: number, bad: number): string {
   return `共 ${total} 个 · 启用 ${enabled} · 有效 ${ok} · 无效 ${bad}`
+}
+
+/** 测试结果后追加真实访问延迟（ms）；测不到延迟时只显示测试结果，不写「超时」误导 */
+function withMs(message: string, ms: number | null | undefined): string {
+  return ms != null ? `${message} · ${Math.max(1, Math.round(ms))}ms` : message
+}
+
+/** 旧版本写进数据的「· 超时」在展示时去掉，避免测试成功却显示超时 */
+function testMsgText(message?: string | null): string {
+  return (message ?? '未测试').replace(/\s*·\s*超时\s*$/, '')
+}
+
+function probeLatency(url?: string | null): Promise<number | null | undefined> {
+  if (!url || !/^https?:\/\//i.test(url)) return Promise.resolve(undefined)
+  return window.laozheng.probeSourceLatency(url).catch(() => null)
+}
+
+/** 从测试文案末尾解析延迟（123ms）；没有测速结果返回 null */
+function sourceMs(source: { testMsg?: string | null }): number | null {
+  const matched = /·\s*(\d+)ms\s*$/.exec(source.testMsg ?? '')
+  return matched ? Number(matched[1]) : null
+}
+
+/** 0 = 有效（ok），1 = 未测试，2 = 无效；优选排序时无效源统一放最后 */
+function sourceGroup(source: { testStatus?: string | null }): number {
+  if (source.testStatus === 'ok') return 0
+  if (
+    source.testStatus === 'bad' ||
+    source.testStatus === 'failed' ||
+    source.testStatus === 'dead'
+  ) {
+    return 2
+  }
+  return 1
+}
+
+/** 有效的源按测速延迟升序；未测试 / 无效的源保持原相对顺序排后面 */
+function byPreferredOrder<T extends { testMsg?: string | null; testStatus?: string | null }>(
+  list: T[]
+): T[] {
+  return [...list].sort((a, b) => {
+    const group = sourceGroup(a) - sourceGroup(b)
+    if (group !== 0) return group
+    if (sourceGroup(a) !== 0) return 0
+    return (sourceMs(a) ?? Number.MAX_SAFE_INTEGER) - (sourceMs(b) ?? Number.MAX_SAFE_INTEGER)
+  })
+}
+
+function PreferredSortButton({ disabled, onSort }: { disabled?: boolean; onSort: () => void }) {
+  return (
+    <button
+      className="btn"
+      disabled={disabled}
+      onClick={onSort}
+      title="有效的源按测速延迟从快到慢排列，无效的排后面；对应模块的源下拉同步生效"
+    >
+      <ArrowUpDown size={15} /> 优选排序
+    </button>
+  )
+}
+
+interface MirrorLatencyEntry {
+  at: number
+  mirrors: { url: string; ms: number | null }[]
+}
+
+/** 优选地址延迟缓存：测过一次后重开弹窗直接显示上次的 ms，不再自动测速 */
+const MIRROR_LATENCY_KEY = 'lz_mirror_latency_v1'
+
+function readMirrorLatency(key: string): MirrorLatencyEntry | null {
+  try {
+    const raw = localStorage.getItem(MIRROR_LATENCY_KEY)
+    if (!raw) return null
+    const all = JSON.parse(raw) as Record<string, MirrorLatencyEntry>
+    const entry = all[key]
+    return entry && Array.isArray(entry.mirrors) && entry.mirrors.length ? entry : null
+  } catch {
+    return null
+  }
+}
+
+function writeMirrorLatency(key: string, mirrors: { url: string; ms: number | null }[]): void {
+  try {
+    const raw = localStorage.getItem(MIRROR_LATENCY_KEY)
+    const all = raw ? (JSON.parse(raw) as Record<string, MirrorLatencyEntry>) : {}
+    all[key] = { at: Date.now(), mirrors }
+    localStorage.setItem(MIRROR_LATENCY_KEY, JSON.stringify(all))
+  } catch {
+    // 缓存失败不影响选择
+  }
 }
 
 /** 可折叠的源配置卡片：标题右侧统一显示 共 / 启用 / 有效 / 无效 */
@@ -401,7 +500,9 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
 
   const testSource = async (source: VodSource) => {
     setTestingId(source.id)
+    const latency = probeLatency(source.baseUrl)
     const res = await window.laozheng.testVodSource(toInput(source))
+    const message = withMs(res.message, await latency)
     update((d) => ({
       ...d,
       vodSources: d.vodSources.map((s) =>
@@ -409,7 +510,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           ? {
               ...s,
               testStatus: res.status,
-              testMsg: res.message,
+              testMsg: message,
               testAt: res.testAt,
               region: s.regionManual ? s.region : res.region
             }
@@ -417,7 +518,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       )
     }))
     setTestingId(null)
-    onNotice(`${source.name}：${res.message}`)
+    onNotice(`${source.name}：${message}`)
   }
 
   const testAllSources = async () => {
@@ -431,9 +532,11 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         const source = queue.shift()
         if (!source) return
         setTestingId(source.id)
+        const latency = probeLatency(source.baseUrl)
         const res = await window.laozheng.testVodSource(toInput(source))
         if (res.status === 'ok') ok += 1
         else bad += 1
+        const message = withMs(res.message, await latency)
         update((d) => ({
           ...d,
           vodSources: d.vodSources.map((s) =>
@@ -441,7 +544,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
               ? {
                   ...s,
                   testStatus: res.status,
-                  testMsg: res.message,
+                  testMsg: message,
                   testAt: res.testAt,
                   region: s.regionManual ? s.region : res.region
                 }
@@ -592,9 +695,13 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
 
   const testDramaSource = async (source: DramaSource): Promise<void> => {
     setTestingDramaId(source.id)
+    const latency = probeLatency(source.baseUrl)
     const res = await window.laozheng.dramaCatalog(toDramaInput(source), '', 1, '')
     const status = res.ok ? 'ok' : 'failed'
-    const message = res.ok ? `可用 · 返回 ${res.items.length} 部` : res.error ?? '不可用'
+    const message = withMs(
+      res.ok ? `可用 · 返回 ${res.items.length} 部` : res.error ?? '不可用',
+      await latency
+    )
     update((d) => ({
       ...d,
       dramaSources: d.dramaSources.map((s) =>
@@ -618,11 +725,15 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         const source = queue.shift()
         if (!source) return
         setTestingDramaId(source.id)
+        const latency = probeLatency(source.baseUrl)
         const res = await window.laozheng.dramaCatalog(toDramaInput(source), '', 1, '')
         const status = res.ok ? 'ok' : 'failed'
         if (res.ok) ok += 1
         else bad += 1
-        const message = res.ok ? `可用 · 返回 ${res.items.length} 部` : res.error ?? '不可用'
+        const message = withMs(
+          res.ok ? `可用 · 返回 ${res.items.length} 部` : res.error ?? '不可用',
+          await latency
+        )
         update((d) => ({
           ...d,
           dramaSources: d.dramaSources.map((s) =>
@@ -756,9 +867,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
 
   const testNovel = async (source: NovelSource): Promise<void> => {
     setTestingNovelId(source.id)
+    const latency = probeLatency(source.baseUrl)
     const res = await window.laozheng.testNovelSource(toNovelInput(source))
     const status = res.ok ? 'ok' : 'bad'
-    const message = res.ok ? res.message ?? '可用' : res.error ?? '不可用'
+    const message = withMs(res.ok ? res.message ?? '可用' : res.error ?? '不可用', await latency)
     update((d) => ({
       ...d,
       novelSources: d.novelSources.map((s) =>
@@ -780,11 +892,12 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         const source = queue.shift()
         if (!source) return
         setTestingNovelId(source.id)
+        const latency = probeLatency(source.baseUrl)
         const res = await window.laozheng.testNovelSource(toNovelInput(source))
         const status = res.ok ? 'ok' : 'bad'
         if (res.ok) ok += 1
         else bad += 1
-        const message = res.ok ? res.message ?? '可用' : res.error ?? '不可用'
+        const message = withMs(res.ok ? res.message ?? '可用' : res.error ?? '不可用', await latency)
         update((d) => ({
           ...d,
           novelSources: d.novelSources.map((s) =>
@@ -921,9 +1034,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
 
   const testComic = async (source: ComicSource): Promise<void> => {
     setTestingComicId(source.id)
+    const latency = probeLatency(source.baseUrl)
     const res = await window.laozheng.testComicSource(toComicInput(source))
     const status = res.ok ? 'ok' : 'bad'
-    const message = res.ok ? res.message ?? '可用' : res.error ?? '不可用'
+    const message = withMs(res.ok ? res.message ?? '可用' : res.error ?? '不可用', await latency)
     update((d) => ({
       ...d,
       comicSources: d.comicSources.map((s) =>
@@ -945,11 +1059,12 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         const source = queue.shift()
         if (!source) return
         setTestingComicId(source.id)
+        const latency = probeLatency(source.baseUrl)
         const res = await window.laozheng.testComicSource(toComicInput(source))
         const status = res.ok ? 'ok' : 'bad'
         if (res.ok) ok += 1
         else bad += 1
-        const message = res.ok ? res.message ?? '可用' : res.error ?? '不可用'
+        const message = withMs(res.ok ? res.message ?? '可用' : res.error ?? '不可用', await latency)
         update((d) => ({
           ...d,
           comicSources: d.comicSources.map((s) =>
@@ -1068,6 +1183,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
 
   const testTrainer = async (source: TrainerSource) => {
     setTestingTrainerId(source.id)
+    const latency = probeLatency(source.baseUrl)
     try {
       const res = await window.laozheng.testTrainerSource({
         id: source.id,
@@ -1077,13 +1193,13 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       })
       patchTrainer(source.id, {
         testStatus: res.ok ? 'ok' : 'bad',
-        testMsg: res.ok ? res.message ?? '可用' : res.error ?? '测试失败',
+        testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', await latency),
         testAt: Date.now()
       })
     } catch (err) {
       patchTrainer(source.id, {
         testStatus: 'bad',
-        testMsg: (err as Error).message,
+        testMsg: withMs((err as Error).message, await latency),
         testAt: Date.now()
       })
     } finally {
@@ -1097,6 +1213,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     let ok = 0
     let bad = 0
     for (const source of data.trainerSources) {
+      const latency = probeLatency(source.baseUrl)
       const res = await window.laozheng.testTrainerSource({
         id: source.id,
         type: source.type,
@@ -1107,7 +1224,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       else bad += 1
       patchTrainer(source.id, {
         testStatus: res.ok ? 'ok' : 'bad',
-        testMsg: res.ok ? res.message ?? '可用' : res.error ?? '测试失败',
+        testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', await latency),
         testAt: Date.now()
       })
     }
@@ -1247,6 +1364,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
 
   const testMusic = async (source: MusicSource) => {
     setTestingMusicId(source.id)
+    const latency = probeLatency(source.baseUrl)
     try {
       const res = await window.laozheng.testMusicSource({
         id: source.id,
@@ -1255,13 +1373,13 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       })
       patchMusic(source.id, {
         testStatus: res.ok ? 'ok' : 'bad',
-        testMsg: res.ok ? res.message ?? '可用' : res.error ?? '测试失败',
+        testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', await latency),
         testAt: Date.now()
       })
     } catch (err) {
       patchMusic(source.id, {
         testStatus: 'bad',
-        testMsg: (err as Error).message,
+        testMsg: withMs((err as Error).message, await latency),
         testAt: Date.now()
       })
     } finally {
@@ -1275,6 +1393,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     let ok = 0
     let bad = 0
     for (const source of data.musicSources) {
+      const latency = probeLatency(source.baseUrl)
       const res = await window.laozheng.testMusicSource({
         id: source.id,
         name: source.name,
@@ -1284,7 +1403,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       else bad += 1
       patchMusic(source.id, {
         testStatus: res.ok ? 'ok' : 'bad',
-        testMsg: res.ok ? res.message ?? '可用' : res.error ?? '测试失败',
+        testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', await latency),
         testAt: Date.now()
       })
     }
@@ -1442,21 +1561,24 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
 
   const testLivePlatform = async (source: LivePlatformSource) => {
     setTestingLivePlatformId(source.id)
+    const latency = probeLatency(source.baseUrl)
     try {
       const res = await window.laozheng.livePlatformTestSource({
         name: source.name,
         baseUrl: source.baseUrl
       })
+      const message = withMs(res.message, await latency)
       patchLivePlatform(source.id, {
         testStatus: res.status,
-        testMsg: res.message,
+        testMsg: message,
         testAt: res.testAt
       })
-      onNotice(`${source.name}：${res.message}`)
+      onNotice(`${source.name}：${message}`)
     } catch (err) {
+      const message = withMs((err as Error).message, await latency)
       patchLivePlatform(source.id, {
         testStatus: 'dead',
-        testMsg: (err as Error).message,
+        testMsg: message,
         testAt: Date.now()
       })
       onNotice(`${source.name}：测试失败`)
@@ -1476,6 +1598,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         const source = queue.shift()
         if (!source) return
         setTestingLivePlatformId(source.id)
+        const latency = probeLatency(source.baseUrl)
         const res = await window.laozheng.livePlatformTestSource({
           name: source.name,
           baseUrl: source.baseUrl
@@ -1484,7 +1607,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         else bad += 1
         patchLivePlatform(source.id, {
           testStatus: res.status,
-          testMsg: res.message,
+          testMsg: withMs(res.message, await latency),
           testAt: res.testAt
         })
       }
@@ -1656,14 +1779,16 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
 
   const testLive = async (source: LiveSource) => {
     setTestingLiveId(source.id)
+    const latency = probeLatency(source.url)
     const res = await window.laozheng.testLiveSource(source)
     setTestingLiveId(null)
+    const message = withMs(res.message, await latency)
     patchLive(source.id, {
       testStatus: res.ok ? 'ok' : 'failed',
-      testMsg: res.message,
+      testMsg: message,
       testAt: Date.now()
     })
-    onNotice(`${source.name}：${res.message}`)
+    onNotice(`${source.name}：${message}`)
   }
 
   const testAllLive = async () => {
@@ -1677,12 +1802,13 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         const source = queue.shift()
         if (!source) return
         setTestingLiveId(source.id)
+        const latency = probeLatency(source.url)
         const res = await window.laozheng.testLiveSource(source)
         if (res.ok) ok += 1
         else bad += 1
         patchLive(source.id, {
           testStatus: res.ok ? 'ok' : 'failed',
-          testMsg: res.message,
+          testMsg: withMs(res.message, await latency),
           testAt: Date.now()
         })
       }
@@ -1743,7 +1869,9 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         id: s.id,
         name: s.name,
         baseUrl: s.baseUrl,
-        enabled: s.enabled
+        enabled: s.enabled,
+        ...(s.kind ? { kind: s.kind } : {}),
+        ...(s.platforms?.length ? { platforms: [...s.platforms] } : {})
       })),
       novelSources: data.novelSources.map((s) => ({
         id: s.id,
@@ -1776,7 +1904,8 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         id: s.id,
         name: s.name,
         baseUrl: s.baseUrl,
-        enabled: s.enabled
+        enabled: s.enabled,
+        ...(isSkAdapter(s.adapter) ? { adapter: s.adapter } : {})
       })),
       meituSources: data.meituSources.map((s) => ({
         id: s.id,
@@ -1951,11 +2080,19 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         while (nextMusicSources.some((s) => s.id === newId)) {
           newId = `music_${Date.now().toString(36)}_${n++}`
         }
+        const kind = raw.kind === 'lx' || raw.kind === 'site' ? raw.kind : undefined
+        const platforms = Array.isArray(raw.platforms)
+          ? raw.platforms.filter((item): item is MusicLxPlatform =>
+              ['kw', 'kg', 'tx', 'wy'].includes(String(item))
+            )
+          : []
         nextMusicSources.push({
           id: newId,
           name: String(raw.name ?? '').trim() || '音乐源',
           baseUrl,
           enabled: raw.enabled !== false,
+          ...(kind ? { kind } : {}),
+          ...(platforms.length ? { platforms } : {}),
           testStatus: 'ok',
           testMsg: '可用',
           testAt: Date.now()
@@ -2084,7 +2221,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         if (!raw || typeof raw !== 'object') continue
         const baseUrl = normalizeBaseUrl(String(raw.baseUrl ?? ''))
         if (!/^https?:\/\//i.test(baseUrl) || wallpaperUrls.has(baseUrl)) continue
-        const template = inferWallpaperTemplate(baseUrl)
+        // 导出文件里的模板优先，避免同一模板的自定义镜像因域名不含关键字被误判 / 丢弃
+        const template = isWallpaperTemplate(raw.template)
+          ? raw.template
+          : inferWallpaperTemplate(baseUrl)
         if (!template) continue
         wallpaperUrls.add(baseUrl)
         const baseId = `wp_${genSourceId(baseUrl)}`
@@ -2112,7 +2252,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         if (!raw || typeof raw !== 'object') continue
         const baseUrl = normalizeBaseUrl(String(raw.baseUrl ?? ''))
         if (!/^https?:\/\//i.test(baseUrl) || meituUrls.has(baseUrl)) continue
-        const template = inferMeituTemplate(baseUrl)
+        // 导出文件里的模板优先，自定义镜像不必再靠域名猜站点
+        const template = isMeituTemplate(raw.template)
+          ? raw.template
+          : inferMeituTemplate(baseUrl)
         if (!template) continue
         meituUrls.add(baseUrl)
         const baseId = `mt_${genSourceId(baseUrl)}`
@@ -2150,6 +2293,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           name: String(raw.name ?? '').trim() || vodHost(baseUrl),
           baseUrl,
           enabled: raw.enabled !== false,
+          ...(isSkAdapter(raw.adapter) ? { adapter: raw.adapter } : {}),
           testStatus: null,
           testMsg: null,
           testAt: 0
@@ -2303,16 +2447,18 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   const runWallpaperTest = async (
     source: WallpaperSource
   ): Promise<{ status: 'ok' | 'bad'; msg: string }> => {
+    const latency = probeLatency(source.baseUrl)
     try {
       const res = await window.laozheng.wallpaperCategories(toWallpaperSourceRef(source), 'pc')
       const status: 'ok' | 'bad' = res.ok ? 'ok' : 'bad'
-      const msg = res.ok
-        ? `可用 · ${res.categories?.length ?? 0} 个分类`
-        : res.error ?? '不可用'
+      const msg = withMs(
+        res.ok ? `可用 · ${res.categories?.length ?? 0} 个分类` : res.error ?? '不可用',
+        await latency
+      )
       patchWallpaper(source.id, { testStatus: status, testMsg: msg, testAt: Date.now() })
       return { status, msg }
     } catch (err) {
-      const msg = (err as Error).message || '测试失败'
+      const msg = withMs((err as Error).message || '测试失败', await latency)
       patchWallpaper(source.id, { testStatus: 'bad', testMsg: msg, testAt: Date.now() })
       return { status: 'bad', msg }
     }
@@ -2503,16 +2649,20 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   const runMeituTest = async (
     source: MeituSource
   ): Promise<{ status: 'ok' | 'bad'; msg: string }> => {
+    const latency = probeLatency(source.baseUrl)
     try {
       const res = await window.laozheng.meituCategories(toMeituSourceRef(source))
       const status: 'ok' | 'bad' = res.ok ? 'ok' : 'bad'
-      const msg = res.ok
-        ? `可用 · ${res.categories?.filter((entry) => entry.id).length ?? 0} 个分类`
-        : res.error ?? '不可用'
+      const msg = withMs(
+        res.ok
+          ? `可用 · ${res.categories?.filter((entry) => entry.id).length ?? 0} 个分类`
+          : res.error ?? '不可用',
+        await latency
+      )
       patchMeitu(source.id, { testStatus: status, testMsg: msg, testAt: Date.now() })
       return { status, msg }
     } catch (err) {
-      const msg = (err as Error).message || '测试失败'
+      const msg = withMs((err as Error).message || '测试失败', await latency)
       patchMeitu(source.id, { testStatus: 'bad', testMsg: msg, testAt: Date.now() })
       return { status: 'bad', msg }
     }
@@ -2703,6 +2853,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   const runShuangkanTest = async (
     source: ShuangkanSource
   ): Promise<{ status: 'ok' | 'bad'; msg: string }> => {
+    const latency = probeLatency(source.baseUrl)
     try {
       const res = await window.laozheng.shuangkanCatalog(
         toShuangkanSourceRef(source),
@@ -2711,13 +2862,14 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         1
       )
       const status: 'ok' | 'bad' = res.ok ? 'ok' : 'bad'
-      const msg = res.ok
-        ? `可用 · 首页 ${res.items.length} 条`
-        : res.error ?? '不可用'
+      const msg = withMs(
+        res.ok ? `可用 · 首页 ${res.items.length} 条` : res.error ?? '不可用',
+        await latency
+      )
       patchShuangkan(source.id, { testStatus: status, testMsg: msg, testAt: Date.now() })
       return { status, msg }
     } catch (err) {
-      const msg = (err as Error).message || '测试失败'
+      const msg = withMs((err as Error).message || '测试失败', await latency)
       patchShuangkan(source.id, { testStatus: 'bad', testMsg: msg, testAt: Date.now() })
       return { status: 'bad', msg }
     }
@@ -2747,7 +2899,12 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     onNotice(`皇片源测试完成：可用 ${ok} 个 · 不可用 ${bad} 个`)
   }
 
-  const saveShuangkanSource = (input: { name: string; baseUrl: string; id?: string }) => {
+  const saveShuangkanSource = (input: {
+    name: string
+    baseUrl: string
+    id?: string
+    adapter?: SkAdapter
+  }) => {
     if (!(editingShuangkan === 'new' || editingShuangkan)) return
     const baseUrl = normalizeBaseUrl(input.baseUrl)
     if (!input.name.trim() || !/^https?:\/\//i.test(baseUrl)) {
@@ -2755,6 +2912,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       return
     }
     const name = input.name.trim()
+    const adapter = input.adapter ?? inferSkAdapter(baseUrl)
     if (
       data.shuangkanSources.some(
         (source) => source.id !== input.id && source.baseUrl === baseUrl
@@ -2779,6 +2937,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
               id,
               name,
               baseUrl,
+              adapter,
               enabled: true,
               testStatus: null,
               testMsg: null,
@@ -2799,6 +2958,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 ...source,
                 name,
                 baseUrl,
+                adapter,
                 testStatus: changed ? null : source.testStatus,
                 testMsg: changed ? null : source.testMsg,
                 testAt: changed ? 0 : source.testAt
@@ -2921,6 +3081,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           >
             <RefreshCw size={15} /> {testingAll ? '测试中…' : '整体测试'}
           </button>
+          <PreferredSortButton
+            disabled={sources.length < 2}
+            onSort={() => update((d) => ({ ...d, vodSources: byPreferredOrder(d.vodSources) }))}
+          />
           <button className="btn" disabled={sources.length === 0} onClick={() => void exportSources()}>
             <Download size={15} /> 导出
           </button>
@@ -2938,7 +3102,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 <div className="row-main">
                   <div className="row-title">{s.name}</div>
                   <div className="row-meta">{vodHost(s.baseUrl)}</div>
-                  <div className="row-meta">{s.testMsg ?? '未测试'}</div>
+                  <div className="row-meta">{testMsgText(s.testMsg)}</div>
                 </div>
                 <button className="btn" disabled={testingId === s.id} onClick={() => void testSource(s)}>
                   <RefreshCw size={14} /> {testingId === s.id ? '测试中…' : '测试'}
@@ -2993,6 +3157,12 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           >
             <RefreshCw size={15} /> {testingDramaAll ? '测试中…' : '整体测试'}
           </button>
+          <PreferredSortButton
+            disabled={data.dramaSources.length < 2}
+            onSort={() =>
+              update((d) => ({ ...d, dramaSources: byPreferredOrder(d.dramaSources) }))
+            }
+          />
           <button
             className="btn"
             disabled={data.dramaSources.length === 0}
@@ -3028,7 +3198,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                       ? vodHost(source.baseUrl ?? XIFAN_DRAMA_BASE_URL)
                       : vodHost(source.baseUrl ?? '')}
                   </div>
-                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
+                  <div className="row-meta">{testMsgText(source.testMsg)}</div>
                 </div>
                 <button
                   className="btn"
@@ -3086,6 +3256,12 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           >
             <RefreshCw size={15} /> {testingLiveAll ? '测试中…' : '整体测试'}
           </button>
+          <PreferredSortButton
+            disabled={!liveSources || liveSources.length < 2}
+            onSort={() => {
+              if (liveSources) persistLive(byPreferredOrder(liveSources))
+            }}
+          />
           <button
             className="btn"
             disabled={!liveSources || liveSources.length === 0}
@@ -3124,7 +3300,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                     <div className="row-meta">
                       {s.url.startsWith('local://') ? '本地导入' : s.url}
                     </div>
-                    <div className="row-meta">{s.testMsg ?? '未测试'}</div>
+                    <div className="row-meta">{testMsgText(s.testMsg)}</div>
                   </div>
                   <button
                     className="btn"
@@ -3177,6 +3353,15 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           >
             <RefreshCw size={15} /> {testingLivePlatformAll ? '测试中…' : '整体测试'}
           </button>
+          <PreferredSortButton
+            disabled={data.livePlatformSources.length < 2}
+            onSort={() =>
+              update((d) => ({
+                ...d,
+                livePlatformSources: byPreferredOrder(d.livePlatformSources)
+              }))
+            }
+          />
           <button
             className="btn"
             disabled={data.livePlatformSources.length === 0}
@@ -3208,7 +3393,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 <div className="row-main">
                   <div className="row-title">{source.name}</div>
                   <div className="row-meta">{vodHost(source.baseUrl)}</div>
-                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
+                  <div className="row-meta">{testMsgText(source.testMsg)}</div>
                 </div>
                 <button
                   className="btn"
@@ -3269,6 +3454,12 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           >
             <RefreshCw size={15} /> {testingMusicAll ? '测试中…' : '整体测试'}
           </button>
+          <PreferredSortButton
+            disabled={data.musicSources.length < 2}
+            onSort={() =>
+              update((d) => ({ ...d, musicSources: byPreferredOrder(d.musicSources) }))
+            }
+          />
           <button
             className="btn"
             disabled={data.musicSources.length === 0}
@@ -3300,7 +3491,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 <div className="row-main">
                   <div className="row-title">{source.name}</div>
                   <div className="row-meta">{vodHost(source.baseUrl)}</div>
-                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
+                  <div className="row-meta">{testMsgText(source.testMsg)}</div>
                 </div>
                 <button
                   className="btn"
@@ -3351,6 +3542,12 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           >
             <RefreshCw size={15} /> {testingComicAll ? '测试中…' : '整体测试'}
           </button>
+          <PreferredSortButton
+            disabled={data.comicSources.length < 2}
+            onSort={() =>
+              update((d) => ({ ...d, comicSources: byPreferredOrder(d.comicSources) }))
+            }
+          />
           <button
             className="btn"
             disabled={data.comicSources.length === 0}
@@ -3393,7 +3590,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                             ? '禁漫模板'
                             : '漫画客模板'}
                   </div>
-                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
+                  <div className="row-meta">{testMsgText(source.testMsg)}</div>
                 </div>
                 <button
                   className="btn"
@@ -3456,6 +3653,12 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           >
             <RefreshCw size={15} /> {testingNovelAll ? '测试中…' : '整体测试'}
           </button>
+          <PreferredSortButton
+            disabled={data.novelSources.length < 2}
+            onSort={() =>
+              update((d) => ({ ...d, novelSources: byPreferredOrder(d.novelSources) }))
+            }
+          />
           <button
             className="btn"
             disabled={data.novelSources.length === 0}
@@ -3489,7 +3692,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                   <div className="row-meta">
                     {vodHost(source.baseUrl)} · {NOVEL_SOURCE_TEMPLATE_LABEL[source.template]}
                   </div>
-                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
+                  <div className="row-meta">{testMsgText(source.testMsg)}</div>
                 </div>
                 <button
                   className="btn"
@@ -3552,6 +3755,12 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           >
             <RefreshCw size={15} /> {testingTrainerAll ? '测试中…' : '整体测试'}
           </button>
+          <PreferredSortButton
+            disabled={data.trainerSources.length < 2}
+            onSort={() =>
+              update((d) => ({ ...d, trainerSources: byPreferredOrder(d.trainerSources) }))
+            }
+          />
           <button
             className="btn"
             disabled={data.trainerSources.length === 0}
@@ -3583,7 +3792,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 <div className="row-main">
                   <div className="row-title">{source.name}</div>
                   <div className="row-meta">{vodHost(source.baseUrl)}</div>
-                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
+                  <div className="row-meta">{testMsgText(source.testMsg)}</div>
                 </div>
                 <button
                   className="btn"
@@ -3646,6 +3855,15 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           >
             <RefreshCw size={15} /> {testingWallpaperAll ? '测试中…' : '整体测试'}
           </button>
+          <PreferredSortButton
+            disabled={data.wallpaperSources.length < 2}
+            onSort={() =>
+              update((d) => ({
+                ...d,
+                wallpaperSources: byPreferredOrder(d.wallpaperSources)
+              }))
+            }
+          />
           <button
             className="btn"
             disabled={data.wallpaperSources.length === 0}
@@ -3680,7 +3898,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                   <div className="row-meta">
                     {vodHost(source.baseUrl)} · {wallpaperTemplateLabel(source.template)}
                   </div>
-                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
+                  <div className="row-meta">{testMsgText(source.testMsg)}</div>
                 </div>
                 <button
                   className="btn"
@@ -3736,6 +3954,12 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           >
             <RefreshCw size={15} /> {testingMeituAll ? '测试中…' : '整体测试'}
           </button>
+          <PreferredSortButton
+            disabled={data.meituSources.length < 2}
+            onSort={() =>
+              update((d) => ({ ...d, meituSources: byPreferredOrder(d.meituSources) }))
+            }
+          />
           <button
             className="btn"
             disabled={data.meituSources.length === 0}
@@ -3770,7 +3994,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                   <div className="row-meta">
                     {vodHost(source.baseUrl)} · {meituTemplateLabel(source.template)}
                   </div>
-                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
+                  <div className="row-meta">{testMsgText(source.testMsg)}</div>
                 </div>
                 <button
                   className="btn"
@@ -3830,6 +4054,15 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           >
             <RefreshCw size={15} /> {testingShuangkanAll ? '测试中…' : '整体测试'}
           </button>
+          <PreferredSortButton
+            disabled={data.shuangkanSources.length < 2}
+            onSort={() =>
+              update((d) => ({
+                ...d,
+                shuangkanSources: byPreferredOrder(d.shuangkanSources)
+              }))
+            }
+          />
           <button
             className="btn"
             disabled={data.shuangkanSources.length === 0}
@@ -3862,7 +4095,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 <div className="row-main">
                   <div className="row-title">{source.name}</div>
                   <div className="row-meta">{vodHost(source.baseUrl)}</div>
-                  <div className="row-meta">{source.testMsg ?? '未测试'}</div>
+                  <div className="row-meta">{testMsgText(source.testMsg)}</div>
                 </div>
                 <button
                   className="btn"
@@ -4396,11 +4629,63 @@ function ShuangkanSourceModal({
 }: {
   source: ShuangkanSource | null
   onClose: () => void
-  onSave: (input: { id?: string; name: string; baseUrl: string }) => void
+  onSave: (input: { id?: string; name: string; baseUrl: string; adapter?: SkAdapter }) => void
 }) {
   const [name, setName] = useState(source?.name ?? '肉视频')
   const [baseUrl, setBaseUrl] = useState(source?.baseUrl ?? SK_DEFAULT_BASE)
+  // 优选地址按源类型查询；从下拉里选中镜像时一并保存，避免 x123 / xv123 这类短域名推断错站点
+  const [adapter] = useState<SkAdapter>(
+    source?.adapter ?? inferSkAdapter(source?.baseUrl ?? SK_DEFAULT_BASE)
+  )
+  const [pickedAdapter, setPickedAdapter] = useState<SkAdapter | null>(null)
+  const [mirrors, setMirrors] = useState<SkMirrorOption[] | null>(null)
+  const [mirrorMeasured, setMirrorMeasured] = useState(false)
+  const [mirrorError, setMirrorError] = useState<string | null>(null)
+  const [mirrorLoading, setMirrorLoading] = useState(false)
   const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
+
+  /** measure=false 优先用上次测速缓存；点刷新按钮才 measure=true 重新测速并写回缓存 */
+  const loadMirrors = useCallback(
+    async (measure = false) => {
+      const cacheKey = `sk:${adapter}`
+      const cached = measure ? null : readMirrorLatency(cacheKey)
+      if (cached) {
+        setMirrors(cached.mirrors)
+        setMirrorMeasured(true)
+        setMirrorError(null)
+        setMirrorLoading(false)
+        return
+      }
+      setMirrorLoading(true)
+      setMirrorError(null)
+      try {
+        const res = await window.laozheng.shuangkanMirrors(adapter, measure)
+        setMirrors(res.mirrors ?? [])
+        setMirrorMeasured(!!res.measured)
+        if (!res.ok) {
+          setMirrorError(res.error ?? '读取导航站优选地址失败')
+        } else if (measure) {
+          writeMirrorLatency(cacheKey, res.mirrors)
+        }
+      } catch (err) {
+        setMirrorError((err as Error).message || '读取导航站优选地址失败')
+        if (!measure) {
+          setMirrors([])
+          setMirrorMeasured(false)
+        }
+      } finally {
+        setMirrorLoading(false)
+      }
+    },
+    [adapter]
+  )
+
+  useEffect(() => {
+    void loadMirrors(false)
+  }, [loadMirrors])
+
+  const current = baseUrl.trim().replace(/\/+$/, '')
+  const selected = (mirrors ?? []).some((entry) => entry.url === current) ? current : ''
 
   return (
     <Modal
@@ -4418,7 +4703,8 @@ function ShuangkanSourceModal({
               onSave({
                 ...(source ? { id: source.id } : {}),
                 name: name.trim(),
-                baseUrl: baseUrl.trim()
+                baseUrl: baseUrl.trim(),
+                ...(pickedAdapter ? { adapter: pickedAdapter } : {})
               })
             }
           >
@@ -4436,13 +4722,60 @@ function ShuangkanSourceModal({
           站点地址
           <input
             value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
+            onChange={(e) => {
+              setBaseUrl(e.target.value)
+              setPickedAdapter(null)
+            }}
             placeholder={SK_DEFAULT_BASE}
           />
         </label>
+        <label>
+          优选地址（{SK_ADAPTER_LABEL[adapter]} · 延迟）
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <select
+              value={selected}
+              disabled={mirrorLoading || !(mirrors ?? []).length}
+              onChange={(event) => {
+                const url = event.target.value
+                if (!url) return
+                setBaseUrl(url)
+                setPickedAdapter(adapter)
+              }}
+              style={{ flex: 1, minWidth: 0 }}
+            >
+              <option value="">
+                {mirrorLoading
+                  ? '正在读取…'
+                  : (mirrors ?? []).length
+                    ? mirrorMeasured
+                      ? `选择线路（共 ${(mirrors ?? []).length} 条，按延迟排序）`
+                      : `选择线路（共 ${(mirrors ?? []).length} 条，点刷新测速）`
+                    : '暂无线路'}
+              </option>
+              {(mirrors ?? []).map((entry) => (
+                <option key={entry.url} value={entry.url}>
+                  {entry.url.replace(/^https?:\/\//, '').replace(/\/+$/, '')}
+                  {mirrorMeasured
+                    ? ` · ${entry.ms != null ? `${entry.ms}ms` : '超时'}`
+                    : ''}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="icon-btn"
+              title="测速"
+              disabled={mirrorLoading || !(mirrors ?? []).length}
+              onClick={() => void loadMirrors(true)}
+            >
+              <RefreshCw size={14} />
+            </button>
+          </div>
+        </label>
       </div>
       <p className="settings-hint" style={{ marginTop: 10 }}>
-        皇片源按肉视频站点解析；可以添加镜像地址。地址失效时仍会自动到导航站换址。
+        {mirrorError ? `优选地址读取失败：${mirrorError}。` : ''}
+        选择线路时不会自动测速，点右侧刷新按钮才逐个测延迟；地址失效时仍会自动到导航站换址。
       </p>
     </Modal>
   )
@@ -4645,6 +4978,18 @@ function NovelSourceModal({
   )
 }
 
+type ComicMirrorTemplate = 'jmcomic' | 'tptoon' | 'bikahub'
+
+const COMIC_MIRROR_LABEL: Record<ComicMirrorTemplate, string> = {
+  jmcomic: '禁漫天堂',
+  tptoon: '头牌漫画',
+  bikahub: '哔咔漫画'
+}
+
+function hasComicMirrors(template: ComicSourceTemplate): template is ComicMirrorTemplate {
+  return template === 'jmcomic' || template === 'tptoon' || template === 'bikahub'
+}
+
 function ComicSourceModal({
   source,
   onClose,
@@ -4657,7 +5002,60 @@ function ComicSourceModal({
   const [name, setName] = useState(source?.name ?? '漫画客镜像')
   const [baseUrl, setBaseUrl] = useState(source?.baseUrl ?? '')
   const [template, setTemplate] = useState<ComicSourceTemplate>(source?.template ?? 'yumanhua')
+  const [mirrors, setMirrors] = useState<ComicMirrorOption[] | null>(null)
+  const [mirrorMeasured, setMirrorMeasured] = useState(false)
+  const [mirrorLoading, setMirrorLoading] = useState(false)
+  const [mirrorError, setMirrorError] = useState<string | null>(null)
   const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
+
+  /** measure=false 优先用上次测速缓存；点刷新按钮才 measure=true 重新测速并写回缓存 */
+  const loadMirrors = useCallback(
+    async (measure = false) => {
+      if (!hasComicMirrors(template)) {
+        setMirrors([])
+        setMirrorMeasured(false)
+        setMirrorError(null)
+        return
+      }
+      const cacheKey = `comic:${template}`
+      const cached = measure ? null : readMirrorLatency(cacheKey)
+      if (cached) {
+        setMirrors(cached.mirrors)
+        setMirrorMeasured(true)
+        setMirrorError(null)
+        setMirrorLoading(false)
+        return
+      }
+      setMirrorLoading(true)
+      setMirrorError(null)
+      try {
+        const res = await window.laozheng.comicMirrors(template, measure)
+        setMirrors(res.mirrors ?? [])
+        setMirrorMeasured(!!res.measured)
+        if (!res.ok) {
+          setMirrorError(res.error ?? '读取镜像地址失败')
+        } else if (measure) {
+          writeMirrorLatency(cacheKey, res.mirrors)
+        }
+      } catch (err) {
+        setMirrorError((err as Error).message || '读取镜像地址失败')
+        if (!measure) {
+          setMirrors([])
+          setMirrorMeasured(false)
+        }
+      } finally {
+        setMirrorLoading(false)
+      }
+    },
+    [template]
+  )
+
+  useEffect(() => {
+    void loadMirrors(false)
+  }, [loadMirrors])
+
+  const current = baseUrl.trim().replace(/\/+$/, '')
+  const selected = (mirrors ?? []).some((entry) => entry.url === current) ? current : ''
 
   return (
     <Modal
@@ -4715,9 +5113,54 @@ function ComicSourceModal({
             <option value="jmcomic">禁漫天堂</option>
           </select>
         </label>
+        {hasComicMirrors(template) ? (
+          <label>
+            优选地址（{COMIC_MIRROR_LABEL[template]} · 延迟）
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <select
+                value={selected}
+                disabled={mirrorLoading || !(mirrors ?? []).length}
+                onChange={(event) => {
+                  const url = event.target.value
+                  if (url) setBaseUrl(url)
+                }}
+                style={{ flex: 1, minWidth: 0 }}
+              >
+                <option value="">
+                  {mirrorLoading
+                    ? '正在读取…'
+                    : (mirrors ?? []).length
+                      ? mirrorMeasured
+                        ? `选择线路（共 ${(mirrors ?? []).length} 条，按延迟排序）`
+                        : `选择线路（共 ${(mirrors ?? []).length} 条，点刷新测速）`
+                      : '暂无线路'}
+                </option>
+                {(mirrors ?? []).map((entry) => (
+                  <option key={entry.url} value={entry.url}>
+                    {entry.url.replace(/^https?:\/\//, '').replace(/\/+$/, '')}
+                    {mirrorMeasured
+                      ? ` · ${entry.ms != null ? `${entry.ms}ms` : '超时'}`
+                      : ''}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="icon-btn"
+                title="测速"
+                disabled={mirrorLoading || !(mirrors ?? []).length}
+                onClick={() => void loadMirrors(true)}
+              >
+                <RefreshCw size={14} />
+              </button>
+            </div>
+          </label>
+        ) : null}
       </div>
       <p className="settings-hint" style={{ marginTop: 10 }}>
-        漫画客 / 哔咔镜像填站点根地址；Komiic 使用官方接口，地址保留默认即可。哔咔站点打不开时会自动走 /go-home 防失联线路，禁漫天堂打不开时会自动从 x99dh.net 的「优选访问」里换可用线路。添加后可点「测试」确认能否返回漫画列表。
+        {mirrorError ? `镜像地址读取失败：${mirrorError}。` : ''}
+        漫画客 / 哔咔镜像填站点根地址；Komiic 使用官方接口，地址保留默认即可。头牌、禁漫天堂、哔咔
+        的镜像来自各自的地址发布页，打开弹窗只拉列表，点右侧刷新按钮才逐个测延迟。
       </p>
     </Modal>
   )

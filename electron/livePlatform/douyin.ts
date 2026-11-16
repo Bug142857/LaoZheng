@@ -63,6 +63,9 @@ async function withHiddenPage<T>(
   activeCollector = collector
   const win = new BrowserWindow({
     show: false,
+    x: -10_000,
+    y: -10_000,
+    skipTaskbar: true,
     width: 1280,
     height: 800,
     webPreferences: {
@@ -70,11 +73,15 @@ async function withHiddenPage<T>(
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
-      backgroundThrottling: false
+      backgroundThrottling: false,
+      // 部分直播间只有视频真正开始播放时才会发出 m3u8 / flv 请求
+      autoplayPolicy: 'no-user-gesture-required'
     }
   })
   win.webContents.setAudioMuted(true)
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  // 隐藏窗口里的 video 有时不会自动开始；窗口放到屏幕外但仍算“可见”
+  win.showInactive()
   try {
     await Promise.race([
       win.loadURL(url, { userAgent: DOUYIN_UA }).catch(() => undefined),
@@ -202,15 +209,25 @@ export async function douyinRoom(roomId: string): Promise<LiveRoomPlayback> {
     return emptyPlayback('请输入抖音直播间号或 live.douyin.com 链接')
   }
   try {
+    const pageUrl = `https://live.douyin.com/${webRid}`
     const result = await Promise.race([
       exclusive(() =>
-        withHiddenPage(`https://live.douyin.com/${webRid}`, async (win, collector) => {
+        withHiddenPage(pageUrl, async (win, collector) => {
           await waitForStream(collector, 12_000)
+          // 有些直播间首屏不会自动起播：重新加载一次再等
+          if (!collector.hls.size && !collector.flv.size) {
+            try {
+              await win.loadURL(pageUrl, { userAgent: DOUYIN_UA })
+            } catch {
+              // 重载失败就按页面现状继续
+            }
+            await waitForStream(collector, 10_000)
+          }
           const meta = await readPageMeta(win)
           return { conn: { hls: [...collector.hls], flv: [...collector.flv] }, meta }
         })
       ),
-      sleep(40_000).then(() => null)
+      sleep(60_000).then(() => null)
     ])
     if (!result) {
       return emptyPlayback('获取直播间超时：可能未开播、页面被风控，或平台限制了网页播放')
@@ -256,6 +273,8 @@ interface ScrapedCard {
 /**
  * 抖音直播卡片没有 <img> 封面，封面是 DIV 的 CSS background-image；
  * 同一个房间还可能同时有「点击进入直播间」遮罩链接，所以按房间聚合后取信息最全的一条。
+ * 搜索页在 www.douyin.com/search/<kw>?type=live，卡片链接可能是 live.douyin.com/<id>
+ * 或 www.douyin.com/live/<id>，两种都认。
  */
 const SCRAPE_SCRIPT = `(() => {
   const best = new Map();
@@ -263,13 +282,19 @@ const SCRAPE_SCRIPT = `(() => {
     let roomId = '';
     try {
       const target = new URL(a.getAttribute('href') || '', location.origin);
-      if (target.hostname === 'live.douyin.com') {
+      if (/(^|\\.)live\\.douyin\\.com$/i.test(target.hostname)) {
         const match = target.pathname.match(/^\\/(\\d{6,})/);
+        if (match) roomId = match[1];
+      } else if (/(^|\\.)douyin\\.com$/i.test(target.hostname)) {
+        const match = target.pathname.match(/^\\/(?:live|follow\\/live)\\/(\\d{6,})/);
         if (match) roomId = match[1];
       }
     } catch {}
     if (!roomId) return;
-    const titleEl = a.querySelector('[data-e2e="livecard-title"]');
+    const titleEl =
+      a.querySelector('[data-e2e="livecard-title"]') ||
+      a.querySelector('[data-e2e="live-card-title"]') ||
+      a.querySelector('h2,h3');
     const metaEl = a.querySelector('[data-e2e="livecard-metatext"]');
     const lines = (a.innerText || '').split('\\n').map((line) => line.trim()).filter(Boolean);
     let title = titleEl ? (titleEl.textContent || '').trim() : (lines[0] || '');
@@ -310,18 +335,30 @@ const SCRAPE_SCRIPT = `(() => {
     const prev = best.get(roomId);
     if (!prev || score > prev.score) best.set(roomId, { roomId, title, anchor, cover, score });
   });
-  return Array.from(best.values()).slice(0, 40).map(({ score, ...card }) => card);
+  const loginRequired = /登录后即可搜索|登录后查看更多/.test(
+    document.body ? document.body.innerText : ''
+  );
+  return {
+    cards: Array.from(best.values()).slice(0, 40).map(({ score, ...card }) => card),
+    loginRequired
+  };
 })()`
 
 async function scrapeCards(url: string): Promise<LiveListResult> {
   return exclusive(() =>
     withHiddenPage(url, async (win) => {
       let cards: ScrapedCard[] = []
+      let loginRequired = false
       for (let attempt = 0; attempt < 10; attempt += 1) {
         await sleep(attempt === 0 ? 3000 : 700)
-        const result = await runScript<ScrapedCard[]>(win, SCRAPE_SCRIPT, 6000)
-        cards = Array.isArray(result) ? result : []
-        if (cards.some((card) => card.cover)) break
+        const result = await runScript<{ cards: ScrapedCard[]; loginRequired?: boolean }>(
+          win,
+          SCRAPE_SCRIPT,
+          6000
+        )
+        cards = Array.isArray(result?.cards) ? result.cards : []
+        loginRequired = result?.loginRequired === true
+        if (cards.some((card) => card.cover) || loginRequired) break
       }
       try {
         const items: LiveRoom[] = asArray(cards)
@@ -345,7 +382,11 @@ async function scrapeCards(url: string): Promise<LiveListResult> {
         return {
           items,
           hasMore: false,
-          error: items.length ? undefined : '抖音页面没有解析到直播间，可能需要登录或平台风控'
+          error: items.length
+            ? undefined
+            : loginRequired
+              ? '抖音搜索需要先登录：点右上角「扫码登录」完成抖音登录后再搜'
+              : '抖音页面没有解析到直播间，可能需要登录或平台风控'
         }
       } catch {
         return { items: [], hasMore: false, error: '抖音页面解析失败' }
@@ -435,7 +476,10 @@ export async function douyinSearch(keyword: string, page = 1): Promise<LiveListR
   if (!text) return { items: [], hasMore: false }
   if (page > 1) return { items: [], hasMore: false, error: '抖音搜索暂只支持第一页' }
   try {
-    return await scrapeCards(`https://live.douyin.com/search/${encodeURIComponent(text)}`)
+    // live.douyin.com/search/<kw> 是 404；直播搜索在 www.douyin.com/search/<kw>?type=live
+    return await scrapeCards(
+      `https://www.douyin.com/search/${encodeURIComponent(text)}?type=live`
+    )
   } catch (err) {
     return { items: [], hasMore: false, error: errorText(err) }
   }

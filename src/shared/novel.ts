@@ -88,7 +88,19 @@ export const NOVEL_SOURCE_CATEGORIES: Partial<Record<NovelSourceTemplate, NovelC
     { id: 'wangyouxiaoshuo', name: '网游' },
     { id: 'kehuanxiaoshuo', name: '科幻' }
   ],
-  '95dushu': [{ id: 'quanben', name: '全本' }],
+  '95dushu': [
+    { id: 'mulu1', name: '玄幻魔法' },
+    { id: 'mulu2', name: '武侠修真' },
+    { id: 'mulu3', name: '都市言情' },
+    { id: 'mulu4', name: '历史军事' },
+    { id: 'mulu5', name: '侦探推理' },
+    { id: 'mulu6', name: '网游动漫' },
+    { id: 'mulu7', name: '科幻小说' },
+    { id: 'mulu8', name: '恐怖灵异' },
+    { id: 'mulu9', name: '穿越小说' },
+    { id: 'mulu10', name: '其他类型' },
+    { id: 'quanben', name: '全本' }
+  ],
   xuanhuange: [
     { id: '1', name: '玄幻' },
     { id: '2', name: '武侠' },
@@ -100,6 +112,25 @@ export const NOVEL_SOURCE_CATEGORIES: Partial<Record<NovelSourceTemplate, NovelC
     { id: '8', name: '恐怖' },
     { id: '9', name: '校园' },
     { id: '10', name: '异界' }
+  ],
+  xhytd: [
+    { id: 'xc1', name: '玄幻' },
+    { id: 'xc2', name: '仙侠' },
+    { id: 'xc3', name: '都市' },
+    { id: 'xc4', name: '军史' },
+    { id: 'xc5', name: '网游' },
+    { id: 'xc6', name: '科幻' },
+    { id: 'xc7', name: '恐怖' },
+    { id: 'xc8', name: '其它' }
+  ],
+  ajnnan: [
+    { id: 'du1', name: '玄幻' },
+    { id: 'du2', name: '修真' },
+    { id: 'du3', name: '都市' },
+    { id: 'du4', name: '穿越' },
+    { id: 'du5', name: '网游' },
+    { id: 'du6', name: '科幻' },
+    { id: 'du7', name: '其它' }
   ],
   qishu5wa: [
     { id: '1', name: '玄幻' },
@@ -237,7 +268,7 @@ export const DEFAULT_NOVEL_SOURCES: NovelSource[] = [
   {
     id: 'xhytd',
     name: '黄易小说',
-    baseUrl: 'http://www.xhytd.com',
+    baseUrl: 'http://wap.aihytd.com',
     template: 'xhytd',
     enabled: true,
     testStatus: 'ok',
@@ -247,7 +278,7 @@ export const DEFAULT_NOVEL_SOURCES: NovelSource[] = [
   {
     id: 'ajnnan',
     name: '无极小说',
-    baseUrl: 'http://ajnnan.com',
+    baseUrl: 'http://wujiwx.info',
     template: 'ajnnan',
     enabled: true,
     testStatus: 'ok',
@@ -312,6 +343,14 @@ function isTemplate(value: unknown): value is NovelSourceTemplate {
   return NOVEL_SOURCE_TEMPLATES.includes(value as NovelSourceTemplate)
 }
 
+function hostOfUrl(value: string): string {
+  try {
+    return new URL(value).hostname
+  } catch {
+    return ''
+  }
+}
+
 /**
  * 书源配置：
  * - 旧数据没有 novelSources 时补内置书源（只含蚂蚁文学）；
@@ -336,17 +375,34 @@ export function normalizeNovelSources(raw: unknown): NovelSource[] {
     const retired = RETIRED_NOVEL_SOURCES[source.id]
     if (retired && retired.test(source.baseUrl)) continue
     if (out.some((item) => item.id === source.id || item.baseUrl === source.baseUrl)) continue
+    let baseUrl = source.baseUrl.trim().replace(/\/+$/, '')
+    let migrated = false
+    // 2026-11-16：黄易 / 无极旧域名失效，老数据自动迁到当前可用站
+    if (source.id === 'xhytd' && /(^|\.)xhytd\.com$/i.test(hostOfUrl(baseUrl))) {
+      baseUrl = 'http://wap.aihytd.com'
+      migrated = true
+    }
+    if (source.id === 'ajnnan' && /(^|\.)ajnnan\.com$/i.test(hostOfUrl(baseUrl))) {
+      baseUrl = 'http://wujiwx.info'
+      migrated = true
+    }
     out.push({
       id: source.id,
-      name: source.name?.trim() || source.baseUrl,
-      baseUrl: source.baseUrl.trim().replace(/\/+$/, ''),
+      name: source.name?.trim() || baseUrl,
+      baseUrl,
       template: source.template,
       enabled: source.enabled !== false,
-      testStatus:
-        source.testStatus === 'ok' || source.testStatus === 'bad' ? source.testStatus : null,
-      testMsg: typeof source.testMsg === 'string' ? source.testMsg : null,
-      testAt:
-        typeof source.testAt === 'number' && Number.isFinite(source.testAt) ? source.testAt : 0
+      testStatus: migrated
+        ? null
+        : source.testStatus === 'ok' || source.testStatus === 'bad'
+          ? source.testStatus
+          : null,
+      testMsg: migrated ? null : typeof source.testMsg === 'string' ? source.testMsg : null,
+      testAt: migrated
+        ? 0
+        : typeof source.testAt === 'number' && Number.isFinite(source.testAt)
+          ? source.testAt
+          : 0
     })
   }
   return out

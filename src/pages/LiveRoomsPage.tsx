@@ -413,7 +413,7 @@ export function LiveRoomsPage({
     try {
       const result = await withRequestTimeout(
         window.laozheng.livePlatformRoom(targetPlatform, roomInput, qualityId),
-        45_000,
+        70_000,
         '获取直播流超时：可能未开播或平台限制了网页播放'
       )
       if (token !== playRequestRef.current) return

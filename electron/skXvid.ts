@@ -270,7 +270,7 @@ function lastPageOf(root: ReturnType<typeof parse>, current: number): number {
       continue
     }
     const numbered = /\/(\d+)(?:[?#]|$)/.exec(href)
-    if (numbered && /^\/(?:c|new)\//.test(href)) max = Math.max(max, Number(numbered[1]))
+    if (numbered && /^\/(?:c|new|tags)\//.test(href)) max = Math.max(max, Number(numbered[1]))
   }
   return max
 }
@@ -330,36 +330,61 @@ export async function xvidCatalog(
   }
 }
 
+/** 搜索关键词 → XVIDEOS 标签 slug（多词转连字符，去掉标点） */
+function tagSlugOf(keyword: string): string {
+  return keyword
+    .trim()
+    .toLowerCase()
+    .replace(/['’]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
 export async function xvidSearch(
   keyword: string,
   page: number,
   baseUrl?: string
 ): Promise<SkCatalogResponse> {
   const current = clampPage(page)
+  const tag = tagSlugOf(keyword)
+  if (!tag) {
+    return {
+      ok: false,
+      items: [],
+      page: current,
+      lastPage: current,
+      categories: [],
+      error: 'X 站搜索使用英文标签，请输入英文关键词'
+    }
+  }
   try {
-    const path = `/?k=${encodeURIComponent(keyword)}&p=${current - 1}`
+    // 镜像会把 /?k= 查询串丢掉、直接回首页；标签页是路径形式，能正常返回搜索结果
+    const path =
+      current > 1
+        ? `/tags/${encodeURIComponent(tag)}/${current}`
+        : `/tags/${encodeURIComponent(tag)}`
     const { html, base } = await requestSite(resolver, path, baseUrl, UA)
     const root = parse(html)
     const items = parseItems(root, base)
     trackImages(items.map((item) => item.cover), base)
-    // 这些镜像会把带查询串的请求当成首页返回（搜索被忽略），
-    // 标题里没有关键词说明拿到的不是搜索结果，直接提示而不是返回首页 / 空列表
+    // 标签存在时标题形如「japanese videos - 站点名」；不存在会跳到频道页 / 首页
     const title = text(root.querySelector('title')?.text).toLowerCase()
-    if (!title.includes(keyword.trim().toLowerCase())) {
+    if (!title.startsWith(tag) || !/videos?/.test(title)) {
       return {
         ok: false,
         items: [],
         page: current,
         lastPage: current,
         categories: [],
-        error: '该源不支持搜索，请改用分类浏览'
+        error: '没有找到这个标签，换一个英文关键词试试'
       }
     }
+    const reported = lastPageOf(root, current)
     return {
       ok: true,
       items,
       page: current,
-      lastPage: items.length ? current + 1 : current,
+      lastPage: Math.max(reported, current),
       categories: []
     }
   } catch (err) {

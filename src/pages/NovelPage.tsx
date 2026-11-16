@@ -836,36 +836,34 @@ export function NovelPage({
             }
           />
 
-          <div className="toolbar">
-            {mode === 'search' && keyword ? (
+          {mode === 'search' && keyword ? (
+            <div className="toolbar">
               <span className="page-desc">搜索结果：{keyword}</span>
-            ) : (
-              <>
+            </div>
+          ) : activeSource ? (
+            <div className="toolbar">
+              <button
+                className={`chip ${mode !== 'category' ? 'active' : ''}`}
+                onClick={() => void loadHome(sourceId)}
+              >
+                推荐
+              </button>
+              {categories.map((category) => (
                 <button
-                  className={`chip ${mode !== 'category' ? 'active' : ''}`}
-                  onClick={() => void loadHome(sourceId)}
+                  key={category.id}
+                  className={`chip ${
+                    mode === 'category' && categoryId === category.id ? 'active' : ''
+                  }`}
+                  onClick={() => void loadCategory(sourceId, category.id, 1)}
                 >
-                  推荐
+                  {category.name}
+                  {categoryCounts[category.id] > 0 ? (
+                    <span className="chip-count">{categoryCounts[category.id]}</span>
+                  ) : null}
                 </button>
-                {activeSource
-                  ? categories.map((category) => (
-                      <button
-                        key={category.id}
-                        className={`chip ${
-                          mode === 'category' && categoryId === category.id ? 'active' : ''
-                        }`}
-                        onClick={() => void loadCategory(sourceId, category.id, 1)}
-                      >
-                        {category.name}
-                        {categoryCounts[category.id] > 0 ? (
-                          <span className="chip-count">{categoryCounts[category.id]}</span>
-                        ) : null}
-                      </button>
-                    ))
-                  : null}
-              </>
-            )}
-          </div>
+              ))}
+            </div>
+          ) : null}
 
           {loading ? (
             <EmptyState

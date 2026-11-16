@@ -20,6 +20,20 @@ export interface ComicSourceInput {
   template: ComicSourceTemplate
 }
 
+/** 漫画源优选线路（禁漫天堂 / 头牌漫画 / 哔咔各有自己的地址发布页） */
+export interface ComicMirrorOption {
+  url: string
+  ms: number | null
+}
+
+export interface ComicMirrorResponse {
+  ok: boolean
+  mirrors: ComicMirrorOption[]
+  /** 是否已实测延迟；false 时只返回线路列表 */
+  measured: boolean
+  error?: string
+}
+
 export const DEFAULT_COMIC_SOURCES: ComicSource[] = [
   {
     id: 'yumanhua',
