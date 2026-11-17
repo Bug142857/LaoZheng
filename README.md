@@ -3,7 +3,7 @@
 手机端（[Bug142857/ShangYin](https://github.com/Bug142857/ShangYin)）的桌面版本，数据格式与手机端互通。
 本仓库只承载 PC 端代码，手机端仓库保持独立、不再改动。
 
-**当前版本：v0.191** ｜ [下载最新安装包](https://github.com/Bug142857/LaoZheng/releases/latest)
+**当前版本：v0.193** ｜ [下载最新安装包](https://github.com/Bug142857/LaoZheng/releases/latest)
 
 ## 技术选型
 
@@ -72,12 +72,13 @@ npm run dist
 
 ## 版本与发布
 
-- 当前版本 **v0.191**。以后每次修改版本号 **+1**：`0.191 → 0.192 → 0.193 …`，即使不上传 GitHub 也照样递增。
-- `package.json` 内部使用三段式（`0.190.0 / 0.191.0 / …`）；应用内显示、安装包文件名、tag 与 Release 一律去掉末尾 `.0`（`v0.190 / v0.191`），由 `main.ts` 的 `displayVersion()` 统一转换。
+- 当前版本 **v0.193**。以后每次修改版本号 **+1**：`0.193 → 0.194 → 0.195 …`，即使不上传 GitHub 也照样递增。
+- `package.json` 内部使用三段式（`0.192.0 / 0.193.0 / …`）；应用内显示、安装包文件名、tag 与 Release 一律去掉末尾 `.0`（`v0.192 / v0.193`），由 `main.ts` 的 `displayVersion()` 统一转换。
 - 发版流程：改好代码与版本号 → 提交推送 → 打 `v*` tag 并推送。**GitHub Actions 会自动构建 Windows 安装包并上传到对应 Release**，不需要本地打包或手动传 100MB 文件。
 - **每次发版必须同步公开 Gist 更新清单**（`update.json` 的 `version / url / exe / notes` 与本次 Release 完全一致）：GitHub API 不可达时应用靠它检查新版，漏更会导致回退线路报旧版本。
 - 也可以在 Actions 页面手动运行 `Build Windows installer`，填写要补传的 tag（例如 `v0.73`）即可补传安装包。
 - GitHub Release 说明必须用 UTF-8 写入，避免中文乱码。
+- 覆盖升级会按新安装目录重建**已存在**的快捷方式（桌面 / 开始菜单 / 任务栏固定 / 快速启动），不会主动创建用户已删除的快捷方式。
 
 ### 自动构建（GitHub Actions）
 

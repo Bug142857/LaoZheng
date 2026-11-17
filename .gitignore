@@ -9,3 +9,6 @@ Thumbs.db
 *.tsbuildinfo
 # 本机账号凭据（绝不入库）
 .secrets/
+# 本地调试 / 验证产物
+.screenshots/
+.tmp-*

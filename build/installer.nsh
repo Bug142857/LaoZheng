@@ -52,3 +52,52 @@ Var unDeletePersonalData
 !macroend
 
 !endif
+
+; 安装 / 覆盖升级结束：重建已存在的快捷方式（快捷方式路径放在 $R0）
+!macro refreshShortcutLink
+  ${if} ${FileExists} "$R0"
+    CreateShortCut "$R0" "$appExe" "" "$appExe" 0 "" "" "${APP_DESCRIPTION}"
+    ClearErrors
+    WinShell::SetLnkAUMI "$R0" "${APP_ID}"
+  ${endIf}
+!macroend
+
+; electron-builder 在覆盖升级时默认保留旧快捷方式（KeepShortcuts 机制），
+; 安装目录变化后快捷方式仍指向旧版本；这里对已存在的快捷方式强制重建为
+; 本次安装路径（不存在时不主动创建，尊重用户自行删除），覆盖桌面、开始菜单、
+; 任务栏固定与快速启动等所有常见位置（当前用户 + 所有用户两种上下文）。
+!macro customInstall
+  # 桌面：当前用户 / 所有用户
+  !ifndef DO_NOT_CREATE_DESKTOP_SHORTCUT
+    SetShellVarContext current
+    StrCpy $R0 "$DESKTOP\${SHORTCUT_NAME}.lnk"
+    !insertmacro refreshShortcutLink
+    SetShellVarContext all
+    StrCpy $R0 "$DESKTOP\${SHORTCUT_NAME}.lnk"
+    !insertmacro refreshShortcutLink
+  !endif
+  # 开始菜单：当前用户 / 所有用户
+  !ifndef DO_NOT_CREATE_START_MENU_SHORTCUT
+    SetShellVarContext current
+    StrCpy $R0 "$SMPROGRAMS\${SHORTCUT_NAME}.lnk"
+    !insertmacro refreshShortcutLink
+    SetShellVarContext all
+    StrCpy $R0 "$SMPROGRAMS\${SHORTCUT_NAME}.lnk"
+    !insertmacro refreshShortcutLink
+  !endif
+  # 任务栏固定 / 开始菜单固定 / 快速启动（当前用户）
+  SetShellVarContext current
+  StrCpy $R0 "$APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\${SHORTCUT_NAME}.lnk"
+  !insertmacro refreshShortcutLink
+  StrCpy $R0 "$APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\StartMenu\${SHORTCUT_NAME}.lnk"
+  !insertmacro refreshShortcutLink
+  StrCpy $R0 "$APPDATA\Microsoft\Internet Explorer\Quick Launch\${SHORTCUT_NAME}.lnk"
+  !insertmacro refreshShortcutLink
+  # 还原 shell 上下文，避免影响后续安装逻辑
+  ${if} $installMode == "all"
+    SetShellVarContext all
+  ${else}
+    SetShellVarContext current
+  ${endif}
+  System::Call 'Shell32::SHChangeNotify(i 0x8000000, i 0, i 0, i 0)'
+!macroend
