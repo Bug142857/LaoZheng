@@ -1,7 +1,7 @@
 # 老郑分享 · PC 端项目记忆
 
 > **唯一记忆入口**（PC 端仓库 https://github.com/Bug142857/LaoZheng），换电脑 / 换 AI 账号后从这里恢复上下文。
-> 最后更新：2026-11-17（最新已发版 v0.160；工作区 v0.191 未发版，下次修改 +1 到 0.192）。
+> 最后更新：2026-11-17（最新已发版 v0.191；工作区 v0.191 已发版，下次修改 +1 到 0.192）。
 > **读取纪律**：开工只读第 0 节（Read offset 0, limit 140），其余内容按关键词 Grep；**禁止整文件读取本文件**。
 > 历史细节已归档，不要整读：`docs/archive/VERSION_LOG.md`（v0.55~v0.123 流水）、`docs/archive/MODULE_DETAILS.md`（各模块完整实现口径）、`docs/archive/MOBILE_HISTORY.md`（手机端原文）。
 >
@@ -10,7 +10,7 @@
 ### 0. 新窗口先读（当前状态）
 
 - **⛔ 开工纪律（2026-11-11 用户强调，最高优先级）**：① 开工先读本节 + 跑 `git status`（**不要整读本文件与 project_memory.md**）；② 严格执行既有全部规则（版本号先 +1、新功能必带缓存 / 导入导出 / 云同步、各模块口径、发版需用户明说），不得凭印象省略；③ 收尾按「接入内容 → 验证结果 → 剩余限制 → 安装包」四段输出并附真实数据，不得只回「已修复」；④ 每轮结束**仅在出现新硬规则 / 用户新口径时**按「记忆同步净增长为 0」追加（单次 ≤5 行，同时删等量过期内容），不重复抄写既有内容；**平时一律不 commit / push**，用户明确说「发版」才 push（手机端 ShangYin 的「每轮必 push」不适用于 PC 端）。
-- **版本状态**：最新已发版 **v0.160**（Release 资产 `LaoZheng-0.160-Setup.exe`，108,158,364 字节，公开 Gist `update.json` 已同步 0.160）；工作区已改到 **v0.191（未发版，`package.json` = `0.191.0`）**，下次修改 +1 到 0.192；发版必须用户明确说「发版」；**发版时必须同步 README（当前版本 / 功能列表 / 目录结构 / 数据字段 / 更新流程），不只改版本状态**。**v0.187 起全新安装默认下载目录 `D:\laozheng\download`、缓存目录 `D:\laozheng\cache`**（D 盘不可写则回退旧默认；userData 已有 settings.json / data.json / seed-state.json 任一即视为老用户，路径一律不变）。
+- **版本状态**：最新已发版 **v0.191**（Release 资产 `LaoZheng-0.191-Setup.exe`，108,394,778 字节，公开 Gist `update.json` 已同步 0.191）；工作区 v0.191 已发版（`package.json` = `0.191.0`），下次修改 +1 到 0.192；发版必须用户明确说「发版」；**发版时必须同步 README（当前版本 / 功能列表 / 目录结构 / 数据字段 / 更新流程），不只改版本状态**。**v0.187 起全新安装默认下载目录 `D:\laozheng\download`、缓存目录 `D:\laozheng\cache`**（D 盘不可写则回退旧默认；userData 已有 settings.json / data.json / seed-state.json 任一即视为老用户，路径一律不变）。
 - **v0.182（未发版）演唱模块**：新增 `singing` 模块（导航在「直播」下方），右上角 B站扫码登录与「直播」共用 `live-accounts.json` 与二维码接口，**登录只用于提高播放清晰度**，登录 / 退出通过 `LIVE_LOGIN_EVENT` 双向刷新。**不再读取 / 同步收藏夹**：早期一次性导入的 225 个视频留在 `data.singingVideos`，之后只能点「添加视频」手动填链接（BV / av / 完整链接 / b23.tv 短链）+ 自定义标题 + 分类；列表按 `addedAt` 倒序（最近添加在前），搜索栏「筛选」后有刷新按钮（清空搜索 / 分类筛选并回到全部、滚到顶部）。分类用 1~3 级下拉：分类名按 `-` 拆级，只有两级的归入三级「其他」（如「演唱现场-国产-其他」），一级顺序最后固定 游戏剧情 → 影视动漫 → 文学科普。播放走 DASH（`fnval=16`，最高 4K），`BiliPlayer` 用 `<video>` + 隐藏 `<audio>` 双轨同步；DASH 视频轨没有声音、底部原生音量条点了没反应，所以隐藏原生音量 / 静音 / 全屏控件（`.bili-video`），在右上角工具条用自建音量滑块 / 静音 + 弹幕开关 + 清晰度下拉 + 全屏按钮。**全屏必须对整个 `.player-stage` 调 Fullscreen API**（原生全屏只放大 `<video>`，弹幕层会消失），弹幕层 / 工具条随容器一起进全屏。弹幕走 `x/v1/dm/list.so` XML，**每次打开视频都重新拉取**（B站新增的弹幕重开即显示，不做 30 分钟缓存），按时间滚动 / 顶部 / 底部显示；**弹幕按钮固定显示**，无弹幕时禁用并提示「该视频暂无弹幕」。无 DASH 时回退 durl mp4。
 - **v0.173（未发版）资讯收藏 / 软件默认经验**：收藏页资讯卡片右上角改为**删除按钮**（`icon-btn danger` + Trash2，不再用心形），点击先弹 `ConfirmDialog`「删除收藏」，取消保留、确认才删除。`resources/default-seed.json` 增加 `toolNotes`（7 篇使用经验、约 304K 字符，含截图 base64，种子文件约 1.13MB）；`seed.ts` 在首次启动且 `data.toolNotes` 为空时播种，已有笔记不覆盖，与影视源 / 清单共用同一次 seed（`seed-state.json`）。**该功能上线前没有老用户使用过，不做旧数据迁移 / 合并，当前播种逻辑即最终口径。** 全新安装「片源管理」共 **96 个源**：种子 `vodSources` 39 + 各模块代码默认 38（短剧 2 / 音乐 2 / 小说 10 / 漫画 5 / 直播 3 / 补丁 7 / 壁纸 2 / 套图 2 / 皇片 5）+ 电视 1 + 磁力 18；番号 `h1Sources` 4 个不计入该数字。
 - **v0.171（未发版）资讯**：站点对高频请求会按 IP 限流（`/c/*`、`/n/*` 先 403「安全验证」后 503，首页仍 200）——请求已串行 + 间隔 ≥700ms；分类页 403/503 时自动用**首页对应分区兜底**（`HOME_SECTION_BY_CATEGORY`，综合/科技/娱乐/社区/购物/财经/开发/日报，4 张卡、无分页子分类，`fallback:true` 显示提示条），已成功缓存过的分类仍直接走缓存；错误页给「重试 / 打开网站验证」。收藏刷新不再逐条 `newsNode`，按收藏 payload 的 `category + page` 分组，每组只拉一次分类页并回写卡片 items（收藏时 payload 已带 `page`）。
@@ -52,7 +52,7 @@
 - 构建产物 `out/`、安装包 `release/`、`node_modules/` 不入库；`npm run dist` 收尾（`scripts/pack-artifact.cjs`）只保留当前 exe，删除旧安装包 / `latest.yml` / `.blockmap` / `win-unpacked`；应用启动时清空 `userData/updates` 旧包。
 - 发版前必须 `npm run build` 通过；安装包用 `npm run dist`（NSIS，可选安装目录、桌面快捷方式「老郑分享」、`build/installer.nsh` 卸载页可选清除个人数据）。
 - **发版必做（2026-11-03 用户强调）**：发布后必须同步公开 Gist 更新清单 `update.json`（gist id `802551160083623580189fc536724d65`，字段 `version / url / exe / notes`），与当次 Release 完全一致；这是 GitHub API 不可达时检查更新的唯一兜底，漏更用户永远收不到新版。同步方式：环境里的 `GH_TOKEN` 是 App token、改 Gist 会 403，改用 `git credential fill` 取 GCM 凭据（scopes 含 gist/repo/workflow）走 `PATCH /gists/{id}`，Node fetch 需加 `--use-system-ca`。
-- 更新链路：公开 Releases API → 后台下载 exe（检查与下载都先并发探测直连 / gh-proxy.com / ghproxy.net 按延迟选线）→ 打开 NSIS 向导；API 不可达回退 Gist 清单。安装包签名仍未做（无证书，见第 8 节）。
+- 更新链路：启动 / 手动检查统一走应用内 `UpdateModal`（`update:available` + `app:pendingUpdate`），先展示版本与说明，确认后才下载；下载显示百分比 / 实时速度 / 线路，支持暂停 / 继续 / 取消，完成后窗口内「立即安装」；下载前每条线路实测 128KB 按实际速度选最快（直连 / gh-proxy / ghproxy），失败自动兜底；API 不可达回退 Gist 清单。安装包签名仍未做（无证书，见第 8 节）。
 
 ### 4. 工程结构（当前）
 
