@@ -102,16 +102,16 @@ export function DramaPage({
     .map((source) => `${source.id}:${source.baseUrl ?? ''}`)
     .join(',')
 
-  /** 默认进入西饭短剧；没有西饭源时才回落到全部源 */
+  /** 默认进入西饭短剧；西饭不可用时回落到第一个启用的短剧源 */
   const defaultScope = available.some((source) => source.id === XIFAN_DRAMA_SOURCE_ID)
     ? XIFAN_DRAMA_SOURCE_ID
-    : ''
+    : available[0]?.id ?? ''
   const initialCache = useMemo(
     () => loadCache<DramaCache>(cacheKeyOf(defaultScope), EMPTY_CACHE),
     [defaultScope]
   )
 
-  /** 空字符串 = 全部源；默认西饭短剧 */
+  /** 只保留单源：默认西饭短剧，列表里可选肉视频短剧等其它源 */
   const [sourceId, setSourceId] = useState(defaultScope)
   const [genre, setGenre] = useState(initialCache.genre)
   const [categories, setCategories] = useState<DramaCategory[]>(initialCache.categories)
@@ -293,8 +293,13 @@ export function DramaPage({
   // 切换短剧源：恢复该源上次的默认列表；没有缓存才请求
   useEffect(() => {
     if (!available.length) return
-    if (sourceId && !available.some((source) => source.id === sourceId)) {
-      setSourceId('')
+    if (!sourceId || !available.some((source) => source.id === sourceId)) {
+      // 还没选源 / 原来源被停用或删除：回到西饭或第一个可用源，不再落到「全部源」
+      setSourceId(
+        available.some((source) => source.id === XIFAN_DRAMA_SOURCE_ID)
+          ? XIFAN_DRAMA_SOURCE_ID
+          : available[0].id
+      )
       return
     }
     const sourcesChanged = lastAvailableKeyRef.current !== availableKey
@@ -328,8 +333,12 @@ export function DramaPage({
   useEffect(() => {
     if (defaultAppliedRef.current || !available.length) return
     defaultAppliedRef.current = true
-    if (!sourceId && available.some((source) => source.id === XIFAN_DRAMA_SOURCE_ID)) {
-      setSourceId(XIFAN_DRAMA_SOURCE_ID)
+    if (!sourceId && available.length) {
+      setSourceId(
+        available.some((source) => source.id === XIFAN_DRAMA_SOURCE_ID)
+          ? XIFAN_DRAMA_SOURCE_ID
+          : available[0].id
+      )
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableKey])
@@ -696,7 +705,6 @@ export function DramaPage({
                 title="选择短剧源"
                 style={{ maxWidth: 160 }}
               >
-                <option value="">全部源（{available.length}）</option>
                 {available.map((source) => (
                   <option key={source.id} value={source.id}>
                     {source.name}

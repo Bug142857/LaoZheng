@@ -19,6 +19,8 @@ import {
   MonitorCog,
   MonitorPlay,
   Music,
+  MicVocal,
+  Newspaper,
   PlayCircle,
   Popcorn,
   Radio,
@@ -34,6 +36,7 @@ import { WatchPage, type WatchFocus } from './pages/WatchPage'
 import { DramaPage, type DramaFocus } from './pages/DramaPage'
 import { LivePage } from './pages/LivePage'
 import { LiveRoomsPage } from './pages/LiveRoomsPage'
+import { SingingPage } from './pages/SingingPage'
 import { MusicPage } from './pages/MusicPage'
 import { DownloadsPage, type DownloadSection } from './pages/DownloadsPage'
 import { ComicPage } from './pages/ComicPage'
@@ -42,6 +45,7 @@ import { GamePage } from './pages/GamePage'
 import { EmuPage } from './pages/EmuPage'
 import { BookPage } from './pages/BookPage'
 import { MelonPage } from './pages/MelonPage'
+import { NewsPage } from './pages/NewsPage'
 import { ShuangkanPage } from './pages/ShuangkanPage'
 import type { SkContent, ShuangkanFocus } from './shared/shuangkan'
 import { MagnetPage } from './pages/MagnetPage'
@@ -58,6 +62,7 @@ import { ToolsPage } from './pages/ToolsPage'
 import { EmptyState } from './components/ui'
 import { ImageViewer } from './components/ImageViewer'
 import { DownloadCenter } from './components/DownloadCenter'
+import { UpdateModal } from './components/UpdateModal'
 import {
   MusicPlayerBar,
   MusicPlayerProvider
@@ -67,6 +72,7 @@ import { clearCachePrefix } from './utils/cache'
 
 import type { InnerFav } from './shared/types'
 import type { UpdateProgress } from './shared/update'
+import { formatUpdateSpeed, type UpdateCheckResult } from './shared/update'
 import type { LivePlatformId, LiveRoomFocus } from './shared/livePlatform'
 import {
   isWallpaperSourceId,
@@ -82,10 +88,12 @@ type Route =
   | { name: 'drama'; focus?: DramaFocus }
   | { name: 'live'; focusUrl?: string }
   | { name: 'liveRooms'; focus?: LiveRoomFocus }
+  | { name: 'singing' }
   | { name: 'music'; focus?: FavFocus }
   | { name: 'comic'; focusId?: string }
   | { name: 'novel'; focus?: NovelFocus }
   | { name: 'melon'; focusId?: string }
+  | { name: 'news' }
   | { name: 'shuangkan'; focus?: ShuangkanFocus }
   | { name: 'book'; focusId?: string }
   | { name: 'game'; focusId?: string }
@@ -125,8 +133,10 @@ interface NavItem {
     | 'book'
     | 'live'
     | 'liveRooms'
+    | 'singing'
     | 'music'
     | 'melon'
+    | 'news'
     | 'magnet'
     | 'sysinfo'
     | 'wallpaper'
@@ -142,13 +152,15 @@ interface NavItem {
 /** 点顶部「老郑分享」进入主页，主页暂为空白页 */
 const HOME_NAV_ITEM: NavItem = { key: 'home', label: '主页', icon: Home, ready: true }
 
-/** 老郑分享：清单 → 影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 图书 → 模拟 → 游戏 → 补丁 → 软件 → 硬件 → 磁力 → 壁纸 → 美图 → 吃瓜 → 皇片 */
+/** 老郑分享：资讯 → 清单 → 影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 图书 → 模拟 → 游戏 → 补丁 → 软件 → 硬件 → 磁力 → 壁纸 → 美图 → 吃瓜 → 皇片 */
 const NAV_ITEMS: NavItem[] = [
+  { key: 'news', label: '资讯', icon: Newspaper, ready: true },
   { key: 'lists', label: '清单', icon: ListChecks, ready: true },
   { key: 'watch', label: '影视', icon: MonitorPlay, ready: true },
   { key: 'drama', label: '短剧', icon: Clapperboard, ready: true },
   { key: 'live', label: '电视', icon: Tv, ready: true },
   { key: 'liveRooms', label: '直播', icon: Radio, ready: true },
+  { key: 'singing', label: '演唱', icon: MicVocal, ready: true },
   { key: 'music', label: '音乐', icon: Music, ready: true },
   { key: 'comic', label: '漫画', icon: Images, ready: true },
   { key: 'novel', label: '小说', icon: BookText, ready: true },
@@ -223,10 +235,14 @@ function leafRoute(key: NavItem['key']): Route {
       return { name: 'live' }
     case 'liveRooms':
       return { name: 'liveRooms' }
+    case 'singing':
+      return { name: 'singing' }
     case 'music':
       return { name: 'music' }
     case 'melon':
       return { name: 'melon' }
+    case 'news':
+      return { name: 'news' }
     case 'magnet':
       return { name: 'magnet' }
     case 'sysinfo':
@@ -268,6 +284,7 @@ const MODULE_SHORTCUTS: Record<string, ShortcutConfig> = {
   emu: { fav: 'emu' },
   game: { fav: 'game' },
   melon: { fav: 'melon', download: 'video' },
+  news: { fav: 'news' },
   book: { fav: 'book', download: 'book' },
   comic: { fav: 'comic', download: 'comic' },
   novel: { fav: 'novel', download: 'novel' },
@@ -284,6 +301,7 @@ const MODULE_CACHE_PREFIXES: Record<string, string[]> = {
   comic: ['comic'],
   novel: ['novel'],
   melon: ['melon'],
+  news: ['news'],
   game: ['game'],
   emu: ['emu'],
   book: ['book'],
@@ -450,6 +468,8 @@ function Shell() {
   const [notice, setNotice] = useState<string | null>(null)
   /** 更新包下载进度（启动时确认更新后由主进程广播） */
   const [updateBar, setUpdateBar] = useState<UpdateProgress | null>(null)
+  /** 启动时检查到的新版本：用应用内更新弹窗展示，确认后才下载 */
+  const [startupUpdate, setStartupUpdate] = useState<UpdateCheckResult | null>(null)
   const [visited, setVisited] = useState<string[]>(['home'])
   const [navEpoch, setNavEpoch] = useState<Record<string, number>>({})
   /** 点页面标题时递增，用于让需要强制重取数据的页面（如电脑信息）区分普通进入与刷新 */
@@ -577,6 +597,24 @@ function Shell() {
     })
     return () => {
       window.clearTimeout(hideTimer)
+      off()
+    }
+  }, [])
+
+  /** 启动时的更新提示：先订阅推送，再主动取一次，避免渲染层挂载晚于检查结果 */
+  useEffect(() => {
+    let alive = true
+    const off = window.laozheng.onUpdateAvailable((info) => {
+      if (alive && info?.hasUpdate) setStartupUpdate(info)
+    })
+    void window.laozheng
+      .pendingUpdate()
+      .then((info) => {
+        if (alive && info?.hasUpdate) setStartupUpdate(info)
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
       off()
     }
   }, [])
@@ -1065,7 +1103,18 @@ function Shell() {
               resetSignal={navEpoch.liveRooms}
               focus={route.name === 'liveRooms' ? route.focus : undefined}
               onExit={backRoute}
+              active={activeKey === 'liveRooms'}
               {...shortcuts('liveRooms')}
+            />
+          </div>
+        ) : null}
+
+        {shownKeys.includes('singing') ? (
+          <div {...slot('singing')}>
+            <SingingPage
+              onNotice={setNotice}
+              resetSignal={navEpoch.singing}
+              active={activeKey === 'singing'}
             />
           </div>
         ) : null}
@@ -1102,6 +1151,16 @@ function Shell() {
               resetSignal={navEpoch.novel}
               onExit={backRoute}
               {...shortcuts('novel')}
+            />
+          </div>
+        ) : null}
+
+        {shownKeys.includes('news') ? (
+          <div {...slot('news')}>
+            <NewsPage
+              onNotice={setNotice}
+              resetSignal={navEpoch.news}
+              {...shortcuts('news')}
             />
           </div>
         ) : null}
@@ -1273,24 +1332,58 @@ function Shell() {
         }}
       />
       <ImageViewer onNotice={setNotice} />
+      <UpdateModal
+        open={!!startupUpdate}
+        info={startupUpdate}
+        onClose={() => setStartupUpdate(null)}
+        onNotice={setNotice}
+      />
       {updateBar ? (
         <div className="update-progress" role="status">
           <div className="update-progress-text">
             {updateBar.percent >= 1
               ? '更新包下载完成'
-              : updateBar.total > 0
-                ? `正在下载更新 · ${Math.round(updateBar.percent * 100)}%`
-                : `正在下载更新 · ${Math.round(updateBar.received / 1024 / 1024)} MB`}
+              : updateBar.paused
+                ? `已暂停 · ${Math.round(updateBar.percent * 100)}%`
+                : updateBar.phase === 'selecting'
+                  ? '正在测速选择最快线路…'
+                  : updateBar.total > 0
+                    ? `正在下载更新 · ${Math.round(updateBar.percent * 100)}%`
+                    : `正在下载更新 · ${Math.round(updateBar.received / 1024 / 1024)} MB`}
+            {updateBar.percent < 1 && updateBar.speed
+              ? ` · ${formatUpdateSpeed(updateBar.speed)}`
+              : ''}
             {updateBar.percent < 1 && updateBar.line ? ` · 线路 ${updateBar.line}` : ''}
           </div>
           <div className="update-progress-track">
             <div
               className={`update-progress-fill${
-                updateBar.total > 0 || updateBar.percent >= 1 ? '' : ' indeterminate'
+                !updateBar.paused && (updateBar.total > 0 || updateBar.percent >= 1)
+                  ? ''
+                  : updateBar.paused
+                    ? ' paused'
+                    : ' indeterminate'
               }`}
               style={{ width: `${Math.round((updateBar.percent || 0) * 100)}%` }}
             />
           </div>
+          {updateBar.percent < 1 ? (
+            <div className="update-progress-actions">
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  void (updateBar.paused
+                    ? window.laozheng.resumeUpdate()
+                    : window.laozheng.pauseUpdate())
+                }}
+              >
+                {updateBar.paused ? '继续' : '暂停'}
+              </button>
+              <button className="btn ghost" onClick={() => void window.laozheng.cancelUpdate()}>
+                取消
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
       {notice ? <div className="toast">{notice}</div> : null}

@@ -139,6 +139,7 @@ export function countFavs(data: AppData): number {
 export type FavModule = { key: string; label: string }
 
 export const FAV_MODULE_LABELS: Record<string, string> = {
+  news: '资讯',
   melon: '吃瓜',
   comic: '漫画',
   tv: '电视',

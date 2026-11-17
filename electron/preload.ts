@@ -91,8 +91,13 @@ const api: LaozhengApi = {
   livePlatformTestSource: (source) => ipcRenderer.invoke('livePlatform:testSource', source),
   livePlatformExportSources: (sources) =>
     ipcRenderer.invoke('livePlatform:exportSources', sources),
+  singingVideoInfo: (input) => ipcRenderer.invoke('singing:videoInfo', input),
+  singingPlay: (bvid, page, qualityId) =>
+    ipcRenderer.invoke('singing:play', bvid, page, qualityId),
+  singingDanmaku: (bvid, page) => ipcRenderer.invoke('singing:danmaku', bvid, page),
   searchMusic: (sources, keyword, page) =>
     ipcRenderer.invoke('music:search', sources, keyword, page ?? 1),
+  musicTop: (sources, category) => ipcRenderer.invoke('music:top', sources, category),
   resolveMusic: (songId, platform, baseUrl, title, artists, quality) =>
     ipcRenderer.invoke(
       'music:resolve',
@@ -145,6 +150,8 @@ const api: LaozhengApi = {
   trackMelonImages: (urls) => ipcRenderer.invoke('melon:trackImages', urls),
   melonImage: (url) => ipcRenderer.invoke('melon:image', url),
   melonDuration: (url) => ipcRenderer.invoke('melon:duration', url),
+  newsFeed: (category, query, page) => ipcRenderer.invoke('news:feed', category, query, page),
+  newsNode: (id) => ipcRenderer.invoke('news:node', id),
   shuangkanCatalog: (source, content, category, page, sort) =>
     ipcRenderer.invoke('shuangkan:catalog', source, content, category, page, sort),
   shuangkanSearch: (source, content, keyword, page) =>
@@ -193,13 +200,23 @@ const api: LaozhengApi = {
   downloadSync: () => ipcRenderer.invoke('sync:download'),
   checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
   downloadUpdate: (url) => ipcRenderer.invoke('app:downloadUpdate', url),
+  pauseUpdate: () => ipcRenderer.invoke('app:pauseUpdate') as Promise<void>,
+  resumeUpdate: () => ipcRenderer.invoke('app:resumeUpdate') as Promise<void>,
+  cancelUpdate: () => ipcRenderer.invoke('app:cancelUpdate') as Promise<void>,
   installUpdate: (path) => ipcRenderer.invoke('app:installUpdate', path) as Promise<void>,
   onUpdateProgress: (callback) => {
     const handler = (_e: unknown, progress: Parameters<typeof callback>[0]): void => callback(progress)
     ipcRenderer.on('update:progress', handler)
     return () => ipcRenderer.removeListener('update:progress', handler)
   },
+  onUpdateAvailable: (callback) => {
+    const handler = (_e: unknown, info: Parameters<typeof callback>[0]): void => callback(info)
+    ipcRenderer.on('update:available', handler)
+    return () => ipcRenderer.removeListener('update:available', handler)
+  },
+  pendingUpdate: () => ipcRenderer.invoke('app:pendingUpdate'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
+  saveNoteFile: (name, dataUrl) => ipcRenderer.invoke('app:saveNoteFile', name, dataUrl),
   listAccounts: () => ipcRenderer.invoke('accounts:list'),
   loginAccount: (site) => ipcRenderer.invoke('accounts:login', site),
   openAccountLogin: (site) => ipcRenderer.invoke('accounts:openLogin', site) as Promise<void>,

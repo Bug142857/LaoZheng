@@ -124,10 +124,24 @@ export function openLoginWindow(options: LoginWindowOptions): Promise<LoginWindo
 
     timeout = setTimeout(() => finish({ canceled: true }), options.timeoutMs ?? 5 * 60 * 1000)
 
-    win.on('closed', () => finish({ canceled: true }))
+    win.on('closed', () => {
+      if (settled) return
+      // 扫完码直接关窗口很常见：关窗前再抢读一次 Cookie，避免登录成功却被当成取消
+      void readCookieString(ses, options.domains, options.markers)
+        .then((cookie) => {
+          if (!cookie) return finish({ canceled: true })
+          return readCookieString(ses, options.cookieDomains ?? options.domains).then((all) =>
+            finish({ canceled: false, cookie: all || cookie })
+          )
+        })
+        .catch(() => finish({ canceled: true }))
+    })
     win.loadURL(options.url, { userAgent: DESKTOP_UA }).catch(() => undefined)
-    win.webContents.on('did-fail-load', (_event, _code, _desc, _url, isMainFrame) => {
-      if (isMainFrame) finish({ canceled: true })
+    win.webContents.on('did-fail-load', (_event, code, _desc, _url, isMainFrame) => {
+      if (!isMainFrame) return
+      // -3 = ERR_ABORTED：页面脚本跳转 / 重定向中途取消，不代表登录失败，继续等扫码
+      if (code === -3) return
+      finish({ canceled: true })
     })
   })
 }

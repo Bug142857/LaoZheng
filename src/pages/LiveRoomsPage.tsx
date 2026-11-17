@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronLeft, ExternalLink, Heart, LogIn, LogOut } from 'lucide-react'
+import { ChevronLeft, ExternalLink, Heart, LogIn } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { EmptyState, Modal, ModuleShortcuts, Pagination } from '../components/ui'
+import { ConfirmDialog, EmptyState, Modal, ModuleShortcuts, Pagination } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { LivePlayer } from '../components/LivePlayer'
 import { tileGradient } from '../utils/data'
 import { enabledLivePlatforms, livePlatformOfSource } from '../shared/livePlatformSources'
 import {
+  LIVE_LOGIN_EVENT,
   LIVE_PLATFORMS,
   liveRoomKey,
+  notifyLiveLoginChanged,
   type LiveCategoryGroup,
   type LiveFavorite,
   type LiveLoginStatus,
@@ -79,13 +81,16 @@ export function LiveRoomsPage({
   resetSignal,
   focus,
   onExit,
-  onOpenFavorites
+  onOpenFavorites,
+  active = true
 }: {
   onNotice: (text: string) => void
   resetSignal?: number
   focus?: LiveRoomFocus
   onExit?: () => void
   onOpenFavorites?: () => void
+  /** 页面是否在前台：切到其它模块时停止拉流，避免后台突然出声 */
+  active?: boolean
 }) {
   const { data, update } = useData()
   const [platform, setPlatform] = useState<LivePlatformId>('bilibili')
@@ -94,6 +99,7 @@ export function LiveRoomsPage({
   const [page, setPage] = useState(1)
   const [hasMore, setHasMore] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState('')
   const [reloadToken, setReloadToken] = useState(0)
   const [input, setInput] = useState('')
@@ -106,6 +112,7 @@ export function LiveRoomsPage({
   const [playbackError, setPlaybackError] = useState('')
   const [playbackLoading, setPlaybackLoading] = useState(false)
   const [loginOpen, setLoginOpen] = useState(false)
+  const [logoutConfirm, setLogoutConfirm] = useState(false)
   const [loginBusy, setLoginBusy] = useState(false)
   const [qr, setQr] = useState<LiveQrStart | null>(null)
   const [qrHint, setQrHint] = useState('')
@@ -114,6 +121,10 @@ export function LiveRoomsPage({
   const playRequestRef = useRef(0)
   const listRequestRef = useRef(0)
   const skipLoadRef = useRef(false)
+  /** 抖音搜索是滚动加载：记录已展示的房间，翻页时让主进程跳过 */
+  const searchSeenRef = useRef<string[]>([])
+  /** 昵称后台补取的轮询定时器，页面卸载时清掉 */
+  const nameTimerRef = useRef<number | null>(null)
   const viewCache = useRef<Map<LivePlatformId, LiveViewSnapshot>>(new Map())
   const focusKeyRef = useRef('')
 
@@ -131,17 +142,54 @@ export function LiveRoomsPage({
     data.livePlatformSources.find((item) => livePlatformOfSource(item) === id)?.name ||
     PLATFORM_NAMES[id]
 
-  const refreshStatuses = async (): Promise<void> => {
+  const refreshStatuses = async (): Promise<Partial<Record<LivePlatformId, LiveLoginStatus>>> => {
     const list = await Promise.all(
       LIVE_PLATFORMS.map((item) => window.laozheng.livePlatformLoginStatus(item.id))
     )
     const next: Partial<Record<LivePlatformId, LiveLoginStatus>> = {}
     for (const status of list) next[status.platform] = status
     setStatuses(next)
+    return next
+  }
+
+  /** 抖音 / 斗鱼的账号名由主进程后台补取，登录后多刷几次状态直到拿到名字 */
+  const refreshUntilNamed = (rounds = 4): void => {
+    let left = rounds
+    const tick = async (): Promise<void> => {
+      const next = await refreshStatuses().catch(() => null)
+      left -= 1
+      if (!next) return
+      const missing = Object.values(next).some((status) => status?.loggedIn && !status.name)
+      if (missing && left > 0) {
+        nameTimerRef.current = window.setTimeout(() => void tick(), 5000)
+      }
+    }
+    if (nameTimerRef.current) window.clearTimeout(nameTimerRef.current)
+    nameTimerRef.current = window.setTimeout(() => void tick(), 4000)
   }
 
   useEffect(() => {
     void refreshStatuses()
+      .then((next) => {
+        if (Object.values(next).some((status) => status?.loggedIn && !status.name)) {
+          refreshUntilNamed()
+        }
+      })
+      .catch(() => undefined)
+    return () => {
+      if (nameTimerRef.current) window.clearTimeout(nameTimerRef.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  /** 演唱页 / 本页登录或退出后，另一个页面右上角的账号状态同步刷新 */
+  useEffect(() => {
+    const onLoginChanged = (): void => {
+      void refreshStatuses()
+    }
+    window.addEventListener(LIVE_LOGIN_EVENT, onLoginChanged)
+    return () => window.removeEventListener(LIVE_LOGIN_EVENT, onLoginChanged)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const currentArea = useMemo(() => {
@@ -153,12 +201,16 @@ export function LiveRoomsPage({
     return null
   }, [categories, areaPicker])
 
-  const loadList = async (nextPage: number): Promise<void> => {
+  /** append = 抖音搜索的「展示更多」：保留已展示的房间，把新一批接在后面 */
+  const loadList = async (nextPage: number, append = false): Promise<void> => {
     if (!enabledPlatforms.includes(platform)) return
     if (mode === 'category' && !areaPicker) return
     const token = ++listRequestRef.current
-    setLoading(true)
+    if (append) setLoadingMore(true)
+    else setLoading(true)
     setError('')
+    const isSearch = mode === 'search'
+    if (isSearch && nextPage === 1) searchSeenRef.current = []
     try {
       const result = await withRequestTimeout(
         window.laozheng.livePlatformList(
@@ -168,23 +220,39 @@ export function LiveRoomsPage({
             page: nextPage,
             parentId: currentArea?.parentId ?? groupPicker,
             areaId: areaPicker,
-            keyword: query
+            keyword: query,
+            ...(isSearch && nextPage > 1 ? { excludeIds: searchSeenRef.current } : {})
           }
         ),
         70_000,
         '加载超时，请点刷新重试'
       )
       if (token !== listRequestRef.current) return
-      setRooms(result.items)
+      if (isSearch) {
+        searchSeenRef.current = [
+          ...new Set([...searchSeenRef.current, ...result.items.map((room) => room.roomId)])
+        ]
+      }
+      if (append) {
+        setRooms((prev) => {
+          const seen = new Set(prev.map((room) => room.roomId))
+          return [...prev, ...result.items.filter((room) => !seen.has(room.roomId))]
+        })
+      } else {
+        setRooms(result.items)
+      }
       setPage(nextPage)
       setHasMore(result.hasMore)
       setError(result.error ?? '')
     } catch (err) {
       if (token !== listRequestRef.current) return
-      setRooms([])
+      if (!append) setRooms([])
       setError(err instanceof Error ? err.message : '列表加载失败')
     } finally {
-      if (token === listRequestRef.current) setLoading(false)
+      if (token === listRequestRef.current) {
+        setLoading(false)
+        setLoadingMore(false)
+      }
     }
   }
 
@@ -264,6 +332,17 @@ export function LiveRoomsPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetSignal])
 
+  // 切到其它模块后不再保留直播间：B站取流较慢，晚到的结果会在后台突然开播且看不到画面
+  useEffect(() => {
+    if (active) return
+    playRequestRef.current += 1
+    if (nameTimerRef.current) window.clearTimeout(nameTimerRef.current)
+    setPlaying(null)
+    setPlayback(null)
+    setPlaybackError('')
+    setPlaybackLoading(false)
+  }, [active])
+
   useEffect(() => {
     if (!loginOpen || !qr || platform !== 'bilibili') return undefined
     let alive = true
@@ -282,6 +361,7 @@ export function LiveRoomsPage({
             setQr(null)
             setLoginOpen(false)
             setStatuses((prev) => ({ ...prev, bilibili: result.login as LiveLoginStatus }))
+            notifyLiveLoginChanged('bilibili')
             onNotice('B站登录成功')
           }
         })
@@ -323,9 +403,13 @@ export function LiveRoomsPage({
         onNotice(result.error)
       } else if (result.canceled) {
         onNotice('已取消登录')
-      } else if (result.login) {
+      } else if (result.login?.loggedIn) {
         setStatuses((prev) => ({ ...prev, [platform]: result.login as LiveLoginStatus }))
+        notifyLiveLoginChanged(platform)
         onNotice(`${platformName(platform)}登录成功`)
+        refreshUntilNamed()
+      } else if (result.login) {
+        onNotice('没有拿到有效的登录状态，请重新扫码')
       }
     } catch (err) {
       onNotice(err instanceof Error ? err.message : '登录失败')
@@ -338,6 +422,7 @@ export function LiveRoomsPage({
     try {
       const status = await window.laozheng.livePlatformLogout(platform)
       setStatuses((prev) => ({ ...prev, [platform]: status }))
+      notifyLiveLoginChanged(platform)
       onNotice(`已退出${platformName(platform)}账号`)
     } catch {
       onNotice('退出登录失败')
@@ -477,6 +562,10 @@ export function LiveRoomsPage({
 
   const switchPlatform = (next: LivePlatformId): void => {
     if (next === platform) return
+    // 切换平台时关掉上一个平台的登录弹窗，避免二维码轮询停摆后弹窗卡住
+    setLoginOpen(false)
+    setQr(null)
+    setQrHint('')
     listRequestRef.current += 1
     setLoading(false)
     const saved = viewCache.current.get(next)
@@ -571,7 +660,20 @@ export function LiveRoomsPage({
           className="live-room-cover"
           style={room.cover ? undefined : { background: tileGradient(room.anchor || room.title) }}
         >
-          {room.cover ? <img src={room.cover} alt="" loading="lazy" /> : null}
+          {room.cover ? (
+            <img
+              src={room.cover}
+              alt=""
+              loading="lazy"
+              onError={(event) => {
+                // 封面加载失败（防盗链 / 节点故障）时退回渐变底，避免列表出现空白块
+                const img = event.currentTarget
+                img.style.display = 'none'
+                const box = img.parentElement
+                if (box) box.style.background = tileGradient(room.anchor || room.title)
+              }}
+            />
+          ) : null}
           {status !== 'unknown' ? (
             <span className={`live-room-badge ${status}`}>
               {status === 'living' ? '直播中' : status === 'replay' ? '轮播' : '未开播'}
@@ -593,13 +695,8 @@ export function LiveRoomsPage({
           <div className="live-room-title" title={room.title}>
             {room.title || '未命名直播间'}
           </div>
-          <div className="live-room-meta">
-            <span>{room.anchor || '主播'}</span>
-            {room.watching ? <span>{room.watching}</span> : null}
-          </div>
-          <div className="live-room-sub">
-            {platformName(room.platform)}
-            {room.area ? ` · ${room.area}` : ''}
+          <div className="live-room-meta" title={`${room.area || platformName(room.platform)} · ${room.anchor || '主播'}`}>
+            {room.area || platformName(room.platform)} · {room.anchor || '主播'}
           </div>
         </div>
       </div>
@@ -735,7 +832,22 @@ export function LiveRoomsPage({
       <header className="page-header">
         <h1 className="page-title">直播</h1>
         <div className="page-actions">
-          <button className="btn" onClick={() => void openLogin()} disabled={loginBusy}>
+          <button
+            className="btn"
+            onClick={() => {
+              if (currentStatus?.loggedIn) {
+                setLogoutConfirm(true)
+                return
+              }
+              void openLogin()
+            }}
+            disabled={loginBusy}
+            title={
+              currentStatus?.loggedIn
+                ? `已登录：${currentStatus.name || platformName(platform)}，点击可退出`
+                : undefined
+            }
+          >
             <LogIn size={15} />
             {loginBusy
               ? '等待登录…'
@@ -743,11 +855,6 @@ export function LiveRoomsPage({
                 ? currentStatus.name || '已登录'
                 : '扫码登录'}
           </button>
-          {currentStatus?.loggedIn ? (
-            <button className="icon-btn" title="退出当前平台账号" onClick={() => void logout()}>
-              <LogOut size={16} />
-            </button>
-          ) : null}
           <ModuleShortcuts onOpenFavorites={onOpenFavorites} />
         </div>
       </header>
@@ -860,15 +967,45 @@ export function LiveRoomsPage({
           <div className="live-room-grid">
             {rooms.map((room, index) => renderRoomCard(room, index))}
           </div>
-          <Pagination
-            page={page}
-            hasMore={hasMore}
-            showLast={false}
-            disabled={loading}
-            onChange={(next) => void loadList(next)}
-          />
+          {platform === 'douyin' && mode === 'search' ? (
+            <div className="live-more">
+              {hasMore ? (
+                <button
+                  className="btn"
+                  disabled={loadingMore}
+                  onClick={() => void loadList(page + 1, true)}
+                >
+                  {loadingMore ? '正在加载…' : '展示更多'}
+                </button>
+              ) : (
+                <span className="live-more-done">已显示全部 {rooms.length} 个直播间</span>
+              )}
+            </div>
+          ) : (
+            <Pagination
+              page={page}
+              hasMore={hasMore}
+              showLast={false}
+              disabled={loading}
+              onChange={(next) => void loadList(next)}
+            />
+          )}
         </>
       )}
+
+      {logoutConfirm ? (
+        <ConfirmDialog
+          title={`退出${platformName(platform)}账号？`}
+          message={`当前登录：${statuses[platform]?.name || platformName(platform)}。退出后会清除本机保存的登录状态，需要重新扫码登录。`}
+          confirmText="退出登录"
+          danger
+          onConfirm={() => {
+            setLogoutConfirm(false)
+            void logout()
+          }}
+          onCancel={() => setLogoutConfirm(false)}
+        />
+      ) : null}
 
       {loginOpen ? (
         <Modal

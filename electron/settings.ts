@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { ThemeMode, UiSettings } from '../src/shared/settings'
 import type { BackupSettings } from '../src/shared/types'
@@ -60,6 +60,45 @@ function settingsPath(): string {
 
 function defaultDownloadRoot(): string {
   return join(app.getPath('downloads'), '老郑分享')
+}
+
+/** 全新安装的默认根目录：下载 / 缓存都放 D:\laozheng 下（D 盘不可用时回退到原来的默认位置） */
+const PORTABLE_ROOT = 'D:\\laozheng'
+
+async function applyFirstRunRoots(): Promise<void> {
+  const download = join(PORTABLE_ROOT, 'download')
+  const cache = join(PORTABLE_ROOT, 'cache')
+  try {
+    await mkdir(download, { recursive: true })
+    await mkdir(cache, { recursive: true })
+  } catch (err) {
+    console.warn('[settings] D:\\laozheng 不可写，下载 / 缓存目录继续用默认位置', err)
+    return
+  }
+  current.downloadRoot = download
+  current.cacheRoot = cache
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path)
+    return true
+  } catch (err) {
+    // 只有「确实不存在」才算不存在；EACCES / EPERM 等无法确认时按已存在处理，
+    // 避免杀软 / 网盘占用时把老用户误判成全新安装并套用 D:\laozheng 路径
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
+    console.warn('[settings] 无法确认文件是否存在，按已存在处理', path, err)
+    return true
+  }
+}
+
+/** 首次安装判定：userData 里没有任何本应用留下的文件才算，老用户升级一律保持原路径 */
+async function isFirstRun(): Promise<boolean> {
+  const dir = app.getPath('userData')
+  for (const name of ['settings.json', 'data.json', 'seed-state.json']) {
+    if (await exists(join(dir, name))) return false
+  }
+  return true
 }
 
 let current: AppSettings = {
@@ -164,8 +203,16 @@ export async function applySettingsSnapshot(input: BackupSettings): Promise<void
     changed = true
   }
   if (typeof input.downloadRoot === 'string' && input.downloadRoot.trim()) {
-    current.downloadRoot = input.downloadRoot.trim()
-    changed = true
+    const next = input.downloadRoot.trim()
+    // 备份可能来自另一台电脑：盘符 / 用户名目录在本机不存在时不要覆盖当前可用目录，
+    // 否则之后所有下载都会因为目录建不出来而失败
+    try {
+      await mkdir(next, { recursive: true })
+      current.downloadRoot = next
+      changed = true
+    } catch (err) {
+      console.warn('[settings] 备份里的下载目录不可用，保留当前目录', next, err)
+    }
   }
   if (input.lastDirs && typeof input.lastDirs === 'object') {
     if (!current.lastDirs) current.lastDirs = {}
@@ -236,10 +283,14 @@ export async function initSettings(): Promise<void> {
       migrated = true
     }
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+    const missing = (err as NodeJS.ErrnoException).code === 'ENOENT'
+    if (!missing) {
       console.error('[settings] 读取本机设置失败，已备份损坏文件并使用默认设置', err)
       // 文件损坏时先另存一份，避免默认值直接覆盖用户的下载目录 / 缓存目录 / 导航顺序
       await rename(settingsPath(), `${settingsPath()}.broken-${Date.now()}`).catch(() => undefined)
+    } else if (await isFirstRun()) {
+      // 全新安装：下载 / 缓存默认放到 D:\laozheng，老用户（已有 data.json 等）不受影响
+      await applyFirstRunRoots()
     }
     await saveSettings()
     return

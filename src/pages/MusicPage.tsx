@@ -4,11 +4,14 @@ import { useData } from '../state/DataContext'
 import { EmptyState, Modal, ModuleShortcuts } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { useMusicPlayer, type PlayerSong } from '../components/MusicPlayer'
-import type {
-  MusicQuality,
-  MusicResolveResponse,
-  MusicSong,
-  MusicSourceInput
+import {
+  MUSIC_TOP_CATEGORIES,
+  MUSIC_TOP_GROUPS,
+  type MusicQuality,
+  type MusicResolveResponse,
+  type MusicSong,
+  type MusicSource,
+  type MusicSourceInput
 } from '../shared/music'
 import type { InnerFav } from '../shared/types'
 
@@ -57,6 +60,22 @@ function toPlayerSong(song: MusicSong): PlayerSong {
   }
 }
 
+/** 音源入参：启用备用线路时才把无名闪闪音乐一起传给主进程 */
+function toSourceInput(source: MusicSource): MusicSourceInput {
+  const backup = source.backup
+  return {
+    id: source.id,
+    name: source.name,
+    baseUrl: source.baseUrl,
+    kind: source.kind,
+    platforms: source.platforms,
+    backup:
+      backup && backup.enabled && /^https?:\/\//i.test(backup.baseUrl)
+        ? { id: backup.id, name: backup.name, baseUrl: backup.baseUrl }
+        : undefined
+  }
+}
+
 export function MusicPage({
   onNotice,
   focus,
@@ -73,15 +92,16 @@ export function MusicPage({
   onOpenFavorites?: () => void
   onOpenDownloads?: () => void
 }) {
-  const { data, update } = useData()
+  const { data, update, ready } = useData()
   const player = useMusicPlayer()
   const enabledSources = useMemo(
     () => data.musicSources.filter((s) => s.enabled),
     [data.musicSources]
   )
-  const [sourceId, setSourceId] = useState(() =>
-    data.musicSources.some((source) => source.id === 'mvmp3' && source.enabled) ? 'mvmp3' : 'all'
-  )
+  const [sourceId, setSourceId] = useState(() => {
+    const list = data.musicSources.filter((source) => source.enabled)
+    return list.find((source) => source.id === 'mvmp3')?.id ?? list[0]?.id ?? ''
+  })
   const [query, setQuery] = useState('')
   const [keyword, setKeyword] = useState('')
   const [searching, setSearching] = useState(false)
@@ -91,6 +111,13 @@ export function MusicPage({
   const [error, setError] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [loadingMore, setLoadingMore] = useState(false)
+  /** idle = 空白页，search = 搜索结果，top = 榜单列表 */
+  const [mode, setMode] = useState<'idle' | 'search' | 'top'>('idle')
+  /** 榜单一级 / 二级下拉；默认热门榜单 · 酷狗飙升榜 */
+  const [topGroupId, setTopGroupId] = useState(MUSIC_TOP_GROUPS[0].id)
+  const [topCategory, setTopCategory] = useState(MUSIC_TOP_CATEGORIES[0].id)
+  const [topLoading, setTopLoading] = useState(false)
+  const initialTopLoadedRef = useRef(false)
   const [downloadTarget, setDownloadTarget] = useState<DownloadTarget | null>(null)
   const [downloadQualityKey, setDownloadQualityKey] = useState('')
   const [downloadWithLyrics, setDownloadWithLyrics] = useState(
@@ -132,22 +159,18 @@ export function MusicPage({
     setError(null)
   }, [resetSignal])
 
-  // 选中的音源被停用 / 删除后回到「全部源」
-  useEffect(() => {
-    if (sourceId === 'all') return
-    if (data.musicSources.some((s) => s.id === sourceId && s.enabled)) return
-    setSourceId('all')
-  }, [data.musicSources, sourceId])
-
   const sourceInputs = (id: string): MusicSourceInput[] => {
-    const list = id === 'all' ? enabledSources : enabledSources.filter((s) => s.id === id)
-    return list.map((s) => ({
-      id: s.id,
-      name: s.name,
-      baseUrl: s.baseUrl,
-      kind: s.kind,
-      platforms: s.platforms
-    }))
+    const list = id ? enabledSources.filter((s) => s.id === id) : enabledSources
+    return list.map(toSourceInput)
+  }
+
+  /** 榜单只支持站点源：选中的是洛雪脚本时自动改用站点源 */
+  const topInputs = (id: string): MusicSourceInput[] => {
+    const usable = (list: MusicSource[]) =>
+      list.filter((s) => s.kind !== 'lx' && !/\.js(?:[?#]|$)/i.test(s.baseUrl.trim()))
+    const chosen = usable(id ? enabledSources.filter((s) => s.id === id) : enabledSources)
+    const list = chosen.length ? chosen : usable(enabledSources)
+    return list.map(toSourceInput)
   }
 
   const doSearch = async (raw: string, nextPage = 1, srcId = sourceId) => {
@@ -162,8 +185,11 @@ export function MusicPage({
     if (nextPage === 1) {
       setSearching(true)
       setSearched(true)
+      setMode('search')
       setError(null)
       setItems([])
+      setTopCategory('')
+      setTopLoading(false)
     } else {
       setLoadingMore(true)
     }
@@ -186,8 +212,67 @@ export function MusicPage({
     setPage(nextPage)
   }
 
+  /** 榜单：一次返回单页 100 首，不分页；主源失败时主进程自动走备用 */
+  const loadTop = async (categoryId: string, srcId = sourceId) => {
+    if (!categoryId) return
+    if (!enabledSources.length) {
+      setSearched(true)
+      setMode('top')
+      setTopCategory(categoryId)
+      setError('没有启用的音乐源，请到「配置管理 → 片源管理 → 音乐源」启用')
+      return
+    }
+    const seq = ++seqRef.current
+    const group = MUSIC_TOP_GROUPS.find((item) =>
+      item.categories.some((category) => category.id === categoryId)
+    )
+    if (group) setTopGroupId(group.id)
+    setTopLoading(true)
+    setMode('top')
+    setTopCategory(categoryId)
+    setSearched(true)
+    setSearching(false)
+    setLoadingMore(false)
+    setError(null)
+    setItems([])
+    setKeyword('')
+    setQuery('')
+    const res = await window.laozheng.musicTop(topInputs(srcId), categoryId)
+    if (seq !== seqRef.current) return
+    setTopLoading(false)
+    if (!res.ok) {
+      setError(res.error ?? '榜单加载失败')
+      return
+    }
+    setItems(res.items)
+    setPage(1)
+  }
+
+  // 首次进入音乐模块时默认加载「热门榜单 · 酷狗飙升榜」
+  useEffect(() => {
+    if (initialTopLoadedRef.current || !ready || focus?.id || !enabledSources.length) return
+    initialTopLoadedRef.current = true
+    void loadTop(topCategory, sourceId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, enabledSources.length, focus?.id])
+
+  // 选中的音源被停用 / 删除后回到第一个可用源，并按新源重新拉当前列表
+  useEffect(() => {
+    if (sourceId && data.musicSources.some((s) => s.id === sourceId && s.enabled)) return
+    const next = data.musicSources.find((s) => s.enabled)?.id ?? ''
+    if (next === sourceId) return
+    setSourceId(next)
+    if (mode === 'top' && topCategory) void loadTop(topCategory, next)
+    else if (mode === 'search' && keyword.trim()) void doSearch(keyword, 1, next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.musicSources, sourceId])
+
   const changeSource = (next: string) => {
     setSourceId(next)
+    if (mode === 'top') {
+      void loadTop(topCategory, next)
+      return
+    }
     if (!keyword.trim()) return
     void doSearch(keyword, 1, next)
   }
@@ -196,6 +281,7 @@ export function MusicPage({
     seqRef.current += 1
     setSearching(false)
     setLoadingMore(false)
+    setTopLoading(false)
   }
 
   const resolveSong = async (
@@ -380,6 +466,10 @@ export function MusicPage({
     onNotice(exists ? '已取消收藏' : '已收藏，可在「收藏」页查看')
   }
 
+  const topName = MUSIC_TOP_CATEGORIES.find((item) => item.id === topCategory)?.name ?? ''
+  const currentGroup =
+    MUSIC_TOP_GROUPS.find((group) => group.id === topGroupId) ?? MUSIC_TOP_GROUPS[0]
+
   return (
     <>
       <header className="page-header">
@@ -408,20 +498,27 @@ export function MusicPage({
           cancelSearch()
           setQuery('')
           setKeyword('')
+          setMode('idle')
           setSearched(false)
+          setTopCategory('')
           setItems([])
           setError(null)
         }}
         searching={searching}
         placeholder="搜索歌曲名或歌手…"
         onRefresh={() => {
+          if (mode === 'top') {
+            void window.laozheng.forceRefresh('music').catch(() => {})
+            void loadTop(topCategory)
+            return
+          }
           if (keyword) {
             void window.laozheng.forceRefresh('music').catch(() => {})
             void doSearch(keyword, 1)
           }
         }}
-        refreshing={searching}
-        refreshDisabled={!keyword}
+        refreshing={searching || topLoading}
+        refreshDisabled={mode !== 'top' && !keyword}
         leading={
           <select
             className="select-inline"
@@ -430,7 +527,9 @@ export function MusicPage({
             title="音乐源"
             onChange={(e) => changeSource(e.target.value)}
           >
-            <option value="all">全部源（{enabledSources.length}）</option>
+            {enabledSources.length === 0 ? (
+              <option value="">没有启用的音乐源</option>
+            ) : null}
             {enabledSources.map((source) => (
               <option key={source.id} value={source.id}>
                 {source.name}
@@ -440,25 +539,74 @@ export function MusicPage({
         }
       />
 
+      {!searching ? (
+        <div className="toolbar">
+          <select
+            className="select-inline"
+            value={topGroupId}
+            title="榜单分类"
+            onChange={(event) => {
+              const group = MUSIC_TOP_GROUPS.find((item) => item.id === event.target.value)
+              const first = group?.categories[0]
+              if (!group || !first) return
+              setTopGroupId(group.id)
+              void loadTop(first.id)
+            }}
+          >
+            {MUSIC_TOP_GROUPS.map((group) => (
+              <option key={group.id} value={group.id}>
+                {group.name}
+              </option>
+            ))}
+          </select>
+          <select
+            className="select-inline"
+            value={topCategory}
+            title="榜单"
+            onChange={(event) => void loadTop(event.target.value)}
+          >
+            <option value="" disabled>
+              选择榜单
+            </option>
+            {currentGroup.categories.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null}
+
       {searching ? (
         <EmptyState title="正在搜索…" desc="在线音源返回后会在底部播放器解析播放。" />
+      ) : topLoading ? (
+        <EmptyState title="正在加载榜单…" desc={`${topName || '榜单'} 加载中，稍等…`} />
       ) : error ? (
         <EmptyState
-          title="搜索失败"
+          title={mode === 'top' ? '榜单加载失败' : '搜索失败'}
           desc={error}
           action={
-            <button className="btn" onClick={() => void doSearch(keyword, 1)}>
+            <button
+              className="btn"
+              onClick={() => {
+                if (mode === 'top') void loadTop(topCategory)
+                else void doSearch(keyword, 1)
+              }}
+            >
               重试
             </button>
           }
         />
       ) : !searched ? (
         <EmptyState
-          title="搜索歌曲开始播放"
+          title="选择榜单或搜索歌曲开始播放"
           desc="点击任意歌曲会用底部内置播放器播放，并支持歌词、循环与随机。"
         />
       ) : items.length === 0 ? (
-        <EmptyState title="没有找到歌曲" desc="换个关键词再试。" />
+        <EmptyState
+          title={mode === 'top' ? '榜单暂无歌曲' : '没有找到歌曲'}
+          desc={mode === 'top' ? '换个榜单再试。' : '换个关键词再试。'}
+        />
       ) : (
         <>
           <div className="rows compact">
@@ -478,9 +626,11 @@ export function MusicPage({
                           ? 'QQ音乐'
                           : song.origin === 'wy'
                             ? '网易云'
-                            : song.platform === 's33ve'
-                              ? '33ve'
-                              : ''
+                            : song.platform === 'mvmp3'
+                              ? '无名音乐'
+                              : song.platform === 's33ve'
+                                ? '闪闪音乐'
+                                : ''
               return (
                 <div
                   key={song.id}
@@ -525,15 +675,17 @@ export function MusicPage({
               )
             })}
           </div>
-          <div className="toolbar" style={{ marginTop: 12 }}>
-            <button
-              className="btn"
-              disabled={loadingMore}
-              onClick={() => void doSearch(keyword, page + 1)}
-            >
-              <ListPlus size={14} /> {loadingMore ? '加载中…' : '加载更多'}
-            </button>
-          </div>
+          {mode === 'top' ? null : (
+            <div className="toolbar" style={{ marginTop: 12 }}>
+              <button
+                className="btn"
+                disabled={loadingMore}
+                onClick={() => void doSearch(keyword, page + 1)}
+              >
+                <ListPlus size={14} /> {loadingMore ? '加载中…' : '加载更多'}
+              </button>
+            </div>
+          )}
         </>
       )}
 

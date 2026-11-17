@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowUpDown,
   ChevronDown,
@@ -17,6 +17,7 @@ import {
   normalizeBaseUrl,
   parseSourceImport,
   vodHost,
+  type VodSourceImport,
   type VodSourceInput
 } from '../shared/vod'
 import { DEFAULT_VOD_SOURCES } from '../shared/vodDefaults'
@@ -26,6 +27,8 @@ import {
   type LivePlatformSource
 } from '../shared/livePlatformSources'
 import {
+  ROU07_DRAMA_BASE_URL,
+  ROU07_DRAMA_SOURCE_ID,
   XIFAN_DRAMA_BASE_URL,
   XIFAN_DRAMA_SOURCE_ID,
   type DramaSource,
@@ -39,7 +42,15 @@ import {
   type TrainerSource,
   type TrainerSourceType
 } from '../shared/trainers'
-import type { MusicLxPlatform, MusicSource } from '../shared/music'
+import {
+  DEFAULT_MUSIC_BACKUP,
+  MUSIC_SOURCE_LINES,
+  musicLineName,
+  type MusicLxPlatform,
+  type MusicSource,
+  type MusicSourceBackup,
+  type MusicSourceLine
+} from '../shared/music'
 import {
   NOVEL_SOURCE_TEMPLATE_LABEL,
   NOVEL_SOURCE_TEMPLATE_OPTIONS,
@@ -387,6 +398,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   const [importingMusic, setImportingMusic] = useState(false)
   const [deletingMusic, setDeletingMusic] = useState<MusicSource | null>(null)
   const [testingMusicId, setTestingMusicId] = useState<string | null>(null)
+  const [testingMusicBackupId, setTestingMusicBackupId] = useState<string | null>(null)
   const [testingMusicAll, setTestingMusicAll] = useState(false)
   /** 全部源导入后让磁力源卡片重新读取主进程配置 */
   const [magnetKey, setMagnetKey] = useState(0)
@@ -1299,7 +1311,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     setDeletingTrainer(null)
   }
 
-  // ---------- 音乐源（无名音乐 / 33ve / 自定义镜像） ----------
+  // ---------- 音乐源（无名音乐 + 备用线路无名闪闪音乐） ----------
   const patchMusic = (id: string, patch: Partial<MusicSource>) => {
     update((d) => ({
       ...d,
@@ -1309,7 +1321,23 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     }))
   }
 
-  const saveMusicSource = (input: { name: string; baseUrl: string }) => {
+  const patchMusicBackup = (id: string, patch: Partial<MusicSourceBackup>) => {
+    update((d) => ({
+      ...d,
+      musicSources: d.musicSources.map((source) =>
+        source.id === id && source.backup
+          ? { ...source, backup: { ...source.backup, ...patch } }
+          : source
+      )
+    }))
+  }
+
+  const saveMusicSource = (input: {
+    name: string
+    baseUrl: string
+    backup: MusicSourceBackup | null
+    primaryStatus?: { testStatus: 'ok' | 'bad' | null; testMsg: string | null; testAt: number }
+  }) => {
     const baseUrl = input.baseUrl.trim().replace(/\/+$/, '')
     if (!input.name.trim() || !/^https?:\/\//i.test(baseUrl)) {
       onNotice('音乐源名称和地址不能为空')
@@ -1329,10 +1357,11 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
             id: `music_${Date.now().toString(36)}`,
             name: input.name.trim(),
             baseUrl,
+            backup: input.backup,
             enabled: true,
-            testStatus: 'ok',
-            testMsg: '可用',
-            testAt: Date.now()
+            testStatus: input.primaryStatus?.testStatus ?? 'ok',
+            testMsg: input.primaryStatus?.testMsg ?? '可用',
+            testAt: input.primaryStatus?.testAt ?? Date.now()
           }
         ]
       }))
@@ -1352,7 +1381,20 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 ...source,
                 name: input.name.trim(),
                 baseUrl,
-                ...(changed ? { testStatus: null, testMsg: null, testAt: 0 } : {})
+                backup: input.backup,
+                ...(changed
+                  ? {
+                      testStatus: input.primaryStatus?.testStatus ?? null,
+                      testMsg: input.primaryStatus?.testMsg ?? null,
+                      testAt: input.primaryStatus?.testAt ?? 0
+                    }
+                  : input.primaryStatus
+                    ? {
+                        testStatus: input.primaryStatus.testStatus,
+                        testMsg: input.primaryStatus.testMsg,
+                        testAt: input.primaryStatus.testAt
+                      }
+                    : {})
               }
             : source
         )
@@ -1387,6 +1429,34 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     }
   }
 
+  /** 备用线路测试：和优选地址一样，测一次可用性与延迟写回 backup */
+  const testMusicBackup = async (source: MusicSource) => {
+    const backup = source.backup
+    if (!backup) return
+    setTestingMusicBackupId(source.id)
+    const latency = probeLatency(backup.baseUrl)
+    try {
+      const res = await window.laozheng.testMusicSource({
+        id: backup.id,
+        name: backup.name,
+        baseUrl: backup.baseUrl
+      })
+      patchMusicBackup(source.id, {
+        testStatus: res.ok ? 'ok' : 'bad',
+        testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', await latency),
+        testAt: Date.now()
+      })
+    } catch (err) {
+      patchMusicBackup(source.id, {
+        testStatus: 'bad',
+        testMsg: withMs((err as Error).message, await latency),
+        testAt: Date.now()
+      })
+    } finally {
+      setTestingMusicBackupId(null)
+    }
+  }
+
   const testAllMusic = async () => {
     if (testingMusicAll || data.musicSources.length === 0) return
     setTestingMusicAll(true)
@@ -1406,12 +1476,30 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', await latency),
         testAt: Date.now()
       })
+      if (source.backup) {
+        const backupLatency = probeLatency(source.backup.baseUrl)
+        const backupRes = await window.laozheng.testMusicSource({
+          id: source.backup.id,
+          name: source.backup.name,
+          baseUrl: source.backup.baseUrl
+        })
+        if (backupRes.ok) ok += 1
+        else bad += 1
+        patchMusicBackup(source.id, {
+          testStatus: backupRes.ok ? 'ok' : 'bad',
+          testMsg: withMs(
+            backupRes.ok ? backupRes.message ?? '可用' : backupRes.error ?? '测试失败',
+            await backupLatency
+          ),
+          testAt: Date.now()
+        })
+      }
     }
     setTestingMusicAll(false)
     onNotice(`音乐源测试完成：有效 ${ok} 个 · 无效 ${bad} 个`)
   }
 
-  const importMusicSources = (inputs: VodSourceInput[]) => {
+  const importMusicSources = (inputs: VodSourceImport[]) => {
     const existing = new Set(data.musicSources.map((s) => s.baseUrl))
     const taken = new Set(data.musicSources.map((s) => s.id))
     const fresh: MusicSource[] = []
@@ -1424,10 +1512,27 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       let n = 2
       while (taken.has(id)) id = `${baseId}_${n++}`
       taken.add(id)
+      const backupBase = normalizeBaseUrl(input.backup?.baseUrl ?? '')
+      const backup: MusicSourceBackup | null =
+        input.backup && /^https?:\/\//i.test(backupBase)
+          ? {
+              id: input.backup.id || 's33ve',
+              name:
+                musicLineName(backupBase) ||
+                input.backup.name?.trim() ||
+                DEFAULT_MUSIC_BACKUP.name,
+              baseUrl: backupBase,
+              enabled: input.backup.enabled !== false,
+              testStatus: 'ok',
+              testMsg: '可用',
+              testAt: Date.now()
+            }
+          : null
       fresh.push({
         id,
         name: input.name.trim() || vodHost(baseUrl),
         baseUrl,
+        ...(backup ? { backup } : {}),
         enabled: true,
         testStatus: 'ok',
         testMsg: '可用',
@@ -1454,7 +1559,17 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         id: source.id,
         name: source.name,
         baseUrl: source.baseUrl,
-        enabled: source.enabled
+        enabled: source.enabled,
+        ...(source.backup
+          ? {
+              backup: {
+                id: source.backup.id,
+                name: source.backup.name,
+                baseUrl: source.backup.baseUrl,
+                enabled: source.backup.enabled
+              }
+            }
+          : {})
       }))
     )
     if (res.canceled) return
@@ -1848,7 +1963,9 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       vodSources: data.vodSources.map((s) => ({
         name: s.name,
         baseUrl: s.baseUrl,
-        enabled: s.enabled
+        enabled: s.enabled,
+        region: s.region,
+        regionManual: s.regionManual
       })),
       dramaSources: data.dramaSources.map((s) => ({
         id: s.id,
@@ -1871,7 +1988,8 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         baseUrl: s.baseUrl,
         enabled: s.enabled,
         ...(s.kind ? { kind: s.kind } : {}),
-        ...(s.platforms?.length ? { platforms: [...s.platforms] } : {})
+        ...(s.platforms?.length ? { platforms: [...s.platforms] } : {}),
+        ...(s.backup ? { backup: { ...s.backup } } : {})
       })),
       novelSources: data.novelSources.map((s) => ({
         id: s.id,
@@ -1885,6 +2003,12 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         name: s.name,
         baseUrl: s.baseUrl,
         template: s.template,
+        enabled: s.enabled
+      })),
+      h1Sources: data.h1Sources.map((s) => ({
+        id: s.id,
+        name: s.name,
+        baseUrl: s.baseUrl,
         enabled: s.enabled
       })),
       livePlatformSources: data.livePlatformSources.map((s) => ({
@@ -1939,6 +2063,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     let musicAdded = 0
     let novelAdded = 0
     let comicAdded = 0
+    let h1Added = 0
     let livePlatformAdded = 0
     let wallpaperAdded = 0
     let meituAdded = 0
@@ -1962,8 +2087,8 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           name: String(raw.name ?? '').trim() || vodHost(baseUrl),
           baseUrl,
           enabled: raw.enabled !== false,
-          region: 'cn',
-          regionManual: false,
+          region: raw.region === 'proxy' ? 'proxy' : 'cn',
+          regionManual: raw.regionManual === true,
           testStatus: 'ok',
           testMsg: '可用',
           testAt: Date.now()
@@ -2086,6 +2211,22 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
               ['kw', 'kg', 'tx', 'wy'].includes(String(item))
             )
           : []
+        const backupBase = normalizeBaseUrl(String(raw.backup?.baseUrl ?? ''))
+        const backup: MusicSourceBackup | null =
+          raw.backup && /^https?:\/\//i.test(backupBase)
+            ? {
+                id: raw.backup.id || 's33ve',
+                name:
+                  musicLineName(backupBase) ||
+                  raw.backup.name?.trim() ||
+                  DEFAULT_MUSIC_BACKUP.name,
+                baseUrl: backupBase,
+                enabled: raw.backup.enabled !== false,
+                testStatus: 'ok',
+                testMsg: '可用',
+                testAt: Date.now()
+              }
+            : null
         nextMusicSources.push({
           id: newId,
           name: String(raw.name ?? '').trim() || '音乐源',
@@ -2093,6 +2234,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
           enabled: raw.enabled !== false,
           ...(kind ? { kind } : {}),
           ...(platforms.length ? { platforms } : {}),
+          ...(backup ? { backup } : {}),
           testStatus: 'ok',
           testMsg: '可用',
           testAt: Date.now()
@@ -2169,6 +2311,34 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         })
         comicAddedCount += 1
       }
+
+      const nextH1Sources = [...d.h1Sources]
+      let h1AddedCount = 0
+      const h1Urls = new Set(nextH1Sources.map((s) => s.baseUrl))
+      for (const raw of bundle.h1Sources ?? []) {
+        if (!raw || typeof raw !== 'object') continue
+        const baseUrl = normalizeBaseUrl(String(raw.baseUrl ?? ''))
+        if (!/^https?:\/\//i.test(baseUrl) || h1Urls.has(baseUrl)) continue
+        h1Urls.add(baseUrl)
+        const id =
+          typeof raw.id === 'string' && raw.id ? raw.id : `h1_${genSourceId(baseUrl)}`
+        let newId = id
+        let n = 2
+        while (nextH1Sources.some((s) => s.id === newId)) newId = `${id}_${n++}`
+        nextH1Sources.push({
+          id: newId,
+          name: String(raw.name ?? '').trim() || vodHost(baseUrl),
+          baseUrl,
+          enabled: raw.enabled !== false,
+          region: 'proxy',
+          regionManual: true,
+          testStatus: 'ok',
+          testMsg: '可用',
+          testAt: Date.now()
+        })
+        h1AddedCount += 1
+      }
+      h1Added = h1AddedCount
 
       vodAdded = vodRows.length
       dramaAdded = dramaAddedCount
@@ -2310,6 +2480,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         musicSources: nextMusicSources,
         novelSources: nextNovelSources,
         comicSources: nextComicSources,
+        h1Sources: nextH1Sources,
         livePlatformSources: nextLivePlatformSources,
         wallpaperSources: nextWallpaperSources,
         meituSources: nextMeituSources,
@@ -2397,6 +2568,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       !musicAdded &&
       !novelAdded &&
       !comicAdded &&
+      !h1Added &&
       !livePlatformAdded &&
       !wallpaperAdded &&
       !meituAdded &&
@@ -2408,7 +2580,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     // 源配置变了：清掉各模块的列表缓存，避免下次进入还显示旧源的列表
     clearModuleCaches()
     onNotice(
-      `已导入：影视源 ${vodAdded} · 短剧源 ${dramaAdded} · 小说源 ${novelAdded} · 漫画源 ${comicAdded} · 直播源 ${livePlatformAdded} · 电视源 ${liveRows.length} · 磁力源 ${magnetAdded} · 补丁源 ${trainerAdded} · 音乐源 ${musicAdded} · 壁纸源 ${wallpaperAdded} · 套图源 ${meituAdded} · 皇片源 ${shuangkanAdded}`
+      `已导入：影视源 ${vodAdded} · 短剧源 ${dramaAdded} · 小说源 ${novelAdded} · 漫画源 ${comicAdded} · 番号源 ${h1Added} · 直播源 ${livePlatformAdded} · 电视源 ${liveRows.length} · 磁力源 ${magnetAdded} · 补丁源 ${trainerAdded} · 音乐源 ${musicAdded} · 壁纸源 ${wallpaperAdded} · 套图源 ${meituAdded} · 皇片源 ${shuangkanAdded}`
     )
   }
 
@@ -3195,7 +3367,12 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                   <div className="row-title">{source.name}</div>
                   <div className="row-meta">
                     {source.builtin
-                      ? vodHost(source.baseUrl ?? XIFAN_DRAMA_BASE_URL)
+                      ? vodHost(
+                          source.baseUrl ??
+                            (source.id === ROU07_DRAMA_SOURCE_ID
+                              ? ROU07_DRAMA_BASE_URL
+                              : XIFAN_DRAMA_BASE_URL)
+                        )
                       : vodHost(source.baseUrl ?? '')}
                   </div>
                   <div className="row-meta">{testMsgText(source.testMsg)}</div>
@@ -3490,9 +3667,27 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 />
                 <div className="row-main">
                   <div className="row-title">{source.name}</div>
-                  <div className="row-meta">{vodHost(source.baseUrl)}</div>
-                  <div className="row-meta">{testMsgText(source.testMsg)}</div>
+                  <div className="row-meta">
+                    当前：{musicLineName(source.baseUrl) || '自定义线路'} ·{' '}
+                    {vodHost(source.baseUrl)} · {testMsgText(source.testMsg)}
+                  </div>
+                  {source.backup ? (
+                    <div className="row-meta">
+                      备用：{source.backup.name} · {vodHost(source.backup.baseUrl)} ·{' '}
+                      {source.backup.enabled ? testMsgText(source.backup.testMsg) : '已停用'}
+                    </div>
+                  ) : null}
                 </div>
+                {source.backup ? (
+                  <button
+                    className="icon-btn"
+                    title={`测试备用线路（${source.backup.name}）`}
+                    disabled={testingMusicBackupId === source.id}
+                    onClick={() => void testMusicBackup(source)}
+                  >
+                    <RefreshCw size={14} />
+                  </button>
+                ) : null}
                 <button
                   className="btn"
                   disabled={testingMusicId === source.id}
@@ -4846,11 +5041,62 @@ function DramaSourceModal({
   onClose: () => void
   onSave: (input: VodSourceInput) => void
 }) {
+  const rou07 = source?.id === ROU07_DRAMA_SOURCE_ID
   const [name, setName] = useState(source?.name ?? '')
   const [baseUrl, setBaseUrl] = useState(
-    source?.baseUrl ?? (source?.builtin ? XIFAN_DRAMA_BASE_URL : '')
+    source?.baseUrl ??
+      (source?.builtin ? (rou07 ? ROU07_DRAMA_BASE_URL : XIFAN_DRAMA_BASE_URL) : '')
   )
+  // 肉视频短剧与皇片里的肉视频是同一个站点：复用导航站优选地址（按延迟选线路）
+  const [mirrors, setMirrors] = useState<SkMirrorOption[] | null>(null)
+  const [mirrorMeasured, setMirrorMeasured] = useState(false)
+  const [mirrorError, setMirrorError] = useState<string | null>(null)
+  const [mirrorLoading, setMirrorLoading] = useState(false)
   const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
+
+  /** measure=false 优先用上次测速缓存；点刷新按钮才 measure=true 重新测速并写回缓存 */
+  const loadMirrors = useCallback(
+    async (measure = false) => {
+      if (!rou07) return
+      const cacheKey = `sk:${ROU07_DRAMA_SOURCE_ID}`
+      const cached = measure ? null : readMirrorLatency(cacheKey)
+      if (cached) {
+        setMirrors(cached.mirrors)
+        setMirrorMeasured(true)
+        setMirrorError(null)
+        setMirrorLoading(false)
+        return
+      }
+      setMirrorLoading(true)
+      setMirrorError(null)
+      try {
+        const res = await window.laozheng.shuangkanMirrors(ROU07_DRAMA_SOURCE_ID, measure)
+        setMirrors(res.mirrors ?? [])
+        setMirrorMeasured(!!res.measured)
+        if (!res.ok) {
+          setMirrorError(res.error ?? '读取导航站优选地址失败')
+        } else if (measure) {
+          writeMirrorLatency(cacheKey, res.mirrors)
+        }
+      } catch (err) {
+        setMirrorError((err as Error).message || '读取导航站优选地址失败')
+        if (!measure) {
+          setMirrors([])
+          setMirrorMeasured(false)
+        }
+      } finally {
+        setMirrorLoading(false)
+      }
+    },
+    [rou07]
+  )
+
+  useEffect(() => {
+    void loadMirrors(false)
+  }, [loadMirrors])
+
+  const current = baseUrl.trim().replace(/\/+$/, '')
+  const selected = (mirrors ?? []).some((entry) => entry.url === current) ? current : ''
 
   return (
     <Modal
@@ -4890,11 +5136,56 @@ function DramaSourceModal({
             placeholder="https://example.com/api.php/provide/vod"
           />
         </label>
+        {rou07 ? (
+          <label>
+            优选地址（肉视频 · 延迟）
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <select
+                value={selected}
+                disabled={mirrorLoading || !(mirrors ?? []).length}
+                onChange={(event) => {
+                  const url = event.target.value
+                  if (url) setBaseUrl(url)
+                }}
+                style={{ flex: 1, minWidth: 0 }}
+              >
+                <option value="">
+                  {mirrorLoading
+                    ? '正在读取…'
+                    : (mirrors ?? []).length
+                      ? mirrorMeasured
+                        ? `选择线路（共 ${(mirrors ?? []).length} 条，按延迟排序）`
+                        : `选择线路（共 ${(mirrors ?? []).length} 条，点刷新测速）`
+                      : '暂无线路'}
+                </option>
+                {(mirrors ?? []).map((entry) => (
+                  <option key={entry.url} value={entry.url}>
+                    {entry.url.replace(/^https?:\/\//, '').replace(/\/+$/, '')}
+                    {mirrorMeasured
+                      ? ` · ${entry.ms != null ? `${entry.ms}ms` : '超时'}`
+                      : ''}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="icon-btn"
+                title="测速"
+                disabled={mirrorLoading || !(mirrors ?? []).length}
+                onClick={() => void loadMirrors(true)}
+              >
+                <RefreshCw size={14} />
+              </button>
+            </div>
+          </label>
+        ) : null}
       </div>
       <p className="settings-hint" style={{ marginTop: 10 }}>
-        {source?.builtin
-          ? '西饭短剧默认使用官方接口地址，也可以改成镜像地址。'
-          : '短剧源使用苹果CMS V10 接口；西饭短剧不需要在这里添加。'}
+        {rou07
+          ? `${mirrorError ? `优选地址读取失败：${mirrorError}。` : ''}肉视频短剧与皇片里的肉视频是同一个站点；选线路时不会自动测速，点右侧刷新按钮才逐个测延迟。`
+          : source?.builtin
+            ? '西饭短剧默认使用官方接口地址，也可以改成镜像地址。'
+            : '短剧源使用苹果CMS V10 接口；西饭短剧不需要在这里添加。'}
       </p>
     </Modal>
   )
@@ -4912,7 +5203,56 @@ function NovelSourceModal({
   const [name, setName] = useState(source?.name ?? '蚂蚁文学镜像')
   const [baseUrl, setBaseUrl] = useState(source?.baseUrl ?? '')
   const [template, setTemplate] = useState<NovelSourceTemplate>(source?.template ?? 'mayi')
+  // 哔咔小说与漫画里的哔咔漫画是同一个站点：复用漫画源的 /go-home 优选地址
+  const [mirrors, setMirrors] = useState<ComicMirrorOption[] | null>(null)
+  const [mirrorMeasured, setMirrorMeasured] = useState(false)
+  const [mirrorError, setMirrorError] = useState<string | null>(null)
+  const [mirrorLoading, setMirrorLoading] = useState(false)
   const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
+
+  /** measure=false 优先用上次测速缓存；点刷新按钮才 measure=true 重新测速并写回缓存 */
+  const loadMirrors = useCallback(
+    async (measure = false) => {
+      if (template !== 'bikahub') return
+      const cacheKey = 'comic:bikahub'
+      const cached = measure ? null : readMirrorLatency(cacheKey)
+      if (cached) {
+        setMirrors(cached.mirrors)
+        setMirrorMeasured(true)
+        setMirrorError(null)
+        setMirrorLoading(false)
+        return
+      }
+      setMirrorLoading(true)
+      setMirrorError(null)
+      try {
+        const res = await window.laozheng.comicMirrors('bikahub', measure)
+        setMirrors(res.mirrors ?? [])
+        setMirrorMeasured(!!res.measured)
+        if (!res.ok) {
+          setMirrorError(res.error ?? '读取镜像地址失败')
+        } else if (measure) {
+          writeMirrorLatency(cacheKey, res.mirrors)
+        }
+      } catch (err) {
+        setMirrorError((err as Error).message || '读取镜像地址失败')
+        if (!measure) {
+          setMirrors([])
+          setMirrorMeasured(false)
+        }
+      } finally {
+        setMirrorLoading(false)
+      }
+    },
+    [template]
+  )
+
+  useEffect(() => {
+    void loadMirrors(false)
+  }, [loadMirrors])
+
+  const current = baseUrl.trim().replace(/\/+$/, '')
+  const selected = (mirrors ?? []).some((entry) => entry.url === current) ? current : ''
 
   return (
     <Modal
@@ -4970,9 +5310,54 @@ function NovelSourceModal({
             ))}
           </select>
         </label>
+        {template === 'bikahub' ? (
+          <label>
+            优选地址（哔咔小说 · 延迟）
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <select
+                value={selected}
+                disabled={mirrorLoading || !(mirrors ?? []).length}
+                onChange={(event) => {
+                  const url = event.target.value
+                  if (url) setBaseUrl(url)
+                }}
+                style={{ flex: 1, minWidth: 0 }}
+              >
+                <option value="">
+                  {mirrorLoading
+                    ? '正在读取…'
+                    : (mirrors ?? []).length
+                      ? mirrorMeasured
+                        ? `选择线路（共 ${(mirrors ?? []).length} 条，按延迟排序）`
+                        : `选择线路（共 ${(mirrors ?? []).length} 条，点刷新测速）`
+                      : '暂无线路'}
+                </option>
+                {(mirrors ?? []).map((entry) => (
+                  <option key={entry.url} value={entry.url}>
+                    {entry.url.replace(/^https?:\/\//, '').replace(/\/+$/, '')}
+                    {mirrorMeasured
+                      ? ` · ${entry.ms != null ? `${entry.ms}ms` : '超时'}`
+                      : ''}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="icon-btn"
+                title="测速"
+                disabled={mirrorLoading || !(mirrors ?? []).length}
+                onClick={() => void loadMirrors(true)}
+              >
+                <RefreshCw size={14} />
+              </button>
+            </div>
+          </label>
+        ) : null}
       </div>
       <p className="settings-hint" style={{ marginTop: 10 }}>
-        小说源需要与所选模板使用同一套建站系统；填站点根地址即可。添加后可点「测试」确认能否解析推荐列表。
+        {template === 'bikahub'
+          ? `${mirrorError ? `优选地址读取失败：${mirrorError}。` : ''}哔咔小说与漫画里的哔咔漫画是同一个站点；选线路时不会自动测速，点右侧刷新按钮才逐个测延迟。`
+          : '小说源需要与所选模板使用同一套建站系统；填站点根地址即可。添加后可点「测试」确认能否解析推荐列表。'}
       </p>
     </Modal>
   )
@@ -5239,6 +5624,29 @@ function TrainerSourceModal({
   )
 }
 
+function sameMusicUrl(a?: string | null, b?: string | null): boolean {
+  const norm = (value?: string | null) => (value ?? '').trim().replace(/\/+$/, '').toLowerCase()
+  return !!norm(a) && norm(a) === norm(b)
+}
+
+interface MusicLineStatus {
+  testStatus: 'ok' | 'bad' | null
+  testMsg: string | null
+  testAt: number
+}
+
+function backupFromLine(line: MusicSourceLine, status?: MusicLineStatus): MusicSourceBackup {
+  return {
+    id: line.id,
+    name: line.name,
+    baseUrl: line.baseUrl,
+    enabled: true,
+    testStatus: status?.testStatus ?? null,
+    testMsg: status?.testMsg ?? null,
+    testAt: status?.testAt ?? 0
+  }
+}
+
 function MusicSourceModal({
   source,
   onClose,
@@ -5246,11 +5654,137 @@ function MusicSourceModal({
 }: {
   source: MusicSource | null
   onClose: () => void
-  onSave: (input: { name: string; baseUrl: string }) => void
+  onSave: (input: {
+    name: string
+    baseUrl: string
+    backup: MusicSourceBackup | null
+    primaryStatus?: MusicLineStatus
+  }) => void
 }) {
-  const [name, setName] = useState(source?.name ?? '无名音乐镜像')
-  const [baseUrl, setBaseUrl] = useState(source?.baseUrl ?? 'http://www.mvmp3.com')
+  const initialBase = source?.baseUrl ?? MUSIC_SOURCE_LINES[0].baseUrl
+  const [name, setName] = useState(source?.name ?? '无名闪闪音乐')
+  const [baseUrl, setBaseUrl] = useState(initialBase)
+  const [backup, setBackup] = useState<MusicSourceBackup | null>(() => {
+    if (source?.backup) return { ...source.backup }
+    const other = MUSIC_SOURCE_LINES.find((line) => !sameMusicUrl(line.baseUrl, initialBase))
+    return other ? backupFromLine(other) : null
+  })
+  const [lineStatus, setLineStatus] = useState<Record<string, MusicLineStatus>>(() => {
+    const out: Record<string, MusicLineStatus> = {}
+    if (source) {
+      out[source.baseUrl] = {
+        testStatus: source.testStatus,
+        testMsg: source.testMsg,
+        testAt: source.testAt
+      }
+      if (source.backup) {
+        out[source.backup.baseUrl] = {
+          testStatus: source.backup.testStatus,
+          testMsg: source.backup.testMsg,
+          testAt: source.backup.testAt
+        }
+      }
+    }
+    return out
+  })
+  const [testing, setTesting] = useState(false)
   const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
+
+  /** 备用线路下拉固定列出无名音乐 / 闪闪音乐两条；自定义备用地址也保留 */
+  const backupOptions = useMemo(() => {
+    const lines: MusicSourceLine[] = [...MUSIC_SOURCE_LINES]
+    const extra = [source?.backup, backup].filter(Boolean) as MusicSourceBackup[]
+    for (const line of extra) {
+      if (!lines.some((item) => sameMusicUrl(item.baseUrl, line.baseUrl))) {
+        lines.push({ id: line.id, name: line.name, baseUrl: line.baseUrl })
+      }
+    }
+    return lines
+  }, [source?.backup, backup])
+
+  const statusOf = (url: string): MusicLineStatus =>
+    lineStatus[url] ?? { testStatus: null, testMsg: null, testAt: 0 }
+
+  const changeBaseUrl = (value: string) => {
+    setBaseUrl(value)
+    // 主线路改成与备用线路相同的地址时，自动把另一条线路设为备用
+    if (backup && sameMusicUrl(backup.baseUrl, value)) {
+      const other = MUSIC_SOURCE_LINES.find((line) => !sameMusicUrl(line.baseUrl, value))
+      if (other) setBackup(backupFromLine(other, statusOf(other.baseUrl)))
+    }
+  }
+
+  const pickBackup = (value: string) => {
+    const line = backupOptions.find((item) => sameMusicUrl(item.baseUrl, value))
+    if (!line) return
+    if (sameMusicUrl(line.baseUrl, baseUrl)) {
+      // 选中的是当前线路：两条线路互换，选中项作为备用
+      const nextPrimary =
+        backup?.baseUrl ||
+        MUSIC_SOURCE_LINES.find((item) => !sameMusicUrl(item.baseUrl, line.baseUrl))?.baseUrl
+      if (nextPrimary && !sameMusicUrl(nextPrimary, line.baseUrl)) {
+        setBaseUrl(nextPrimary)
+        setBackup(backupFromLine(line, statusOf(line.baseUrl)))
+      }
+      return
+    }
+    if (backup && sameMusicUrl(backup.baseUrl, line.baseUrl)) return
+    setBackup(backupFromLine(line, statusOf(line.baseUrl)))
+  }
+
+  /** 一次测完下拉里的线路（无名音乐 + 闪闪音乐），延迟写回选项 */
+  const testLines = async () => {
+    if (testing) return
+    setTesting(true)
+    const results = await Promise.all(
+      backupOptions.map(async (line) => {
+        const latency = probeLatency(line.baseUrl)
+        try {
+          const res = await window.laozheng.testMusicSource({
+            id: line.id,
+            name: line.name,
+            baseUrl: line.baseUrl
+          })
+          const ms = await latency
+          return [
+            line.baseUrl,
+            {
+              testStatus: res.ok ? 'ok' : 'bad',
+              testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', ms),
+              testAt: Date.now()
+            }
+          ] as [string, MusicLineStatus]
+        } catch (err) {
+          const ms = await latency
+          return [
+            line.baseUrl,
+            {
+              testStatus: 'bad',
+              testMsg: withMs((err as Error).message, ms),
+              testAt: Date.now()
+            }
+          ] as [string, MusicLineStatus]
+        }
+      })
+    )
+    const map = Object.fromEntries(results) as Record<string, MusicLineStatus>
+    setLineStatus((prev) => ({ ...prev, ...map }))
+    setBackup((current) =>
+      current && map[current.baseUrl] ? { ...current, ...map[current.baseUrl] } : current
+    )
+    setTesting(false)
+  }
+
+  const submit = () => {
+    if (!valid) return
+    const primaryStatus = lineStatus[baseUrl.trim().replace(/\/+$/, '')]
+    onSave({
+      name: name.trim(),
+      baseUrl: baseUrl.trim(),
+      backup: backup ? { ...backup } : null,
+      ...(primaryStatus ? { primaryStatus } : {})
+    })
+  }
 
   return (
     <Modal
@@ -5261,11 +5795,7 @@ function MusicSourceModal({
           <button className="btn ghost" onClick={onClose}>
             取消
           </button>
-          <button
-            className="btn primary"
-            disabled={!valid}
-            onClick={() => onSave({ name: name.trim(), baseUrl: baseUrl.trim() })}
-          >
+          <button className="btn primary" disabled={!valid} onClick={submit}>
             保存
           </button>
         </>
@@ -5277,21 +5807,57 @@ function MusicSourceModal({
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="例如：无名音乐镜像"
+            placeholder="例如：无名闪闪音乐"
           />
         </label>
         <label>
           站点地址
           <input
             value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
+            onChange={(e) => changeBaseUrl(e.target.value)}
             placeholder="http://www.mvmp3.com"
           />
         </label>
+        <label>
+          备用线路（{backup ? backup.name : '请选择'} · 延迟）
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <select
+              value={backup?.baseUrl ?? ''}
+              disabled={testing}
+              onChange={(event) => pickBackup(event.target.value)}
+              style={{ flex: 1, minWidth: 0 }}
+            >
+              <option value="" disabled>
+                请选择备用线路
+              </option>
+              {backupOptions.map((line) => {
+                const status = statusOf(line.baseUrl)
+                return (
+                  <option key={line.baseUrl} value={line.baseUrl}>
+                    {line.name} · {line.baseUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '')}{' '}
+                    · {testMsgText(status.testMsg)}
+                  </option>
+                )
+              })}
+            </select>
+            <button
+              type="button"
+              className="icon-btn"
+              title="测试无名音乐 / 闪闪音乐两条线路延迟"
+              disabled={testing}
+              onClick={() => void testLines()}
+            >
+              <RefreshCw size={14} className={testing ? 'spin' : ''} />
+            </button>
+          </div>
+        </label>
       </div>
       <p className="settings-hint" style={{ marginTop: 10 }}>
-        音乐源需要与无名音乐网使用同一套建站系统（搜索 /so.php、直链 /style/js/play.php），
-        可以填写镜像地址。
+        {backup
+          ? `当前：${musicLineName(baseUrl) || '自定义线路'}；备用：${backup.name}。优先用当前线路，失败或空结果时自动切到备用线路。`
+          : '请选择一条备用线路。'}
+        两条线路都来自同一套建站系统（搜索 /so.php、直链 /style/js/play.php），
+        点右侧刷新按钮可分别测试延迟。
       </p>
     </Modal>
   )
@@ -5307,7 +5873,7 @@ function ImportModal({
   title?: string
   hint?: string
   onClose: () => void
-  onImport: (inputs: VodSourceInput[]) => void
+  onImport: (inputs: VodSourceImport[]) => void
   onBuiltin?: () => void
 }) {
   const [text, setText] = useState('')

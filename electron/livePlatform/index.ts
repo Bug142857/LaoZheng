@@ -48,7 +48,7 @@ export function liveList(
     if (!keyword) return Promise.resolve({ items: [], hasMore: false })
     if (platform === 'bilibili') return bilibiliSearch(keyword, page)
     if (platform === 'douyu') return douyuSearch(keyword, page)
-    return douyinSearch(keyword, page)
+    return douyinSearch(keyword, page, params.excludeIds ?? [])
   }
   if (kind === 'category') {
     if (platform === 'bilibili') {

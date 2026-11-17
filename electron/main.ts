@@ -73,6 +73,7 @@ import {
   openPlatformLogin
 } from './livePlatform/auth'
 import { BILI_UA, DOUYU_UA, DOUYIN_UA } from './livePlatform/common'
+import { bilibiliMediaAuth, singingDanmaku, singingPlay, singingVideoInfo } from './singing'
 import {
   isLivePlatformId,
   type LiveListKind,
@@ -88,7 +89,7 @@ import { wallpaperCategories, wallpaperList, wallpaperResolve } from './wallpape
 import { isMeituTemplate, type MeituSourceRef } from '../src/shared/meitu'
 import { meituCategories, meituDetail, meituList } from './meitu'
 
-import { resolveMusic, resolveLegacyMusic, searchMusic, testMusicSource } from './music'
+import { fetchMusicTop, resolveMusic, resolveLegacyMusic, searchMusic, testMusicSource } from './music'
 import { clearLxSourceCache } from './lxSource'
 import type { MusicSourceInput } from '../src/shared/music'
 import { collectSystemInfo } from './sysinfo'
@@ -138,6 +139,7 @@ import {
   melonVideoDuration,
   trackMelonImages
 } from './melon'
+import { newsFeed, newsNode } from './news'
 import {
   noteShuangkanMediaRedirect,
   shuangkanCatalog,
@@ -476,6 +478,15 @@ function applyRequestHeaders(
       skMedia = null
     }
   }
+  // 演唱模块播放的 B站视频直链：CDN 域名由主进程解析时登记，这里只补来源页
+  let biliMedia: { referer: string; ua: string } | null = null
+  if (resourceType !== 'image') {
+    try {
+      biliMedia = bilibiliMediaAuth(new URL(rawUrl))
+    } catch {
+      biliMedia = null
+    }
+  }
   if (/(^|\.)doubanio\.com$|(^|\.)douban\.com$/.test(host)) {
     headers['Referer'] = IMAGE_REFERER
     headers['User-Agent'] = IMAGE_UA
@@ -541,6 +552,9 @@ function applyRequestHeaders(
   } else if (/(^|\.)bzee\.cn$/.test(host)) {
     // 壁纸迷图床（xz / imgtu 等子域）按来源页做防盗链
     headers['Referer'] = 'https://www.bizhimi.cn/'
+  } else if (biliMedia) {
+    headers['Referer'] = biliMedia.referer
+    headers['User-Agent'] = biliMedia.ua
   } else if (/(^|\.)(hdslb\.com|bilivideo\.com|bilivideo\.cn|acgvideo\.com)$/.test(host)) {
     // B站直播封面 / 直播流分片：CDN 校验来源页
     headers['Referer'] = 'https://live.bilibili.com/'
@@ -686,24 +700,40 @@ function updateLineCandidates(url: string): Array<{ name: string; url: string }>
   return UPDATE_LINES.map((line) => ({ name: line.name, url: `${line.prefix}${url}` }))
 }
 
-/** 单线路测速：只等响应头，拿到就断开，避免探测时白下安装包 */
-async function probeUpdateLine(url: string, timeoutMs: number): Promise<number | null> {
+/** 单线路测速：拉一小段真实数据（128KB），同时得到延迟与下载速度 */
+async function probeUpdateLine(
+  url: string,
+  timeoutMs: number
+): Promise<{ latency: number; speed: number } | null> {
   const startedAt = Date.now()
   try {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'laozheng-pc', Range: 'bytes=0-0' },
+      headers: { 'User-Agent': 'laozheng-pc', Range: 'bytes=0-131071' },
       redirect: 'follow',
       signal: AbortSignal.timeout(timeoutMs)
     })
-    const ok = res.ok || res.status === 206
-    await res.body?.cancel().catch(() => undefined)
-    return ok ? Date.now() - startedAt : null
+    if (!res.ok && res.status !== 206) {
+      await res.body?.cancel().catch(() => undefined)
+      return null
+    }
+    let bytes = 0
+    const reader = res.body?.getReader()
+    if (reader) {
+      while (bytes < 128 * 1024) {
+        const { done, value } = await reader.read()
+        if (done) break
+        bytes += value?.length ?? 0
+      }
+      await reader.cancel().catch(() => undefined)
+    }
+    const latency = Math.max(1, Date.now() - startedAt)
+    return { latency, speed: (bytes * 1000) / latency }
   } catch {
     return null
   }
 }
 
-/** 先看哪条线通、哪条最快：可用线路按延迟升序，不可用线路排最后留作兜底 */
+/** 先看哪条线通、哪条最快：可用线路按实际下载速度降序，速度相同再按延迟，不可用线路留作兜底 */
 async function rankUpdateLines(
   url: string,
   timeoutMs: number
@@ -711,14 +741,18 @@ async function rankUpdateLines(
   const candidates = updateLineCandidates(url)
   if (candidates.length === 1) return candidates
   const probed = await Promise.all(
-    candidates.map(async (line) => ({
-      ...line,
-      latency: await probeUpdateLine(line.url, timeoutMs)
-    }))
+    candidates.map(async (line) => {
+      const result = await probeUpdateLine(line.url, timeoutMs)
+      return {
+        ...line,
+        latency: result?.latency ?? null,
+        speed: result?.speed ?? 0
+      }
+    })
   )
   const alive = probed
     .filter((line) => line.latency !== null)
-    .sort((a, b) => (a.latency ?? 0) - (b.latency ?? 0))
+    .sort((a, b) => b.speed - a.speed || (a.latency ?? 0) - (b.latency ?? 0))
   const dead = probed.filter((line) => line.latency === null)
   return [...alive, ...dead].map(({ name, url: lineUrl }) => ({ name, url: lineUrl }))
 }
@@ -781,7 +815,7 @@ async function checkViaGithubApi(current: string): Promise<UpdateCheckResult | n
   }>('https://api.github.com/repos/Bug142857/LaoZheng/releases/latest', 12_000)
   if (!fetched) return null
   const json = fetched.data
-  const tag = (json.tag_name ?? '').trim()
+  const tag = typeof json.tag_name === 'string' ? json.tag_name.trim() : ''
   if (!tag) return null
   const latest = tag.replace(/^v/i, '')
   const assets = Array.isArray(json.assets) ? json.assets : []
@@ -796,9 +830,9 @@ async function checkViaGithubApi(current: string): Promise<UpdateCheckResult | n
     current,
     latest,
     hasUpdate: compareVersions(latest, current) > 0,
-    url: json.html_url,
+    url: typeof json.html_url === 'string' ? json.html_url : undefined,
     downloadUrl: exe?.browser_download_url,
-    notes: (json.body ?? '').slice(0, 2000),
+    notes: typeof json.body === 'string' ? json.body.slice(0, 2000) : undefined,
     line: fetched.line
   }
 }
@@ -814,9 +848,15 @@ async function checkViaManifest(current: string): Promise<UpdateCheckResult | nu
   }>(UPDATE_MANIFEST_URL, 12_000)
   if (!fetched) return null
   const json = fetched.data
-  const latest = (json.version ?? '').trim().replace(/^v/i, '')
+  const latest =
+    typeof json.version === 'string' ? json.version.trim().replace(/^v/i, '') : ''
   if (!latest) return null
-  const exe = (json.exe ?? json.downloadUrl ?? '').trim()
+  const exe =
+    typeof json.exe === 'string'
+      ? json.exe.trim()
+      : typeof json.downloadUrl === 'string'
+        ? json.downloadUrl.trim()
+        : ''
   return {
     ok: true,
     current,
@@ -824,7 +864,7 @@ async function checkViaManifest(current: string): Promise<UpdateCheckResult | nu
     hasUpdate: compareVersions(latest, current) > 0,
     url: typeof json.url === 'string' ? json.url : undefined,
     downloadUrl: /^https:\/\//i.test(exe) ? exe : undefined,
-    notes: (json.notes ?? '').slice(0, 2000),
+    notes: typeof json.notes === 'string' ? json.notes.slice(0, 2000) : undefined,
     line: fetched.line
   }
 }
@@ -1128,18 +1168,69 @@ function broadcastUpdateProgress(progress: UpdateProgress): void {
 /** 同一时间只允许一个更新包下载：启动静默下载和手动点击可能撞在一起，共用 .part 会互相覆盖 */
 let updateDownloading = false
 
+/** 更新下载任务：支持暂停 / 继续 / 取消 */
+interface UpdateDownloadTask {
+  paused: boolean
+  canceled: boolean
+  wake: (() => void) | null
+  controller: AbortController | null
+  progress: UpdateProgress | null
+}
+
+let updateTask: UpdateDownloadTask | null = null
+
+/** 启动时检查到的新版本：渲染层可能还没挂载完，先存一份等它主动来取 */
+let pendingUpdateNotice: UpdateCheckResult | null = null
+
+function broadcastUpdateState(task: UpdateDownloadTask): void {
+  if (!task.progress) return
+  broadcastUpdateProgress({ ...task.progress, paused: task.paused, speed: 0 })
+}
+
 async function downloadUpdateInstaller(url: string): Promise<UpdateDownloadResult> {
   if (updateDownloading) return { ok: false, error: '更新安装包正在下载，请稍候' }
   updateDownloading = true
+  const task: UpdateDownloadTask = {
+    paused: false,
+    canceled: false,
+    wake: null,
+    controller: null,
+    progress: null
+  }
+  updateTask = task
+  // 先推一条 0% 让界面立即出现进度条（测速选线期间显示「正在测速选择最快线路」）
+  const initial: UpdateProgress = {
+    received: 0,
+    total: 0,
+    percent: 0,
+    speed: 0,
+    phase: 'selecting'
+  }
+  task.progress = initial
+  broadcastUpdateProgress(initial)
   try {
-    return await downloadUpdateInstallerInner(url)
+    const result = await downloadUpdateInstallerInner(url, task)
+    // 失败 / 取消时主动结束进度条，避免顶部浮条停在 0% 或最后一段
+    if (!result.ok) {
+      broadcastUpdateProgress({
+        received: 0,
+        total: 0,
+        percent: 0,
+        error: result.canceled ? '已取消下载' : result.error ?? '下载失败'
+      })
+    }
+    return result
   } finally {
+    updateTask = null
     updateDownloading = false
   }
 }
 
 /** 下载安装包到 userData/updates：先测速选线，再按「最快 → 兜底」顺序下载；仅接受 https 直链 */
-async function downloadUpdateInstallerInner(url: string): Promise<UpdateDownloadResult> {
+async function downloadUpdateInstallerInner(
+  url: string,
+  task: UpdateDownloadTask
+): Promise<UpdateDownloadResult> {
   let target: string
   let base: string
   try {
@@ -1154,14 +1245,29 @@ async function downloadUpdateInstallerInner(url: string): Promise<UpdateDownload
 
   // 先看哪条线通、哪条最快，避免直连被墙时一直等到超时
   const channels = await rankUpdateLines(url, 5_000)
+  if (task.canceled) return { ok: false, canceled: true, error: '已取消下载' }
+  // 选线完成后先把最快线路显示出来，下载一开始就能看到走的是哪条线
+  const selected: UpdateProgress = {
+    received: 0,
+    total: 0,
+    percent: 0,
+    speed: 0,
+    line: channels[0]?.name,
+    phase: 'downloading'
+  }
+  task.progress = selected
+  broadcastUpdateProgress(selected)
   let lastError = '下载更新失败'
   for (const channel of channels) {
+    if (task.canceled) return { ok: false, canceled: true, error: '已取消下载' }
     const tmp = `${target}.part`
     try {
+      const controller = new AbortController()
+      task.controller = controller
       const res = await fetch(channel.url, {
         headers: { 'User-Agent': 'laozheng-pc', Accept: '*/*' },
         redirect: 'follow',
-        signal: AbortSignal.timeout(30 * 60 * 1000)
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30 * 60 * 1000)])
       })
       if (!res.ok || !res.body) {
         lastError = `下载失败 HTTP ${res.status}`
@@ -1174,29 +1280,62 @@ async function downloadUpdateInstallerInner(url: string): Promise<UpdateDownload
       }
       const total = Number(res.headers.get('content-length') ?? 0) || 0
       let received = 0
-      let lastAt = 0
+      let lastAt = Date.now()
+      let lastReceived = 0
+      let speed = 0
       const meter = new Transform({
-        transform(chunk, _enc, cb) {
+        async transform(chunk, _enc, cb) {
+          // 暂停时先卡住数据（不读网络，靠背压停住连接），继续或取消后再放行
+          while (task.paused && !task.canceled) {
+            await new Promise<void>((resolve) => {
+              task.wake = resolve
+            })
+          }
+          if (task.canceled) {
+            cb(new Error('已取消下载'))
+            return
+          }
           received += chunk.length
           const now = Date.now()
           if (now - lastAt > 200) {
+            const elapsed = Math.max(1, now - lastAt)
+            const instant = ((received - lastReceived) * 1000) / elapsed
+            // 指数平滑，避免速度数字乱跳
+            speed = speed > 0 ? speed * 0.6 + instant * 0.4 : instant
             lastAt = now
-            broadcastUpdateProgress({
+            lastReceived = received
+            const progress: UpdateProgress = {
               received,
               total,
               percent: total > 0 ? received / total : 0,
-              line: channel.name
-            })
+              line: channel.name,
+              speed,
+              phase: 'downloading'
+            }
+            task.progress = progress
+            broadcastUpdateProgress(progress)
           }
           cb(null, chunk)
         }
       })
       await pipeline(Readable.fromWeb(res.body as never), meter, createWriteStream(tmp))
+      task.controller = null
       await rename(tmp, target)
-      broadcastUpdateProgress({ received, total: total || received, percent: 1, line: channel.name })
+      const done: UpdateProgress = {
+        received,
+        total: total || received,
+        percent: 1,
+        line: channel.name,
+        speed: 0,
+        phase: 'downloading'
+      }
+      task.progress = done
+      broadcastUpdateProgress(done)
       return { ok: true, path: target }
     } catch (err) {
+      task.controller = null
       await unlink(tmp).catch(() => undefined)
+      if (task.canceled) return { ok: false, canceled: true, error: '已取消下载' }
       lastError = err instanceof Error ? err.message : '下载更新失败'
     }
   }
@@ -1224,55 +1363,13 @@ async function installUpdateInstaller(path: string): Promise<void> {
   setTimeout(() => app.quit(), 900)
 }
 
-/** 启动后检查更新：先询问是否更新，确认后才下载，下载完成再确认安装 */
+/** 启动后检查更新：只做检查并通知渲染层，由应用内弹窗确认后才下载 */
 async function autoUpdateCheck(win: BrowserWindow): Promise<void> {
   const info = await checkUpdateInternal()
-  if (!info.ok || !info.hasUpdate || !info.downloadUrl) return
+  if (!info.ok || !info.hasUpdate) return
   if (win.isDestroyed()) return
-  const confirm = await dialog.showMessageBox(win, {
-    type: 'info',
-    title: '发现新版本',
-    message: `发现新版本 ${info.latest}（当前 ${info.current}）`,
-    detail: '是否现在下载并安装？下载完成后会再确认一次，不会自动关闭应用。',
-    buttons: ['立即更新', '稍后'],
-    defaultId: 0,
-    cancelId: 1,
-    noLink: true
-  })
-  if (confirm.response !== 0) return
-  const downloaded = await downloadUpdateInstaller(info.downloadUrl)
-  if (!downloaded.ok || !downloaded.path) {
-    // 通知界面收起进度条（失败时没有正常的进度结束事件）
-    broadcastUpdateProgress({
-      received: 0,
-      total: 0,
-      percent: 0,
-      error: downloaded.error ?? '下载失败'
-    })
-    if (!win.isDestroyed()) {
-      await dialog.showMessageBox(win, {
-        type: 'error',
-        title: '更新下载失败',
-        message: '新版本安装包下载失败',
-        detail: downloaded.error ?? '请稍后到设置页手动检查更新重试。',
-        buttons: ['知道了'],
-        noLink: true
-      })
-    }
-    return
-  }
-  if (win.isDestroyed()) return
-  const answer = await dialog.showMessageBox(win, {
-    type: 'info',
-    title: '下载完成',
-    message: `新版本 ${info.latest} 已下载完成`,
-    detail: '点击「立即安装」会关闭应用并打开安装向导，按提示完成即可。',
-    buttons: ['立即安装', '稍后'],
-    defaultId: 0,
-    cancelId: 1,
-    noLink: true
-  })
-  if (answer.response === 0) await installUpdateInstaller(downloaded.path)
+  pendingUpdateNotice = info
+  win.webContents.send('update:available', info)
 }
 
 /**
@@ -1897,7 +1994,10 @@ function registerIpc(): void {
           .map((s) => ({
             name: typeof s.name === 'string' ? s.name : '',
             baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
-            enabled: s.enabled !== false
+            enabled: s.enabled !== false,
+            // 手动归组必须一起带走，否则导入后外网源会被重新分到国内
+            region: s.region === 'proxy' ? 'proxy' : 'cn',
+            regionManual: s.regionManual === true
           }))
           .filter((s) => /^https?:\/\//i.test(s.baseUrl))
       const vodSources = toFeedRows(rowsOf('vodSources'))
@@ -1936,22 +2036,41 @@ function registerIpc(): void {
           enabled: s.enabled !== false
         }))
         .filter((s) => !!s.type && /^https?:\/\//i.test(s.baseUrl))
+      const musicBackupOf = (
+        value: unknown
+      ): { id: string; name: string; baseUrl: string; enabled: boolean } | null => {
+        if (!value || typeof value !== 'object') return null
+        const b = value as Record<string, unknown>
+        const baseUrl = typeof b.baseUrl === 'string' ? b.baseUrl.trim() : ''
+        if (!/^https?:\/\//i.test(baseUrl)) return null
+        return {
+          id: typeof b.id === 'string' && b.id ? b.id : 's33ve',
+          name: typeof b.name === 'string' ? b.name : '',
+          baseUrl,
+          enabled: b.enabled !== false
+        }
+      }
       const musicSources = rowsOf('musicSources')
-        .map((s) => ({
-          id: typeof s.id === 'string' ? s.id : '',
-          name: typeof s.name === 'string' ? s.name : '',
-          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
-          enabled: s.enabled !== false,
-          // 洛雪脚本源的类型与平台偏好：缺失时由地址 / 脚本自动推断，有则原样带走
-          ...(s.kind === 'lx' || s.kind === 'site' ? { kind: s.kind } : {}),
-          ...(Array.isArray(s.platforms)
-            ? {
-                platforms: s.platforms.filter(
-                  (item): item is string => typeof item === 'string'
-                )
-              }
-            : {})
-        }))
+        .map((s) => {
+          // 无名闪闪音乐的主备两条线路必须一起导出，否则导入端会退回默认备用线路
+          const backup = musicBackupOf(s.backup)
+          return {
+            id: typeof s.id === 'string' ? s.id : '',
+            name: typeof s.name === 'string' ? s.name : '',
+            baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+            enabled: s.enabled !== false,
+            // 洛雪脚本源的类型与平台偏好：缺失时由地址 / 脚本自动推断，有则原样带走
+            ...(s.kind === 'lx' || s.kind === 'site' ? { kind: s.kind } : {}),
+            ...(Array.isArray(s.platforms)
+              ? {
+                  platforms: s.platforms.filter(
+                    (item): item is string => typeof item === 'string'
+                  )
+                }
+              : {}),
+            ...(backup ? { backup } : {})
+          }
+        })
         .filter((s) => /^https?:\/\//i.test(s.baseUrl))
       const novelSources = rowsOf('novelSources')
         .map((s) => ({
@@ -2214,7 +2333,7 @@ function registerIpc(): void {
       return { sourceId: '', sourceName: '', channels: [], error: '电视源参数无效' }
     }
     return cachedResponse(
-      `live:channels|${source.id}|${source.url}`,
+      `live:channels|v2|${source.id}|${source.url}`,
       10 * 60 * 1000,
       () => loadLiveChannels(source),
       30 * 60 * 1000
@@ -2273,7 +2392,12 @@ function registerIpc(): void {
         page: typeof input.page === 'number' ? input.page : 1,
         parentId: typeof input.parentId === 'string' ? input.parentId : '',
         areaId: typeof input.areaId === 'string' ? input.areaId : '',
-        keyword: typeof input.keyword === 'string' ? input.keyword.slice(0, 60) : ''
+        keyword: typeof input.keyword === 'string' ? input.keyword.slice(0, 60) : '',
+        excludeIds: Array.isArray(input.excludeIds)
+          ? input.excludeIds
+              .filter((id): id is string => typeof id === 'string' && id.length > 0)
+              .slice(0, 800)
+          : undefined
       })
     }
   )
@@ -2324,6 +2448,22 @@ function registerIpc(): void {
     if (!isLivePlatformId(platform)) return { platform: 'bilibili', loggedIn: false }
     return logoutPlatform(platform)
   })
+
+  ipcMain.handle('singing:videoInfo', (_e, input: unknown) =>
+    singingVideoInfo(typeof input === 'string' ? input.slice(0, 500) : '')
+  )
+
+  ipcMain.handle('singing:play', (_e, bvid: unknown, page: unknown, qualityId: unknown) =>
+    singingPlay(
+      typeof bvid === 'string' ? bvid.slice(0, 40) : '',
+      Number(page) || 1,
+      typeof qualityId === 'string' ? qualityId.slice(0, 10) : undefined
+    )
+  )
+
+  ipcMain.handle('singing:danmaku', (_e, bvid: unknown, page: unknown) =>
+    singingDanmaku(typeof bvid === 'string' ? bvid.slice(0, 40) : '', Number(page) || 1)
+  )
 
   ipcMain.handle('livePlatform:testSource', async (_e, source: unknown) => {
     const input = source && typeof source === 'object' ? (source as Record<string, unknown>) : {}
@@ -2384,21 +2524,52 @@ function registerIpc(): void {
     }
   })
 
-  ipcMain.handle('music:search', (_e, sources: unknown, keyword: string, page: number) => {
-    const list: MusicSourceInput[] = (Array.isArray(sources) ? sources : [])
+  /** 音乐源 IPC 入参：只保留主进程需要的字段（含备用线路） */
+  const parseMusicSourceInputs = (sources: unknown): MusicSourceInput[] =>
+    (Array.isArray(sources) ? sources : [])
       .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
-      .map((s) => ({
-        id: typeof s.id === 'string' ? s.id : '',
-        name: typeof s.name === 'string' ? s.name : '',
-        baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl.trim() : ''
-      }))
+      .map((s) => {
+        const rawBackup =
+          s.backup && typeof s.backup === 'object' ? (s.backup as Record<string, unknown>) : null
+        const backupBase =
+          rawBackup && typeof rawBackup.baseUrl === 'string' ? rawBackup.baseUrl.trim() : ''
+        return {
+          id: typeof s.id === 'string' ? s.id : '',
+          name: typeof s.name === 'string' ? s.name : '',
+          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl.trim() : '',
+          backup:
+            backupBase && /^https?:\/\//i.test(backupBase)
+              ? {
+                  id: typeof rawBackup?.id === 'string' ? rawBackup.id : 's33ve',
+                  name: typeof rawBackup?.name === 'string' ? rawBackup.name : '',
+                  baseUrl: backupBase
+                }
+              : undefined
+        }
+      })
       .filter((s) => !!s.id && /^https?:\/\//i.test(s.baseUrl))
       .slice(0, 20)
+
+  ipcMain.handle('music:search', (_e, sources: unknown, keyword: string, page: number) => {
+    const list = parseMusicSourceInputs(sources)
     if (typeof keyword !== 'string' || keyword.length > 80 || !Number.isInteger(page)) {
       return { ok: false, items: [], error: '搜索参数无效' }
     }
-    const key = `music:search|${list.map((s) => `${s.id}@${s.baseUrl}`).join(',')}|${keyword}|${page}`
+    const key = `music:search|${list
+      .map((s) => `${s.id}@${s.baseUrl}@${s.backup?.baseUrl ?? ''}`)
+      .join(',')}|${keyword}|${page}`
     return cachedResponse(key, 6 * HOUR, () => searchMusic(list, keyword, page))
+  })
+
+  ipcMain.handle('music:top', (_e, sources: unknown, category: unknown) => {
+    const list = parseMusicSourceInputs(sources)
+    if (typeof category !== 'string' || !category || category.length > 40) {
+      return { ok: false, items: [], error: '榜单参数无效' }
+    }
+    const key = `music:top|${category}|${list
+      .map((s) => `${s.id}@${s.baseUrl}@${s.backup?.baseUrl ?? ''}`)
+      .join(',')}`
+    return cachedResponse(key, 2 * HOUR, () => fetchMusicTop(list, category))
   })
 
   ipcMain.handle(
@@ -2459,7 +2630,7 @@ function registerIpc(): void {
     })
   })
 
-  // 导出音乐源为 JSON（名称 / 地址 / 启用状态）
+  // 导出音乐源为 JSON（名称 / 地址 / 启用状态 / 备用线路）
   ipcMain.handle('music:exportSources', async (_e, sources: unknown) => {
     const list = Array.isArray(sources) ? sources : []
     const picked = await dialog.showSaveDialog({
@@ -2475,12 +2646,30 @@ function registerIpc(): void {
     try {
       const rows = list
         .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
-        .map((s) => ({
-          id: typeof s.id === 'string' ? s.id : '',
-          name: typeof s.name === 'string' ? s.name : '',
-          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
-          enabled: s.enabled !== false
-        }))
+        .map((s) => {
+          const backupRaw =
+            s.backup && typeof s.backup === 'object'
+              ? (s.backup as Record<string, unknown>)
+              : null
+          const backupBase =
+            backupRaw && typeof backupRaw.baseUrl === 'string' ? backupRaw.baseUrl.trim() : ''
+          return {
+            id: typeof s.id === 'string' ? s.id : '',
+            name: typeof s.name === 'string' ? s.name : '',
+            baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
+            enabled: s.enabled !== false,
+            ...(backupBase && /^https?:\/\//i.test(backupBase)
+              ? {
+                  backup: {
+                    id: typeof backupRaw?.id === 'string' ? backupRaw.id : 's33ve',
+                    name: typeof backupRaw?.name === 'string' ? backupRaw.name : '',
+                    baseUrl: backupBase,
+                    enabled: backupRaw?.enabled !== false
+                  }
+                }
+              : {})
+          }
+        })
         .filter((s) => /^https?:\/\//i.test(s.baseUrl))
       await writeFile(picked.filePath, JSON.stringify(rows, null, 2), 'utf8')
       return { canceled: false, path: picked.filePath, count: rows.length }
@@ -2578,6 +2767,7 @@ function registerIpc(): void {
     comic: ['bika:', 'komiic:', 'yumanhua:', 'bikahub:', 'tptoon:', 'jmcomic:'],
     novel: ['novel:', 'bikahub:'],
     melon: ['melon:'],
+    news: ['news:'],
     game: ['wygamer:'],
     emu: ['emu:'],
     book: ['zlib:'],
@@ -2692,6 +2882,25 @@ function registerIpc(): void {
   ipcMain.handle('melon:trackImages', (_e, urls: unknown) => {
     if (!Array.isArray(urls)) return
     trackMelonImages(urls.filter((u): u is string => typeof u === 'string'))
+  })
+
+  // ---------- 资讯（今日热榜 tophub.today） ----------
+  ipcMain.handle('news:feed', (_e, category: string, query: unknown, page: unknown) => {
+    if (typeof category !== 'string' || !/^[a-z]{2,12}$/.test(category)) {
+      return { ok: false, error: '参数无效' }
+    }
+    const q = typeof query === 'string' ? query.slice(0, 40) : ''
+    const p = typeof page === 'number' && Number.isFinite(page) ? Math.floor(page) : 1
+    return cachedResponse(`news:feed|${category}|${q}|${p}`, 10 * 60 * 1000, () =>
+      newsFeed(category, q, p)
+    )
+  })
+
+  ipcMain.handle('news:node', (_e, id: string) => {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9]{4,30}$/.test(id)) {
+      return { ok: false, error: '参数无效' }
+    }
+    return cachedResponse(`news:node|${id}`, 10 * 60 * 1000, () => newsNode(id))
   })
 
   // ---------- 爽看（肉视频；站点失效时走 x99dh.net 优选访问换址） ----------
@@ -3866,11 +4075,45 @@ function registerIpc(): void {
 
   ipcMain.handle('app:checkUpdate', () => checkUpdateInternal())
 
+  ipcMain.handle('app:pendingUpdate', () => {
+    const info = pendingUpdateNotice
+    pendingUpdateNotice = null
+    return info
+  })
+
   ipcMain.handle('app:downloadUpdate', async (_e, url: string): Promise<UpdateDownloadResult> => {
     if (typeof url !== 'string' || !/^https:\/\//i.test(url)) {
       return { ok: false, error: '更新地址无效' }
     }
     return downloadUpdateInstaller(url)
+  })
+
+  ipcMain.handle('app:pauseUpdate', () => {
+    if (!updateTask) return
+    updateTask.paused = true
+    broadcastUpdateState(updateTask)
+  })
+
+  ipcMain.handle('app:resumeUpdate', () => {
+    if (!updateTask) return
+    updateTask.paused = false
+    const wake = updateTask.wake
+    updateTask.wake = null
+    wake?.()
+    broadcastUpdateState(updateTask)
+  })
+
+  ipcMain.handle('app:cancelUpdate', () => {
+    const task = updateTask
+    if (!task) return
+    task.canceled = true
+    task.paused = false
+    const wake = task.wake
+    task.wake = null
+    wake?.()
+    task.controller?.abort()
+    // 立即通知界面收起进度条，不等下载循环退出
+    broadcastUpdateProgress({ received: 0, total: 0, percent: 0, error: '已取消下载' })
   })
 
   ipcMain.handle('app:installUpdate', async (_e, path: string) => {
@@ -3891,6 +4134,29 @@ function registerIpc(): void {
       return { canceled: false, error: '图片地址无效' }
     }
     return saveImageToFile(url)
+  })
+
+  // 使用经验里的小配置文件：只接受 octet-stream data URL（≤1MB），存到用户选择的路径
+  ipcMain.handle('app:saveNoteFile', async (_e, name: unknown, dataUrl: unknown) => {
+    const prefix = 'data:application/octet-stream;base64,'
+    if (typeof name !== 'string' || typeof dataUrl !== 'string') {
+      return { ok: false, error: '参数无效' }
+    }
+    if (!dataUrl.startsWith(prefix) || dataUrl.length > 1_500_000) {
+      return { ok: false, error: '文件内容无效或超过 1MB' }
+    }
+    const safeName = name.replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 120) || '配置文件'
+    const picked = await dialog.showSaveDialog({
+      title: '保存配置文件',
+      defaultPath: join(app.getPath('downloads'), safeName)
+    })
+    if (picked.canceled || !picked.filePath) return { ok: false, canceled: true }
+    try {
+      await writeFile(picked.filePath, Buffer.from(dataUrl.slice(prefix.length), 'base64'))
+      return { ok: true, path: picked.filePath }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : '保存失败' }
+    }
   })
 
   ipcMain.handle('sync:test', () => testSync())
@@ -4084,6 +4350,11 @@ function stamp(): string {
 }
 
 const gotLock = app.requestSingleInstanceLock()
+process.on('unhandledRejection', (reason) => {
+  // 主进程后台任务（登录 / 更新 / 缓存刷新）的兜底日志，避免静默失败
+  console.error('[app] 未处理的 Promise rejection', reason)
+})
+
 if (!gotLock) {
   app.quit()
 } else {
@@ -4101,8 +4372,17 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     app.setAppUserModelId('com.laozheng.pc')
     Menu.setApplicationMenu(null)
-    await initSettings()
-    await seedDefaultData()
+    // 本机设置 / 默认数据 / 本地媒体服务失败都不能阻止主窗口打开
+    try {
+      await initSettings()
+    } catch (err) {
+      console.error('[app] 初始化本机设置失败，继续使用默认设置', err)
+    }
+    try {
+      await seedDefaultData()
+    } catch (err) {
+      console.error('[app] 播种默认数据失败，跳过', err)
+    }
     initAccounts()
     initLiveAuth()
     initDoubanAuth()
@@ -4117,11 +4397,15 @@ if (!gotLock) {
       return headers
     })
     registerIpc()
-    await startMediaServer()
+    try {
+      await startMediaServer()
+    } catch (err) {
+      console.error('[app] 本地媒体服务启动失败，已下载文件将无法在应用内播放', err)
+    }
     const win = createWindow()
     console.log('[app] data file:', dataFilePath())
 
-    // 静默自动更新：清单里给了安装包直链时后台下载，完成后询问是否安装
+    // 启动后检查更新：发现新版本先弹窗确认，确认后才下载
     win.webContents.once('did-finish-load', () => {
       void cleanupUpdatesDir().then(() => autoUpdateCheck(win))
     })
@@ -4138,6 +4422,14 @@ if (!gotLock) {
       ensureTray()
       showMainWindow()
     })
+  }).catch((err) => {
+    // 走到这里说明主窗口都没创建成功：给出明确提示，避免用户以为双击没反应
+    console.error('[app] 启动失败', err)
+    dialog.showErrorBox(
+      '老郑分享启动失败',
+      err instanceof Error ? err.message : String(err || '未知错误')
+    )
+    app.quit()
   })
 
   app.on('window-all-closed', () => {

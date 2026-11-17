@@ -95,6 +95,8 @@ export interface LiveListParams {
   parentId?: string
   areaId?: string
   keyword?: string
+  /** 翻页时跳过已经展示过的房间（抖音搜索只能滚动加载，用它算下一页） */
+  excludeIds?: string[]
 }
 
 export interface LiveLoginStatus {
@@ -159,6 +161,14 @@ export interface LiveRoomFocus {
 
 export function liveRoomKey(platform: LivePlatformId, roomId: string): string {
   return `${platform}:${roomId}`
+}
+
+/** 登录 / 退出后广播：直播页与演唱页共用同一份 B站账号，状态要一起刷新 */
+export const LIVE_LOGIN_EVENT = 'laozheng:live-login-changed'
+
+export function notifyLiveLoginChanged(platform: LivePlatformId): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(LIVE_LOGIN_EVENT, { detail: { platform } }))
 }
 
 export function normalizeLiveFavorites(raw: unknown): LiveFavorite[] {

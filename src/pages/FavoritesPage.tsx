@@ -13,9 +13,11 @@ import {
   Images,
   MonitorPlay,
   Music,
+  Newspaper,
   PlayCircle,
   Popcorn,
   Radio,
+  RefreshCw,
   Search,
   Trash2,
   Tv,
@@ -32,9 +34,11 @@ import {
   livePlatformOfSource
 } from '../shared/livePlatformSources'
 import type { InnerFav } from '../shared/types'
+import { parseNewsFavPayload, type NewsItem } from '../shared/news'
 
 /** 收藏管理按模块整理（顺序与侧栏导航一致） */
 const FAV_MODULE_ORDER = [
+  'news',
   'watch',
   'drama',
   'tv',
@@ -56,6 +60,7 @@ const FAV_MODULE_ORDER = [
 const HIDDEN_FAV_MODULES = new Set(['h2', 'h1', 'psite', 'xsite'])
 
 const MODULE_ICONS: Record<string, LucideIcon> = {
+  news: Newspaper,
   watch: MonitorPlay,
   drama: Clapperboard,
   shuangkan: PlayCircle,
@@ -204,6 +209,7 @@ export function FavoritesPage({
   const [selectMode, setSelectMode] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [batchRemoving, setBatchRemoving] = useState(false)
+  const [newsRefreshing, setNewsRefreshing] = useState(false)
 
   const favKey = (fav: InnerFav): string => `${fav.module}-${fav.id}`
 
@@ -263,6 +269,93 @@ export function FavoritesPage({
     onNotice?.(`已删除收藏「${fav.title}」`)
   }
 
+  const openNewsItem = (item: NewsItem) => {
+    if (!item.url) {
+      onNotice?.('这条资讯没有可打开的原文链接')
+      return
+    }
+    void window.laozheng.openExternal(item.url).catch(() => onNotice?.('打开原文失败'))
+  }
+
+  /** 刷新所有资讯收藏：按「分类 + 页码」各取一次分类页，再把卡片内容写回收藏 payload */
+  const refreshNewsFavs = async () => {
+    const targets = data.innerFavs.filter((fav) => fav.module === 'news')
+    if (!targets.length || newsRefreshing) return
+    setNewsRefreshing(true)
+    void window.laozheng.forceRefresh('news').catch(() => {})
+    const groups = new Map<
+      string,
+      { category: string; query: string; page: number; favs: InnerFav[] }
+    >()
+    for (const fav of targets) {
+      const payload = parseNewsFavPayload(fav.payload)
+      const category = payload?.category || 'news'
+      const query = payload?.query ?? ''
+      const page = payload?.page ?? 1
+      const key = `${category}|${query}|${page}`
+      const group = groups.get(key) ?? { category, query, page, favs: [] }
+      group.favs.push(fav)
+      groups.set(key, group)
+    }
+    const next = new Map<string, string>()
+    let failed = 0
+    for (const group of groups.values()) {
+      try {
+        const res = await window.laozheng.newsFeed(group.category, group.query, group.page)
+        if (!res.ok || !res.cards?.length) {
+          failed += group.favs.length
+          continue
+        }
+        const byId = new Map(res.cards.map((card) => [card.id, card]))
+        for (const fav of group.favs) {
+          const card = byId.get(fav.id)
+          if (!card) {
+            failed += 1
+            continue
+          }
+          const payload = parseNewsFavPayload(fav.payload)
+          next.set(
+            fav.id,
+            JSON.stringify({
+              category: payload?.category ?? group.category,
+              query: payload?.query ?? group.query,
+              page: payload?.page ?? group.page,
+              nodeId: fav.id,
+              name: card.name || payload?.name || '',
+              board: card.board || payload?.board || '',
+              icon: card.icon ?? payload?.icon ?? fav.cover,
+              items: card.items
+            })
+          )
+        }
+      } catch {
+        failed += group.favs.length
+      }
+    }
+    if (next.size) {
+      update((d) => ({
+        ...d,
+        innerFavs: d.innerFavs.map((fav) => {
+          if (fav.module !== 'news' || !next.has(fav.id)) return fav
+          const payloadText = next.get(fav.id) ?? fav.payload
+          const refreshed = parseNewsFavPayload(payloadText)
+          return {
+            ...fav,
+            payload: payloadText,
+            // 卡片图标 / 标题也一起更新，否则刷新后仍显示旧值
+            cover: refreshed?.icon ?? fav.cover,
+            title:
+              [refreshed?.name, refreshed?.board].filter(Boolean).join(' · ') || fav.title
+          }
+        })
+      }))
+    }
+    setNewsRefreshing(false)
+    onNotice?.(
+      failed ? `已刷新 ${next.size} 个榜单，${failed} 个暂时未更新` : `已刷新 ${next.size} 个榜单`
+    )
+  }
+
   // 模块卡片首页
   if (!moduleKey) {
     return (
@@ -317,15 +410,27 @@ export function FavoritesPage({
           {moduleKey === 'all' ? '全部收藏' : favModuleLabel(moduleKey)}
         </h1>
         <div className="page-actions">
-          <button
-            className={`btn ${selectMode ? 'primary' : ''}`}
-            onClick={() => {
-              setSelectMode((value) => !value)
-              setSelected(new Set())
-            }}
-          >
-            {selectMode ? '完成' : '批量管理'}
-          </button>
+          {moduleKey === 'news' ? (
+            <button
+              className="btn btn-sq"
+              title="刷新收藏的榜单"
+              aria-label="刷新收藏的榜单"
+              disabled={newsRefreshing}
+              onClick={() => void refreshNewsFavs()}
+            >
+              <RefreshCw size={15} className={newsRefreshing ? 'spin' : ''} />
+            </button>
+          ) : (
+            <button
+              className={`btn ${selectMode ? 'primary' : ''}`}
+              onClick={() => {
+                setSelectMode((value) => !value)
+                setSelected(new Set())
+              }}
+            >
+              {selectMode ? '完成' : '批量管理'}
+            </button>
+          )}
         </div>
       </header>
 
@@ -394,6 +499,65 @@ export function FavoritesPage({
           title={query ? '没有找到匹配的收藏' : '这个模块还没有收藏'}
           desc={query ? '换一个关键词再试。' : '在模块列表卡片点爱心即可收藏到这里。'}
         />
+      ) : moduleKey === 'news' ? (
+        <div className="news-grid">
+          {favs.map((f) => {
+            const payload = parseNewsFavPayload(f.payload)
+            const items = payload?.items ?? []
+            const name = payload?.name || f.title
+            return (
+              <article key={favKey(f)} className="news-card">
+                <div className="news-card-head">
+                  {f.cover ? (
+                    <img
+                      className="news-card-icon"
+                      src={f.cover}
+                      alt=""
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <span className="news-card-icon news-card-icon-fallback">
+                      {name.slice(0, 1)}
+                    </span>
+                  )}
+                  <span className="news-card-title">
+                    <span className="news-card-name">{name}</span>
+                    <span className="news-card-board">{payload?.board || f.subtitle}</span>
+                  </span>
+                  <button
+                    className="icon-btn danger"
+                    title="删除收藏"
+                    aria-label="删除收藏"
+                    onClick={() => setRemoving(f)}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+                <div className="news-card-items">
+                  {items.length ? (
+                    items.map((item) => (
+                      <button
+                        key={`${item.rank}-${item.title}`}
+                        className="news-item"
+                        title={item.url ? item.title : '暂无原文链接'}
+                        onClick={() => openNewsItem(item)}
+                      >
+                        <span className={`news-item-rank ${item.rank <= 3 ? 'top' : ''}`}>
+                          {item.rank}
+                        </span>
+                        <span className="news-item-title">{item.title}</span>
+                        {item.extra ? <span className="news-item-extra">{item.extra}</span> : null}
+                      </button>
+                    ))
+                  ) : (
+                    <div className="news-card-empty">收藏时没有保存条目，可在资讯页重新收藏</div>
+                  )}
+                </div>
+              </article>
+            )
+          })}
+        </div>
       ) : gridModule ? (
         <div className="media-grid">
           {favs.map((f) => {

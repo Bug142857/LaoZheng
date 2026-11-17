@@ -6,17 +6,20 @@ import type {
   MusicSourceInput,
   MusicTestResult
 } from '../src/shared/music'
-import { DEFAULT_MUSIC_BASE_URLS, DEFAULT_MUSIC_SOURCES } from '../src/shared/music'
+import { DEFAULT_MUSIC_BASE_URLS, DEFAULT_MUSIC_SOURCES, MUSIC_TOP_CATEGORIES } from '../src/shared/music'
 import { isLxScriptUrl, resolveLxMusicUrl } from './lxSource'
 import { decodeLxSongId, fetchLxLyric, searchLxSource } from './musicPlatforms'
 
 /**
  * 在线音乐：音源配置在「配置管理 → 片源管理 → 音乐源」里维护
- * （默认无名音乐网 mvmp3 + 闪闪音乐网 33ve；无损音乐 flac.music.hi.cn 适配器保留，默认源暂时下线）。
+ * （默认无名音乐网 mvmp3，备用线路无名闪闪音乐 33ve；无损音乐适配器保留，默认源暂时下线）。
  *
- * 无名音乐 / 33ve 是同一套建站系统，接口完全一致：
+ * 无名音乐 / 无名闪闪音乐是同一套建站系统，接口完全一致：
  * 搜索：GET /so.php?wd=&page=，服务端渲染 HTML
+ * 榜单：GET /list/<分类>.html（酷狗飙升榜 / TOP排行榜 / 抖音热歌榜…，单页 100 首）
  * 直链：POST /style/js/play.php 表单 id + type=dance → JSON { url, lrc, pic, name, singer }
+ * 榜单页首次访问会弹「安全人机验证」，getPage 会自动勾选并缓存会话 Cookie。
+ * 主源搜索失败 / 空结果时自动走备用线路（无名闪闪音乐）。
  *
  * 无损音乐（flac.music.hi.cn）是另一套 JSON 接口，按 baseUrl 主机名自动识别：
  * 搜索：POST /ajax.php?act=search  platform=kuwo&keyword=&page=&size=20
@@ -42,6 +45,20 @@ function normalizeBase(baseUrl: string): string {
 
 function sourceLabel(source: MusicSourceInput): string {
   return source.name?.trim() || normalizeBase(source.baseUrl)
+}
+
+/** 主源 + 备用线路（无名闪闪音乐）：备用线路只带地址，歌曲按备用源 id 标记 */
+function sourceCandidates(source: MusicSourceInput): MusicSourceInput[] {
+  const out = [source]
+  const backup = source.backup
+  if (backup && /^https?:\/\//i.test(String(backup.baseUrl ?? ''))) {
+    out.push({
+      id: backup.id || 's33ve',
+      name: backup.name || '无名闪闪音乐',
+      baseUrl: String(backup.baseUrl).trim()
+    })
+  }
+  return out
 }
 
 /** 无损音乐站（flac.music.hi.cn）：按主机名识别，允许用户填镜像子域 */
@@ -415,21 +432,115 @@ async function resolveHi(
   }
 }
 
+/**
+ * 站点会话 Cookie：mvmp3 / 33ve 的榜单页会先弹「安全人机验证」，
+ * 勾选后写入 cookie 才放行（搜索页不受影响）。按站点缓存 cookie，1 小时内复用。
+ */
+const siteCookies = new Map<string, { cookie: string; at: number }>()
+const COOKIE_TTL_MS = 60 * 60 * 1000
+
+function siteKey(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).origin
+  } catch {
+    return normalizeBase(baseUrl)
+  }
+}
+
+function mergeSetCookies(key: string, res: Response, fallback: string): string {
+  const headers = res.headers as Headers & { getSetCookie?: () => string[] }
+  const lines =
+    typeof headers.getSetCookie === 'function'
+      ? headers.getSetCookie()
+      : [res.headers.get('set-cookie') ?? '']
+  let pairs = (fallback || '')
+    .split('; ')
+    .filter(Boolean)
+    .map((item) => item.trim())
+  for (const line of lines) {
+    const pair = line.split(';')[0]?.trim()
+    if (!pair || !pair.includes('=')) continue
+    const name = pair.slice(0, pair.indexOf('='))
+    pairs = pairs.filter((item) => !item.startsWith(`${name}=`))
+    pairs.push(pair)
+  }
+  const cookie = pairs.join('; ')
+  if (cookie) siteCookies.set(key, { cookie, at: Date.now() })
+  return cookie
+}
+
+function cachedCookie(key: string): string {
+  const hit = siteCookies.get(key)
+  if (!hit) return ''
+  if (Date.now() - hit.at > COOKIE_TTL_MS) {
+    siteCookies.delete(key)
+    return ''
+  }
+  return hit.cookie
+}
+
+interface HtmlResult {
+  ok: boolean
+  status: number
+  text: string
+  cookie: string
+}
+
+/** 请求一页 HTML；遇到「安全人机验证」自动勾选并带上会话 Cookie */
+async function fetchHtml(
+  targetUrl: string,
+  baseUrl: string,
+  cookieValue: string,
+  init?: RequestInit
+): Promise<HtmlResult> {
+  const key = siteKey(baseUrl)
+  const request = (cookie: string, override?: RequestInit) =>
+    fetch(targetUrl, {
+      ...override,
+      headers: {
+        'User-Agent': UA,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+        Referer: `${normalizeBase(baseUrl)}/`,
+        ...(cookie ? { Cookie: cookie } : {}),
+        ...(override?.headers as Record<string, string> | undefined)
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20_000)
+    })
+  let cookie = cookieValue
+  let res = await request(cookie, init)
+  cookie = mergeSetCookies(key, res, cookie)
+  let text = await res.text()
+  if (text.includes('verifyForm')) {
+    // 勾选「我不是人机」自动提交，拿到会话 Cookie 后同一响应就是目标页面
+    const token = text.match(/name="csrf_token" value="([^"]+)"/)?.[1] ?? ''
+    res = await request(cookie, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ csrf_token: token, human_check: 'on' })
+    })
+    cookie = mergeSetCookies(key, res, cookie)
+    text = await res.text()
+  }
+  return { ok: res.ok, status: res.status, text, cookie }
+}
+
 async function getPage(baseUrl: string, url: string): Promise<string> {
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': UA,
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'zh-CN,zh;q=0.9',
-      Referer: `${baseUrl}/`
-    },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(20_000)
-  })
-  if (!res.ok) throw new Error(`站点返回 HTTP ${res.status}`)
-  const text = await res.text()
-  if (text.length < 100 || text.includes('verifyForm')) throw new Error('站点拒绝了请求，请稍后重试')
-  return text
+  const key = siteKey(baseUrl)
+  let cookie = cachedCookie(key)
+  let result = await fetchHtml(url, baseUrl, cookie)
+  // 闪闪音乐直接访问搜索 / 榜单会 403：先访问首页拿 PHPSESSID / server_name_session
+  if (!result.ok) {
+    const warm = await fetchHtml(`${normalizeBase(baseUrl)}/`, baseUrl, result.cookie)
+    cookie = warm.cookie
+    result = await fetchHtml(url, baseUrl, cookie)
+  }
+  if (!result.ok) throw new Error(`站点返回 HTTP ${result.status}`)
+  if (result.text.length < 100 || result.text.includes('verifyForm')) {
+    throw new Error('站点拒绝了请求，请稍后重试')
+  }
+  return result.text
 }
 
 function parseDuration(text: string): number {
@@ -460,11 +571,17 @@ function parseSongs(html: string, source: MusicSourceInput): MusicSong[] {
     const rawTitle = block.match(/class="url"[^>]*>([\s\S]*?)<\/a>/)?.[1] ?? ''
     const title = decodeEntities(rawTitle.replace(/<[^>]+>/g, '')).trim()
     if (!title) continue
-    const artists = title.includes(' - ') ? title.slice(0, title.indexOf(' - ')).trim() : ''
+    // 搜索页是「歌手 - 歌名」，榜单页只有歌名、歌手在 a.singer 里
+    const singer =
+      decodeEntities(
+        block.match(/class="singer"[^>]*>([\s\S]*?)<\/a>/)?.[1]?.replace(/<[^>]+>/g, '') ?? ''
+      ).trim()
+    const artists = title.includes(' - ') ? title.slice(0, title.indexOf(' - ')).trim() : singer
     const name = title.includes(' - ') ? title.slice(title.indexOf(' - ') + 3).trim() : title
     const cover = block.match(/<img src="([^"]+)"/)?.[1] ?? ''
     const duration = block.match(/stime"[^>]*>\s*(\d{1,2}:\d{2})/)?.[1] ?? ''
-    const size = block.match(/class="size"[^>]*>\s*大小[:：]\s*([^<]+)/)?.[1]?.trim() ?? ''
+    const size =
+      block.match(/class="size"[^>]*>\s*(?:大小[:：]\s*)?([^<]+)/)?.[1]?.trim() ?? ''
     items.push({
       id,
       name: name || title,
@@ -520,12 +637,51 @@ export async function searchMusic(
   }
   const errors: string[] = []
   for (const source of list) {
-    try {
-      const items = await searchAt(source, keyword, page)
-      if (items.length) return { ok: true, items }
-      errors.push(`${sourceLabel(source)}：没有搜到歌曲`)
-    } catch (err) {
-      errors.push(`${sourceLabel(source)}：${err instanceof Error ? err.message : '搜索失败'}`)
+    // 主源失败或空结果时自动走备用线路（无名闪闪音乐）
+    for (const candidate of sourceCandidates(source)) {
+      try {
+        const items = await searchAt(candidate, keyword, page)
+        if (items.length) return { ok: true, items }
+        errors.push(`${sourceLabel(candidate)}：没有搜到歌曲`)
+      } catch (err) {
+        errors.push(`${sourceLabel(candidate)}：${err instanceof Error ? err.message : '搜索失败'}`)
+      }
+    }
+  }
+  return { ok: false, items: [], error: errors.join('；') }
+}
+
+/** 榜单：按传入的站点源顺序抓 /list/<分类>.html，主源失败自动走备用线路 */
+export async function fetchMusicTop(
+  sources: MusicSourceInput[],
+  categoryId: string
+): Promise<MusicSearchResponse> {
+  const category = MUSIC_TOP_CATEGORIES.find((item) => item.id === categoryId)
+  if (!category) return { ok: false, items: [], error: '榜单分类无效' }
+  const list = sources.filter(
+    (source) =>
+      source &&
+      typeof source.baseUrl === 'string' &&
+      /^https?:\/\//i.test(source.baseUrl) &&
+      source.kind !== 'lx' &&
+      !isLxScriptUrl(source.baseUrl) &&
+      !isHiSource(source)
+  )
+  if (!list.length) {
+    return { ok: false, items: [], error: '没有可用的音乐站点源，请先启用无名音乐' }
+  }
+  const errors: string[] = []
+  for (const source of list) {
+    for (const candidate of sourceCandidates(source)) {
+      try {
+        const base = normalizeBase(candidate.baseUrl)
+        const html = await getPage(base, `${base}/list/${category.id}.html`)
+        const items = parseSongs(html, candidate)
+        if (items.length) return { ok: true, items }
+        errors.push(`${sourceLabel(candidate)}：榜单暂无歌曲`)
+      } catch (err) {
+        errors.push(`${sourceLabel(candidate)}：${err instanceof Error ? err.message : '加载失败'}`)
+      }
     }
   }
   return { ok: false, items: [], error: errors.join('；') }
@@ -560,7 +716,7 @@ export async function testMusicSource(source: MusicSourceInput): Promise<MusicTe
           return {
             ok: true,
             count: items.length,
-            message: `可用，搜索到 ${items.length} 首，播放解析正常`
+            message: `可用，搜索到 ${items.length} 首`
           }
         } catch (err) {
           lastError = err instanceof Error ? err.message : '未知错误'
@@ -713,24 +869,26 @@ export async function resolveLegacyMusic(
   const firstArtist = artists.split(/[/&、,]/)[0]?.trim() ?? ''
 
   for (const source of DEFAULT_MUSIC_SOURCES) {
-    let candidates: MusicSong[]
-    try {
-      candidates = await searchAt(source, keyword || title, 1)
-    } catch {
-      continue
+    for (const candidate of sourceCandidates(source)) {
+      let candidates: MusicSong[]
+      try {
+        candidates = await searchAt(candidate, keyword || title, 1)
+      } catch {
+        continue
+      }
+      const target =
+        candidates.find(
+          (s) =>
+            norm(s.name) === norm(title) &&
+            !!firstArtist &&
+            norm(s.artists).includes(norm(firstArtist))
+        ) ??
+        candidates.find((s) => norm(s.name) === norm(title)) ??
+        candidates.find((s) => norm(s.name).includes(norm(title)))
+      if (!target) continue
+      const resolved = await resolveMusic(target.id, candidate.id, candidate.baseUrl, title, artists)
+      if (resolved.ok) return resolved
     }
-    const target =
-      candidates.find(
-        (s) =>
-          norm(s.name) === norm(title) &&
-          !!firstArtist &&
-          norm(s.artists).includes(norm(firstArtist))
-      ) ??
-      candidates.find((s) => norm(s.name) === norm(title)) ??
-      candidates.find((s) => norm(s.name).includes(norm(title)))
-    if (!target) continue
-    const resolved = await resolveMusic(target.id, source.id, source.baseUrl, title, artists)
-    if (resolved.ok) return resolved
   }
   return { ok: false, error: '默认音乐源里也没有找到同名歌曲' }
 }

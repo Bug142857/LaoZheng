@@ -6,6 +6,7 @@ import {
   useState,
   type ClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode
 } from 'react'
 import {
@@ -21,11 +22,13 @@ import {
   FileArchive,
   FileCog,
   FolderSync,
+  FolderTree,
   Globe,
   Heading2,
   Image,
   ImagePlus,
   Italic,
+  Keyboard,
   Languages,
   List,
   ListOrdered,
@@ -36,6 +39,7 @@ import {
   Music,
   Network,
   NotebookPen,
+  Paperclip,
   Pencil,
   Play,
   Quote,
@@ -66,10 +70,10 @@ const ICONS: Record<string, LucideIcon> = {
   Wrench,
   ShieldCheck,
   Shield,
+  ShieldBan,
   Globe,
   Cat,
   Languages,
-  ShieldBan,
   Image,
   Sparkles,
   Send,
@@ -85,6 +89,8 @@ const ICONS: Record<string, LucideIcon> = {
   Smartphone,
   Share2,
   FolderSync,
+  FolderTree,
+  Keyboard,
   FileCog,
   MonitorSmartphone,
   Video,
@@ -119,6 +125,7 @@ const ALLOWED_TAGS = new Set([
   'CODE',
   'HR',
   'IMG',
+  'A',
   'TABLE',
   'THEAD',
   'TBODY',
@@ -149,10 +156,14 @@ const DROP_TAGS = new Set([
 ])
 
 const IMAGE_SRC_PATTERN = /^(?:data:image\/(?:png|jpe?g|webp|gif);base64,|https?:\/\/)/i
+/** 使用经验里允许上传的小配置文件上限 */
+const ATTACH_MAX_BYTES = 1024 * 1024
+const ATTACH_HREF_PREFIX = 'data:application/octet-stream;base64,'
 
 /**
  * 笔记内容来自粘贴 / 手写，保存与回显前统一清洗：
- * 只留白名单标签，链接降级为文字，图片只接受位图 data URL 或 http(s) 地址。
+ * 只留白名单标签；普通链接降级为文字，图片只接受位图 data URL 或 http(s) 地址；
+ * 配置文件附件只保留 octet-stream data URL + download + data-attach 三个属性。
  */
 function sanitizeNote(raw: string): string {
   if (!raw) return ''
@@ -171,11 +182,20 @@ function sanitizeNote(raw: string): string {
     }
     for (const attr of Array.from(el.attributes)) {
       if (tag === 'IMG' && (attr.name === 'src' || attr.name === 'alt')) continue
+      if (tag === 'A' && ['href', 'download', 'data-attach'].includes(attr.name)) continue
       el.removeAttribute(attr.name)
     }
     if (tag === 'IMG') {
       const src = el.getAttribute('src') ?? ''
       if (!IMAGE_SRC_PATTERN.test(src)) el.remove()
+    }
+    if (tag === 'A') {
+      const href = el.getAttribute('href') ?? ''
+      const isAttachment =
+        el.hasAttribute('data-attach') &&
+        el.hasAttribute('download') &&
+        href.startsWith(ATTACH_HREF_PREFIX)
+      if (!isAttachment) el.replaceWith(...Array.from(el.childNodes))
     }
   }
   return root.innerHTML
@@ -184,10 +204,39 @@ function sanitizeNote(raw: string): string {
 function noteIsEmpty(html: string): boolean {
   if (!html) return true
   if (/<img\b/i.test(html)) return false
+  if (/<a\b[^>]*data-attach/i.test(html)) return false
   return !html
     .replace(/<[^>]*>/g, '')
     .replace(/&nbsp;/gi, ' ')
     .trim()
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
+/** 点笔记里的配置文件附件：弹保存对话框落盘 */
+function saveNoteAttachment(anchor: HTMLElement, onNotice: (text: string) => void): void {
+  const href = anchor.getAttribute('href') ?? ''
+  if (!href.startsWith(ATTACH_HREF_PREFIX)) return
+  const name = anchor.getAttribute('download') || '配置文件'
+  void window.laozheng
+    .saveNoteFile(name, href)
+    .then((res) => {
+      if (res.ok) onNotice(`已保存「${name}」`)
+      else if (!res.canceled) onNotice(res.error ?? '保存失败')
+    })
+    .catch(() => onNotice('保存失败'))
 }
 
 function readAsDataUrl(file: Blob): Promise<string> {
@@ -267,6 +316,7 @@ function NoteEditor({
 }) {
   const editorRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const attachRef = useRef<HTMLInputElement>(null)
   const savedRange = useRef<Range | null>(null)
   const [empty, setEmpty] = useState(() => noteIsEmpty(sanitizeNote(initialHtml)))
 
@@ -334,15 +384,47 @@ function NoteEditor({
     }
   }
 
+  /** 插入小配置文件（≤1MB），以 octet-stream data URL 存在笔记 HTML 里 */
+  const insertAttachments = async (files: File[]) => {
+    for (const file of files) {
+      if (file.size > ATTACH_MAX_BYTES) {
+        onNotice(`「${file.name}」超过 1MB，请换小一点的配置文件`)
+        continue
+      }
+      try {
+        const dataUrl = await readAsDataUrl(file)
+        const base64 = dataUrl.split(',')[1] ?? ''
+        if (!base64) throw new Error('读取文件失败')
+        const name = escapeHtml(file.name || '配置文件')
+        const label = escapeHtml(`附件：${file.name || '配置文件'}（${formatFileSize(file.size)}）`)
+        restoreSelection()
+        document.execCommand(
+          'insertHTML',
+          false,
+          `<a href="${ATTACH_HREF_PREFIX}${base64}" download="${name}" data-attach="1">${label}</a>`
+        )
+        sync()
+      } catch (err) {
+        onNotice((err as Error).message || '上传配置文件失败')
+      }
+    }
+  }
+
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     const files = Array.from(event.clipboardData.items)
-      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .filter((item) => item.kind === 'file')
       .map((item) => item.getAsFile())
       .filter((file): file is File => !!file)
-    if (files.length) {
+    const images = files.filter((file) => file.type.startsWith('image/'))
+    const attachments = files.filter((file) => !file.type.startsWith('image/'))
+    if (images.length || attachments.length) {
       event.preventDefault()
       rememberSelection()
-      void insertFiles(files)
+      // 图片和附件共用同一个光标位置：串行插入，避免并发互相覆盖
+      void (async () => {
+        if (images.length) await insertFiles(images)
+        if (attachments.length) await insertAttachments(attachments)
+      })()
       return
     }
     const html = event.clipboardData.getData('text/html')
@@ -351,6 +433,14 @@ function NoteEditor({
       document.execCommand('insertHTML', false, sanitizeNote(html))
       sync()
     }
+  }
+
+  /** 编辑状态下点附件也走保存，不让 contentEditable 触发页面跳转 */
+  const handleAttachmentClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const anchor = (event.target as HTMLElement).closest('a[data-attach]') as HTMLElement | null
+    if (!anchor) return
+    event.preventDefault()
+    saveNoteAttachment(anchor, onNotice)
   }
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -398,6 +488,15 @@ function NoteEditor({
         >
           <ImagePlus size={15} />
         </ToolBarButton>
+        <ToolBarButton
+          title="上传配置文件（不超过 1MB）"
+          onClick={() => {
+            rememberSelection()
+            attachRef.current?.click()
+          }}
+        >
+          <Paperclip size={15} />
+        </ToolBarButton>
         <ToolBarButton title="清除格式" onClick={() => run('removeFormat')}>
           <RemoveFormatting size={15} />
         </ToolBarButton>
@@ -427,6 +526,7 @@ function NoteEditor({
         spellCheck={false}
         data-placeholder={placeholder}
         onInput={sync}
+        onClick={handleAttachmentClick}
         onBlur={() => {
           rememberSelection()
           onSave(editorRef.current?.innerHTML ?? '', false)
@@ -444,6 +544,17 @@ function NoteEditor({
           const files = Array.from(event.target.files ?? [])
           event.target.value = ''
           void insertFiles(files)
+        }}
+      />
+      <input
+        ref={attachRef}
+        type="file"
+        multiple
+        className="note-file-input"
+        onChange={(event) => {
+          const files = Array.from(event.target.files ?? [])
+          event.target.value = ''
+          void insertAttachments(files)
         }}
       />
     </div>
@@ -473,6 +584,20 @@ export function ToolsPage({
     () => TOOL_ITEMS.find((tool) => tool.id === activeId) ?? null,
     [activeId]
   )
+
+  /** 按分类分组展示，分类顺序跟着清单里第一次出现的顺序走 */
+  const toolGroups = useMemo(() => {
+    const order: string[] = []
+    const map = new Map<string, ToolItem[]>()
+    for (const tool of TOOL_ITEMS) {
+      if (!map.has(tool.category)) {
+        map.set(tool.category, [])
+        order.push(tool.category)
+      }
+      map.get(tool.category)?.push(tool)
+    }
+    return order.map((category) => ({ category, items: map.get(category) ?? [] }))
+  }, [])
 
   const persist = (tool: ToolItem, html: string, notify: boolean) => {
     const cleaned = sanitizeNote(html)
@@ -601,7 +726,7 @@ export function ToolsPage({
             <NoteEditor
               key={activeTool.id}
               initialHtml={notesRef.current[activeTool.id] ?? ''}
-              placeholder={`记录「${activeTool.name}」的使用经验…\n可以直接粘贴文字或截图，Ctrl+S 保存。`}
+              placeholder={`记录「${activeTool.name}」的使用经验…\n可以粘贴文字或截图，也可以上传 1MB 以内的配置文件，Ctrl+S 保存。`}
               onChange={(html) => {
                 draftRef.current = html
                 scheduleAutoSave()
@@ -621,6 +746,14 @@ export function ToolsPage({
             <div
               className="tool-note-view note-content"
               dangerouslySetInnerHTML={{ __html: noteHtml }}
+              onClick={(event) => {
+                const anchor = (event.target as HTMLElement).closest(
+                  'a[data-attach]'
+                ) as HTMLElement | null
+                if (!anchor) return
+                event.preventDefault()
+                saveNoteAttachment(anchor, onNotice)
+              }}
             />
           )}
         </section>
@@ -634,32 +767,43 @@ export function ToolsPage({
         <h1 className="page-title">软件</h1>
       </header>
 
-      <div className="tools-grid">
-        {TOOL_ITEMS.map((tool) => {
-          const Icon = ICONS[tool.icon] ?? Wrench
-          return (
-            <div key={tool.id} className="tool-card">
-              <button className="tool-card-main" title={tool.desc} onClick={() => openTool(tool)}>
-                <span className="tool-icon">
-                  <Icon size={22} strokeWidth={1.8} />
-                </span>
-                <span className="tool-card-text">
-                  <span className="tool-card-name">{tool.name}</span>
-                  <span className="tool-card-category">{tool.category}</span>
-                </span>
-              </button>
-              <button
-                className="tool-card-link"
-                title="打开官网下载"
-                aria-label={`打开 ${tool.name} 官网`}
-                onClick={() => openSite(tool)}
-              >
-                <ExternalLink size={15} />
-              </button>
-            </div>
-          )
-        })}
-      </div>
+      {toolGroups.map((group) => (
+        <section key={group.category} className="tool-group">
+          <div className="tool-group-head">
+            <h2>{group.category}</h2>
+            <span className="tool-group-count">{group.items.length}</span>
+          </div>
+          <div className="tools-grid">
+            {group.items.map((tool) => {
+              const Icon = ICONS[tool.icon] ?? Wrench
+              return (
+                <div key={tool.id} className="tool-card">
+                  <button
+                    className="tool-card-main"
+                    title={tool.desc}
+                    onClick={() => openTool(tool)}
+                  >
+                    <span className="tool-icon">
+                      <Icon size={22} strokeWidth={1.8} />
+                    </span>
+                    <span className="tool-card-text">
+                      <span className="tool-card-name">{tool.name}</span>
+                    </span>
+                  </button>
+                  <button
+                    className="tool-card-link"
+                    title="打开官网下载"
+                    aria-label={`打开 ${tool.name} 官网`}
+                    onClick={() => openSite(tool)}
+                  >
+                    <ExternalLink size={15} />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      ))}
     </>
   )
 }

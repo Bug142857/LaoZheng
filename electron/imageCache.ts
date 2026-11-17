@@ -1,5 +1,5 @@
 import { protocol, type Session } from 'electron'
-import { createHash } from 'node:crypto'
+import { createDecipheriv, createHash } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { cacheRoot } from './settings'
@@ -109,6 +109,17 @@ function keyOf(url: string): string {
   return createHash('sha1').update(url).digest('hex')
 }
 
+/** 本机 / 回环地址：图片缓存不代理，避免被构造 lzimg 地址探测本机端口 */
+function isLoopbackHost(host: string): boolean {
+  const value = host.toLowerCase().replace(/^\[|\]$/g, '')
+  return (
+    value === 'localhost' ||
+    value === '::1' ||
+    value === '0.0.0.0' ||
+    /^127\./.test(value)
+  )
+}
+
 /** 按文件头判断图片类型（豆瓣图床多数地址没有扩展名）；不是已知图片格式时返回 null */
 export function sniffImageMime(buf: Buffer): string | null {
   if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg'
@@ -153,6 +164,28 @@ export function setupImageRequestRedirect(ses: Session): void {
 }
 
 /**
+ * 搬山人小说网的封面 / 插图是 AES-128-CBC 密文（前 16 字节是 IV），
+ * 站点脚本 decrypt.worker.js 用固定密钥在前端还原；这里按同样算法解开。
+ */
+const BANSHANREN_IMAGE_KEY = Buffer.from('V4@.Tx+uXZn)AiH>', 'utf8')
+
+function decryptBanshanrenImage(url: string, data: Buffer): Buffer | null {
+  let host = ''
+  try {
+    host = new URL(url).hostname.toLowerCase()
+  } catch {
+    return null
+  }
+  if (!/(^|\.)banshanren\.com$/.test(host) || data.length <= 32) return null
+  try {
+    const decipher = createDecipheriv('aes-128-cbc', BANSHANREN_IMAGE_KEY, data.subarray(0, 16))
+    return Buffer.concat([decipher.update(data.subarray(16)), decipher.final()])
+  } catch {
+    return null
+  }
+}
+
+/**
  * 注册 lzimg:// 处理器。headerFor 由主进程提供（Referer / UA / Cookie 规则），
  * 缓存未命中时按同一套头去源站取图，成功后落盘。
  */
@@ -184,6 +217,17 @@ export function setupImageCacheHandler(headerFor: (url: string) => Record<string
       // 哔咔图床返回的是加密字节：先按站点同款算法还原，再判断是不是图片
       if (!sniffed) {
         const plain = decryptBikahubImage(data)
+        if (plain) {
+          const plainMime = sniffImageMime(plain)
+          if (plainMime) {
+            data = plain
+            sniffed = plainMime
+          }
+        }
+      }
+      // 搬山人小说网的图片同样是加密字节（AES-CBC，IV 在开头）
+      if (!sniffed) {
+        const plain = decryptBanshanrenImage(target, data)
         if (plain) {
           const plainMime = sniffImageMime(plain)
           if (plainMime) {
@@ -231,6 +275,13 @@ export function setupImageCacheHandler(headerFor: (url: string) => Record<string
       // 非法地址按错误处理
     }
     if (!/^https?:\/\//i.test(target)) {
+      return new Response(null, { status: 400 })
+    }
+    try {
+      if (isLoopbackHost(new URL(target).hostname)) {
+        return new Response(null, { status: 400 })
+      }
+    } catch {
       return new Response(null, { status: 400 })
     }
     return respond(target)

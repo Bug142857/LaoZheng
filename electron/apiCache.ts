@@ -72,10 +72,14 @@ function isFailure(value: unknown): boolean {
   const o = value as {
     ok?: unknown
     partial?: unknown
+    error?: unknown
     detail?: { partial?: unknown }
     person?: { partial?: unknown }
   }
   if (o.ok === false) return true
+  // 电视源这类结果没有 ok 字段，失败时只在 error 里带原因：
+  // 不当作失败的话会把「网络加载失败」缓存 10 分钟，用户点重试也仍然命中旧错误
+  if (o.ok === undefined && typeof o.error === 'string' && o.error.trim()) return true
   // 次要数据超时 / 作品列表没拿到：不要把这个残缺结果缓存一周
   return o.partial === true || o.detail?.partial === true || o.person?.partial === true
 }
@@ -114,8 +118,12 @@ async function refreshNow<T>(key: string, load: () => Promise<T>, stale: T): Pro
   refreshing.add(key)
   try {
     const value = await load()
-    if (!isFailure(value)) await store(key, value)
-    return value
+    if (!isFailure(value)) {
+      await store(key, value)
+      return value
+    }
+    // 刷新拿到的是失败结果：仍退回旧缓存，避免断网后页面直接空白
+    return stale
   } catch {
     return stale
   } finally {

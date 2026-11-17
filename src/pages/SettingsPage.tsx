@@ -22,11 +22,12 @@ import type { DoubanAuthStatus } from '../shared/douban'
 import type { CacheInfo, ThemeMode, UiSettings } from '../shared/settings'
 import type { SyncConfigView } from '../shared/sync'
 import type { ZlibStatusResponse } from '../shared/zlib'
-import type { UpdateCheckResult, UpdateProgress } from '../shared/update'
+import type { UpdateCheckResult } from '../shared/update'
 import { formatBytes } from '../shared/downloads'
 import { useData } from '../state/DataContext'
 import { clearModuleCaches } from '../utils/cache'
 import { ConfirmDialog, Modal } from '../components/ui'
+import { UpdateModal } from '../components/UpdateModal'
 import { SourceSettings } from './SourceSettings'
 import { ListManagerSection } from './ListManagerSection'
 import {
@@ -104,9 +105,6 @@ export function SettingsPage({
   const [magnetCount, setMagnetCount] = useState(0)
   const [checking, setChecking] = useState(false)
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null)
-  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null)
-  const [updateBusy, setUpdateBusy] = useState<'download' | 'install' | null>(null)
-  const [updatePath, setUpdatePath] = useState<string | null>(null)
   const [updateOpen, setUpdateOpen] = useState(false)
 
   useEffect(() => {
@@ -147,10 +145,6 @@ export function SettingsPage({
       .magnetState()
       .then((state) => setMagnetCount(state.sources.length))
       .catch(() => undefined)
-  }, [])
-
-  useEffect(() => {
-    return window.laozheng.onUpdateProgress((progress) => setUpdateProgress(progress))
   }, [])
 
   useEffect(() => {
@@ -229,6 +223,7 @@ export function SettingsPage({
     const imported = pendingImport
     await replaceData(imported)
     setUi(await window.laozheng.getUiSettings())
+    setDownloadDir(await window.laozheng.downloadRoot())
     onNotice(
       `已导入：${imported.items.length} 个条目 / ${imported.lists.length} 个清单 / ${imported.innerFavs.length} 条收藏`
     )
@@ -335,38 +330,11 @@ export function SettingsPage({
       return
     }
     setUpdateInfo(res)
-    setUpdatePath(null)
-    setUpdateProgress(null)
     if (!res.hasUpdate) {
       onNotice(`已是最新版本 ${res.current}${res.line ? ` · 线路 ${res.line}` : ''}`)
       return
     }
     setUpdateOpen(true)
-  }
-
-  const downloadUpdate = async () => {
-    if (!updateInfo?.downloadUrl) return
-    setUpdateBusy('download')
-    setUpdateProgress(null)
-    const res = await window.laozheng.downloadUpdate(updateInfo.downloadUrl)
-    setUpdateBusy(null)
-    if (!res.ok || !res.path) {
-      onNotice(`下载失败：${res.error ?? '未知错误'}`)
-      return
-    }
-    setUpdatePath(res.path)
-    onNotice('安装包已下载完成，点「立即安装」会打开安装向导（应用会先退出）')
-  }
-
-  const installUpdate = async () => {
-    if (!updatePath) return
-    setUpdateBusy('install')
-    try {
-      await window.laozheng.installUpdate(updatePath)
-    } catch (err) {
-      setUpdateBusy(null)
-      onNotice(`启动安装失败：${(err as Error).message}`)
-    }
   }
 
   const clearCacheNow = async () => {
@@ -406,6 +374,7 @@ export function SettingsPage({
     const restored = pendingSync
     await replaceData(restored)
     setUi(await window.laozheng.getUiSettings())
+    setDownloadDir(await window.laozheng.downloadRoot())
     onNotice(
       `已从云端恢复：${restored.items.length} 个条目 / ${restored.lists.length} 个清单 / ${restored.innerFavs.length} 条收藏`
     )
@@ -698,7 +667,7 @@ export function SettingsPage({
               <section className="settings-card">
                 <h3>导入 / 导出</h3>
                 <p className="settings-hint">
-                  与手机端共用同一份备份格式（version 1）。PC 端额外带上电视源、磁力源、磁力搜索缓存、
+                  与手机端共用同一份备份格式（version 1）。PC 端额外带上电视源、磁力源、
                   下载记录、本机设置（主题 / 下载目录 / 各对话框上次位置），手机端会自动忽略这些字段。
                   导入会覆盖本机当前数据；导出生成手机端可直接识别的 JSON。
                   豆瓣与各站登录态、WebDAV 密码属于本机加密凭据，不写入备份。
@@ -935,59 +904,12 @@ export function SettingsPage({
         />
       )}
 
-      {updateOpen && updateInfo?.hasUpdate && (
-        <Modal
-          title={`发现新版本 ${updateInfo.latest ?? ''}`}
-          onClose={() => setUpdateOpen(false)}
-          footer={
-            <>
-              <button className="btn ghost" onClick={() => setUpdateOpen(false)}>
-                稍后
-              </button>
-              {updateInfo.url ? (
-                <button
-                  className="btn"
-                  onClick={() => void window.laozheng.openExternal(updateInfo.url ?? '')}
-                >
-                  打开发布页
-                </button>
-              ) : null}
-              {updateInfo.downloadUrl && !updatePath ? (
-                <button
-                  className="btn primary"
-                  disabled={updateBusy === 'download'}
-                  onClick={() => void downloadUpdate()}
-                >
-                  <Download size={14} /> {updateBusy === 'download' ? '下载中…' : '下载更新'}
-                </button>
-              ) : null}
-              {updatePath ? (
-                <button
-                  className="btn primary"
-                  disabled={updateBusy === 'install'}
-                  onClick={() => void installUpdate()}
-                >
-                  {updateBusy === 'install' ? '正在启动安装…' : '立即安装'}
-                </button>
-              ) : null}
-            </>
-          }
-        >
-          <p>
-            当前版本 v{updateInfo.current}
-            {updateInfo.notes ? `\n\n${updateInfo.notes}` : ''}
-          </p>
-          {updateBusy === 'download' && updateProgress ? (
-            <div className="page-desc">
-              下载进度{' '}
-              {updateProgress.total > 0
-                ? `${Math.round(updateProgress.percent * 100)}%`
-                : `${Math.round(updateProgress.received / 1024 / 1024)} MB`}
-              {updateProgress.line ? ` · 线路 ${updateProgress.line}` : ''}
-            </div>
-          ) : null}
-        </Modal>
-      )}
+      <UpdateModal
+        open={updateOpen}
+        info={updateInfo}
+        onClose={() => setUpdateOpen(false)}
+        onNotice={onNotice}
+      />
     </>
   )
 }

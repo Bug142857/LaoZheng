@@ -160,7 +160,19 @@ function mapListItems(value: unknown, lists: ItemList[], items: CollectionItem[]
   return out
 }
 
-/** 启动时调用：补齐空白的影视源与清单数据，只播种一次 */
+/** 内置的软件使用经验（新装用户默认带一份，用户自己的笔记优先） */
+function mapToolNotes(value: unknown): Record<string, string> | null {
+  const o = obj(value)
+  if (!o) return null
+  const out: Record<string, string> = {}
+  for (const [key, html] of Object.entries(o)) {
+    if (!key || typeof html !== 'string' || !html.trim()) continue
+    out[key] = html
+  }
+  return Object.keys(out).length ? out : null
+}
+
+/** 启动时调用：补齐空白的影视源、清单与软件使用经验，只播种一次 */
 export async function seedDefaultData(): Promise<void> {
   if (await markerDone()) return
   const seed = await readSeed()
@@ -189,6 +201,14 @@ export async function seedDefaultData(): Promise<void> {
       data.lists = lists
       data.items = items
       data.listItems = mapListItems(seed.listItems, lists, items)
+      changed = true
+    }
+  }
+
+  if (!data.toolNotes || Object.keys(data.toolNotes).length === 0) {
+    const notes = mapToolNotes(seed.toolNotes)
+    if (notes) {
+      data.toolNotes = notes
       changed = true
     }
   }

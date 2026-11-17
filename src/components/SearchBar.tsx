@@ -20,7 +20,8 @@ export function SearchBar({
   extra,
   onRefresh,
   refreshing = false,
-  refreshDisabled = false
+  refreshDisabled = false,
+  refreshTitle = '刷新到最新资源'
 }: {
   value: string
   onChange: (value: string) => void
@@ -38,6 +39,8 @@ export function SearchBar({
   onRefresh?: () => void
   refreshing?: boolean
   refreshDisabled?: boolean
+  /** 刷新按钮的提示文案 */
+  refreshTitle?: string
 }) {
   return (
     <form
@@ -84,8 +87,8 @@ export function SearchBar({
         <button
           className="btn btn-sq"
           type="button"
-          title="刷新到最新资源"
-          aria-label="刷新到最新资源"
+          title={refreshTitle}
+          aria-label={refreshTitle}
           disabled={refreshing || refreshDisabled}
           onClick={onRefresh}
         >

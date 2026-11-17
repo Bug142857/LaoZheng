@@ -64,6 +64,7 @@ import type {
   MusicResolveResponse,
   MusicSearchResponse,
   MusicSource,
+  MusicSourceBackup,
   MusicSourceInput,
   MusicSourceKind,
   MusicTestResult
@@ -93,6 +94,7 @@ import type {
   MelonDetailResponse,
   MelonListResponse
 } from './melon'
+import type { NewsFeedResponse, NewsNodeResponse } from './news'
 import type {
   SkAdapter,
   SkCatalogResponse,
@@ -223,6 +225,13 @@ import type {
 } from './meitu'
 import { DEFAULT_MEITU_SOURCES, normalizeMeituSources } from './meitu'
 import { DEFAULT_SHUANGKAN_SOURCES, normalizeShuangkanSources } from './shuangkan'
+import {
+  normalizeSingingVideos,
+  type SingingDanmakuResult,
+  type SingingPlayback,
+  type SingingVideo,
+  type SingingVideoInfo
+} from './singing'
 import type {
   EmuListResponse,
   EmuOpenResponse,
@@ -355,6 +364,8 @@ export interface AppData {
   shuangkanSources: ShuangkanSource[]
   /** 软件模块的使用经验笔记（键 = 工具 id，值 = 富文本 HTML），随备份与云同步一起走 */
   toolNotes: Record<string, string>
+  /** 演唱模块：手动添加的 B站视频条目（按分类整理），随备份与云同步一起走 */
+  singingVideos: SingingVideo[]
 }
 
 export interface ImportResult {
@@ -379,7 +390,14 @@ export interface SourcesExportResult {
 
 /** 片源管理：全部源整体导入导出（影视 / 短剧 / 电视 / 磁力 / 修改器 / 音乐） */
 export interface AllSourcesBundle {
-  vodSources: { name: string; baseUrl: string; enabled?: boolean }[]
+  vodSources: {
+    name: string
+    baseUrl: string
+    enabled?: boolean
+    /** 手动归组（国内 / 外网），缺失时按默认国内处理 */
+    region?: string
+    regionManual?: boolean
+  }[]
   dramaSources: { id?: string; name: string; baseUrl: string; enabled?: boolean }[]
   liveSources: LiveSource[]
   magnetSources: MagnetSource[]
@@ -396,6 +414,8 @@ export interface AllSourcesBundle {
     baseUrl: string
     kind?: MusicSourceKind
     platforms?: MusicLxPlatform[]
+    /** 备用线路（无名闪闪音乐），随整体源导出 / 导入一起走 */
+    backup?: MusicSourceBackup | null
     enabled?: boolean
   }[]
   novelSources?: {
@@ -632,11 +652,17 @@ export interface LaozhengApi {
     baseUrl: string
     enabled?: boolean
   }[]) => Promise<SourcesExportResult>
+  /** 演唱模块（B站视频） */
+  singingVideoInfo: (input: string) => Promise<SingingVideoInfo>
+  singingPlay: (bvid: string, page: number, qualityId?: string) => Promise<SingingPlayback>
+  singingDanmaku: (bvid: string, page: number) => Promise<SingingDanmakuResult>
   searchMusic: (
     sources: MusicSourceInput[],
     keyword: string,
     page?: number
   ) => Promise<MusicSearchResponse>
+  /** 榜单：分类 id 来自 shared/music 的 MUSIC_TOP_CATEGORIES */
+  musicTop: (sources: MusicSourceInput[], category: string) => Promise<MusicSearchResponse>
   resolveMusic: (
     songId: string,
     platform?: string,
@@ -688,6 +714,8 @@ export interface LaozhengApi {
     name: string
     baseUrl: string
     enabled?: boolean
+    /** 无名闪闪音乐的备用线路，导出 / 导入时一起带走 */
+    backup?: { id?: string; name?: string; baseUrl: string; enabled?: boolean } | null
   }[]) => Promise<SourcesExportResult>
   novelHome: (source: NovelSourceInput) => Promise<NovelListResponse>
   novelSearch: (source: NovelSourceInput, keyword: string) => Promise<NovelListResponse>
@@ -741,6 +769,8 @@ export interface LaozhengApi {
   trackMelonImages: (urls: string[]) => Promise<void>
   melonImage: (url: string) => Promise<{ ok: boolean; dataUrl?: string; error?: string }>
   melonDuration: (url: string) => Promise<{ ok: boolean; seconds?: number; error?: string }>
+  newsFeed: (category: string, query?: string, page?: number) => Promise<NewsFeedResponse>
+  newsNode: (id: string) => Promise<NewsNodeResponse>
   shuangkanCatalog: (
     source: ShuangkanSourceRef,
     content: SkContent,
@@ -796,9 +826,19 @@ export interface LaozhengApi {
   downloadSync: () => Promise<SyncActionResult>
   checkUpdate: () => Promise<UpdateCheckResult>
   downloadUpdate: (url: string) => Promise<UpdateDownloadResult>
+  pauseUpdate: () => Promise<void>
+  resumeUpdate: () => Promise<void>
+  cancelUpdate: () => Promise<void>
   installUpdate: (path: string) => Promise<void>
   onUpdateProgress: (callback: (progress: UpdateProgress) => void) => () => void
+  /** 启动时检查到新版本：主进程推送 / 渲染层挂载后主动拉取 */
+  onUpdateAvailable: (callback: (info: UpdateCheckResult) => void) => () => void
+  pendingUpdate: () => Promise<UpdateCheckResult | null>
   openExternal: (url: string) => Promise<void>
+  saveNoteFile: (
+    name: string,
+    dataUrl: string
+  ) => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>
   listAccounts: () => Promise<AccountsView>
   loginAccount: (site: AccountSite) => Promise<AccountActionResult>
   openAccountLogin: (site: AccountSite) => Promise<void>
@@ -969,7 +1009,10 @@ export const EMPTY_DATA: AppData = {
   liveHistory: [],
   dramaSources: DEFAULT_DRAMA_SOURCES,
   trainerSources: DEFAULT_TRAINER_SOURCES,
-  musicSources: [...DEFAULT_MUSIC_SOURCES, ...LX_MUSIC_SOURCES],
+  musicSources: [...DEFAULT_MUSIC_SOURCES, ...LX_MUSIC_SOURCES].map((source) => ({
+    ...source,
+    backup: source.backup ? { ...source.backup } : null
+  })),
   novelSources: DEFAULT_NOVEL_SOURCES,
   comicSources: DEFAULT_COMIC_SOURCES,
   h1Sources: DEFAULT_H1_SOURCES,
@@ -977,7 +1020,8 @@ export const EMPTY_DATA: AppData = {
   wallpaperSources: DEFAULT_WALLPAPER_SOURCES,
   meituSources: DEFAULT_MEITU_SOURCES,
   shuangkanSources: DEFAULT_SHUANGKAN_SOURCES,
-  toolNotes: {}
+  toolNotes: {},
+  singingVideos: []
 }
 
 /**
@@ -1046,7 +1090,9 @@ export function normalizeData(raw: unknown): AppData {
     // 爽看源缺失时补内置肉视频；删空不补回
     shuangkanSources: normalizeShuangkanSources(o.shuangkanSources),
     // 软件模块的使用经验笔记；缺失时为空
-    toolNotes: normalizeToolNotes(o.toolNotes)
+    toolNotes: normalizeToolNotes(o.toolNotes),
+    // 演唱模块：手动添加的 B站视频条目
+    singingVideos: normalizeSingingVideos(o.singingVideos)
   }
   // 2026-11-04 v0.85：按用户要求暂时下线「无损音乐」默认源，
   // 老数据里由 v0.83 自动补进来的内置 hi 源在这里移除（手动添加的同地址源 id 不同，不受影响）

@@ -1,7 +1,7 @@
 # 老郑分享 · PC 端项目记忆
 
 > **唯一记忆入口**（PC 端仓库 https://github.com/Bug142857/LaoZheng），换电脑 / 换 AI 账号后从这里恢复上下文。
-> 最后更新：2026-11-16（最新已发版 v0.160；下次修改 +1 到 0.161）。
+> 最后更新：2026-11-17（最新已发版 v0.160；工作区 v0.191 未发版，下次修改 +1 到 0.192）。
 > **读取纪律**：开工只读第 0 节（Read offset 0, limit 140），其余内容按关键词 Grep；**禁止整文件读取本文件**。
 > 历史细节已归档，不要整读：`docs/archive/VERSION_LOG.md`（v0.55~v0.123 流水）、`docs/archive/MODULE_DETAILS.md`（各模块完整实现口径）、`docs/archive/MOBILE_HISTORY.md`（手机端原文）。
 >
@@ -10,7 +10,14 @@
 ### 0. 新窗口先读（当前状态）
 
 - **⛔ 开工纪律（2026-11-11 用户强调，最高优先级）**：① 开工先读本节 + 跑 `git status`（**不要整读本文件与 project_memory.md**）；② 严格执行既有全部规则（版本号先 +1、新功能必带缓存 / 导入导出 / 云同步、各模块口径、发版需用户明说），不得凭印象省略；③ 收尾按「接入内容 → 验证结果 → 剩余限制 → 安装包」四段输出并附真实数据，不得只回「已修复」；④ 每轮结束**仅在出现新硬规则 / 用户新口径时**按「记忆同步净增长为 0」追加（单次 ≤5 行，同时删等量过期内容），不重复抄写既有内容；**平时一律不 commit / push**，用户明确说「发版」才 push（手机端 ShangYin 的「每轮必 push」不适用于 PC 端）。
-- **版本状态**：工作区与最新已发版均为 **v0.160**（`package.json` = `0.160.0`，Release 资产 `LaoZheng-0.160-Setup.exe`，108,158,364 字节，公开 Gist `update.json` 已同步 0.160）；下次修改 +1 到 0.161；发版必须用户明确说「发版」；**发版时必须同步 README（当前版本 / 功能列表 / 目录结构 / 数据字段 / 更新流程），不只改版本状态**。
+- **版本状态**：最新已发版 **v0.160**（Release 资产 `LaoZheng-0.160-Setup.exe`，108,158,364 字节，公开 Gist `update.json` 已同步 0.160）；工作区已改到 **v0.191（未发版，`package.json` = `0.191.0`）**，下次修改 +1 到 0.192；发版必须用户明确说「发版」；**发版时必须同步 README（当前版本 / 功能列表 / 目录结构 / 数据字段 / 更新流程），不只改版本状态**。**v0.187 起全新安装默认下载目录 `D:\laozheng\download`、缓存目录 `D:\laozheng\cache`**（D 盘不可写则回退旧默认；userData 已有 settings.json / data.json / seed-state.json 任一即视为老用户，路径一律不变）。
+- **v0.182（未发版）演唱模块**：新增 `singing` 模块（导航在「直播」下方），右上角 B站扫码登录与「直播」共用 `live-accounts.json` 与二维码接口，**登录只用于提高播放清晰度**，登录 / 退出通过 `LIVE_LOGIN_EVENT` 双向刷新。**不再读取 / 同步收藏夹**：早期一次性导入的 225 个视频留在 `data.singingVideos`，之后只能点「添加视频」手动填链接（BV / av / 完整链接 / b23.tv 短链）+ 自定义标题 + 分类；列表按 `addedAt` 倒序（最近添加在前），搜索栏「筛选」后有刷新按钮（清空搜索 / 分类筛选并回到全部、滚到顶部）。分类用 1~3 级下拉：分类名按 `-` 拆级，只有两级的归入三级「其他」（如「演唱现场-国产-其他」），一级顺序最后固定 游戏剧情 → 影视动漫 → 文学科普。播放走 DASH（`fnval=16`，最高 4K），`BiliPlayer` 用 `<video>` + 隐藏 `<audio>` 双轨同步；DASH 视频轨没有声音、底部原生音量条点了没反应，所以隐藏原生音量 / 静音 / 全屏控件（`.bili-video`），在右上角工具条用自建音量滑块 / 静音 + 弹幕开关 + 清晰度下拉 + 全屏按钮。**全屏必须对整个 `.player-stage` 调 Fullscreen API**（原生全屏只放大 `<video>`，弹幕层会消失），弹幕层 / 工具条随容器一起进全屏。弹幕走 `x/v1/dm/list.so` XML，**每次打开视频都重新拉取**（B站新增的弹幕重开即显示，不做 30 分钟缓存），按时间滚动 / 顶部 / 底部显示；**弹幕按钮固定显示**，无弹幕时禁用并提示「该视频暂无弹幕」。无 DASH 时回退 durl mp4。
+- **v0.173（未发版）资讯收藏 / 软件默认经验**：收藏页资讯卡片右上角改为**删除按钮**（`icon-btn danger` + Trash2，不再用心形），点击先弹 `ConfirmDialog`「删除收藏」，取消保留、确认才删除。`resources/default-seed.json` 增加 `toolNotes`（7 篇使用经验、约 304K 字符，含截图 base64，种子文件约 1.13MB）；`seed.ts` 在首次启动且 `data.toolNotes` 为空时播种，已有笔记不覆盖，与影视源 / 清单共用同一次 seed（`seed-state.json`）。**该功能上线前没有老用户使用过，不做旧数据迁移 / 合并，当前播种逻辑即最终口径。** 全新安装「片源管理」共 **96 个源**：种子 `vodSources` 39 + 各模块代码默认 38（短剧 2 / 音乐 2 / 小说 10 / 漫画 5 / 直播 3 / 补丁 7 / 壁纸 2 / 套图 2 / 皇片 5）+ 电视 1 + 磁力 18；番号 `h1Sources` 4 个不计入该数字。
+- **v0.171（未发版）资讯**：站点对高频请求会按 IP 限流（`/c/*`、`/n/*` 先 403「安全验证」后 503，首页仍 200）——请求已串行 + 间隔 ≥700ms；分类页 403/503 时自动用**首页对应分区兜底**（`HOME_SECTION_BY_CATEGORY`，综合/科技/娱乐/社区/购物/财经/开发/日报，4 张卡、无分页子分类，`fallback:true` 显示提示条），已成功缓存过的分类仍直接走缓存；错误页给「重试 / 打开网站验证」。收藏刷新不再逐条 `newsNode`，按收藏 payload 的 `category + page` 分组，每组只拉一次分类页并回写卡片 items（收藏时 payload 已带 `page`）。
+- **v0.172（未发版）资讯 / 软件**：资讯一级下拉改为九类，顺序 综合 → **简报** → 科技 → 娱乐 → 社区 → 购物 → 财经 → 开发 → 报刊，**AI 分类已去掉**（`NEWS_CATEGORIES` 与 `HOME_SECTION_BY_CATEGORY` 同步）。软件：XQNetwork 官网改为注册邀请链接 `https://81xq.cc/#/register?invite=Muk28UeZ`；FreeFileSync 已移除（文件管理 6 / 共 32）。使用经验支持上传 **≤1MB 配置文件**：文件转 `data:application/octet-stream;base64,` 存进笔记 HTML 的 `a[data-attach][download]`，清洗白名单只放行该形态；点附件走 `app:saveNoteFile`（校验前缀 / 大小 / 文件名，弹保存对话框落盘），随笔记进备份 / 云同步。
+- **v0.163（未发版）直播登录与卡片**：三站登录后右上角按钮直接显示账号昵称，再点弹确认框退出（不再有单独退出图标）；抖音昵称取 `douyin.com/user/self` 的页面标题（`xx的抖音 - 抖音`，自助资料接口被签名风控拦不可用），斗鱼读登录后页面顶部昵称、兜底 `acf_ccn`；名字后台补取，界面轮询刷新。卡片统一为「标题 + 分类 · 主播名」，`area` 为空时用平台名（如「抖音 · 某某」），不再单独显示平台行与人气。
+- **v0.166→v0.167（未发版）直播登录兜底**：账号文件缺记录时从直播分区 Cookie 收编登录态（抖音 `sessionid/sessionid_ss/sid_tt`、斗鱼 `acf_*`）；打开登录窗口前先清该平台旧 Cookie，避免「扫码窗口一开就秒关」；抖音 `sid_guard` = `<hash>|登录时间戳|有效期秒数|到期日期`，第二个字段**不是过期时间**，不再据此自动登出，过期时间按「登录时间 + 有效期」计算。
+- **v0.162→v0.163（未发版）软件分类**：卡片按 `TOOL_ITEMS.category` 分组，分组与组内顺序 = 数组顺序，分组头带数量；当前分组：系统安全 4 / 网络传输 7 / 页面插件 5 / 文件管理 6 / 媒体影音 5 / 通讯社交 5，共 32 个；WeGame 与 FreeFileSync 已移除，保留 360文件夹（baoku.360.cn）与微信输入法（z.weixin.qq.com）。
 - **v0.131→v0.134（未发版）套图模块（原「美图」）**：新增 `meitu` 模块，默认源 魅影画廊 `https://www.jb9.es`（jb9 模板，入口是线路跳转页 `var targets`，解析可用镜像并缓存 30 分钟）+ 雪月映画 `https://taoo.xyz`（taoo 模板，Typecho photograph 主题）；列表 / 分类 / 图集详情（taoo 详情读 `script#virtual-gallery-data`，jb9 详情读 gallery-item 原图链接），图集内可翻页大图、收藏、下载到「套图」目录（v0.134 起由「美图」迁移改名）；源存 `data.meituSources`，片源管理有套图源卡片（增删改 / 导入 / 导出 / 测试 / 启停），列表缓存 `meitu1`；魅影画廊分类平铺展示站点导航全部分类（含下拉细分，去掉深夜电台，slug 作 id，数量仍按站点头尾页折算）；漫画 / 套图的网格浏览卡片右上角有单张下载按钮（直接进下载中心，不用点开）。
 - **v0.124（未发版）皇片镜像信息流**：P站默认 `pList('recommended')` = `/recommended`，可切 推荐/最新/热门；X站默认 `/new/1`（最新），热门 = `/best`（单页），分类页显式 `s:uploaddate` / `s:views`；XH 默认 `/newest`，热门 = `/best`，分类排序段 `/categories/<slug>/newest|best/N`；镜像 chip 顺序 = 排序 chip → 全部 → 分类；X站 38 个分类中文映射 + 站内 `"nbResults"` 数量（2h 内存缓存）；XH 分类过滤 `macanese`（澳门人）。
 - **v0.143（未发版）硬件口径**：条目顺序 系统 → 主板 → 处理器 → 内存 → 显卡 → 显示器 → 硬盘 → 声卡 → 网卡；去掉「型号」卡片与内存 PartNumber；内存按容量 / 代际 / 频率聚合，同规格显示为 `16GB DDR4 2400 MHz (8GB+8GB)`，多规格才加「共 X」；显示器从 `WmiMonitorBasicDisplayParams` 的 EDID 宽高算英寸（如 `24.0 英寸`）；缓存文件改 `system-info-v3.json`。
@@ -19,8 +26,8 @@
 - **省积分工作流（2026-11-12 用户批准）**：① 探查一次到位——单脚本覆盖全部目标路径，只回 ≤20 行结论（状态 / 选择器计数 / 首条标题），不打印 HTML；② 大输出不进上下文——日志 >30 行走 `context-mode`（`ctx_execute` / `ctx_execute_file`），否则重定向后只读错误行 / 尾部；③ 编辑批量做完再一次 `typecheck` → 一次 `build` → 一轮 e2e（只测用户明确要求 + 新代码路径）→ 最多一次 UI 抽查，不反复重启应用；**e2e 仍可主动跑（2026-11-12 用户确认不采用「只做 typecheck+build」）**，但必须一个脚本覆盖多个功能点、测试资源一律秒级小文件（禁止公网大文件）、临时脚本合并成一个并收尾统一删除；④ 缓存类改动先失效测试缓存再验，长任务拆会话（探查 / 实施分开），独立操作并行发出。
 - **皇片播放鉴权规则（v0.122 第二轮，当前）**：① 提示片有两层根因——站点主域要 Cookie + Referer；**重定向后的 CDN 网关（`jre*.vc*.top/.sbs/.cc/.com` 等共享网关）对 master / variant / 分片 / AES key 每个请求单独鉴权**，任何一跳裸 UA 只回 `player.centercdn.top/tip.ts`（143 字节假清单 / 假 key）。实现：`gohome.ts` 的 `skMediaHosts` 存完整 `{referer, cookie, ua}`；requestSite / psite `getHtml` 成功后登记站点主域；`main.ts` `onBeforeRedirect` 把重定向目标域名继承同一份鉴权；`applyRequestHeaders` 的 skMedia 只对非 image 资源生效。② 肉视频（rou07）`/api/hls` **不能注入站点 Cookie / Referer / 桌面 UA**（网关按 UA 粘性分流到质量不一的边缘节点）：`SiteResolver.mediaAuth=false` 关闭登记，`resolveSkMediaPlay` **串行**探测候选 UA（并行会因会话粘性互相干扰），只登记 UA、**返回原始 `/api/hls/<id>` 入口不锁节点**（锁节点后一次坏节点就整段失败）。③ 网关 302 会被 Chromium 缓存 → hls.js `xhrSetup` 对 `/api/hls/` URL 追加一次性随机参数再 `xhr.open`，让每次请求（含 6 次重试）重新分流，`main.ts` 对伪装成 `index.png` 的清单补 `Accept: */*`。④ 播放器重试 6 / 6 / 8；`LEVEL_LOADED` 检测 `/tip.` 直接报错。⑤ KVS（第五个源）详情页 CDN 缓存约 3 小时，`pppDetail` 必须走 `freshPath()` 回源拿新令牌。⑥ 节点池随时段翻转，rou07 偶发整段不可播属站点端问题，不要用固定 UA / 固定节点解决。
 - **皇片镜像翻页规则（v0.123，当前）**：① 分页条只渲染当前页附近几页（P站只到 1~9），**不要用分页条判断末页**：P站从页面内嵌 `"resultsCount":N`（兼容 `VIDEO_FILTER_resultsCount=N`）反推，`pages = 1 + ceil((N-30)/42)`（第 1 页 30 条、第 2 页起 42 条）；搜索镜像封顶 100 页（101 起 404）、分类实测 ~451 页封顶 451；`PListResponse.totalPages` 与 `hasMore` 以此为准。② PPP（KVS）搜索分页是 AJAX：`?page=N` 无效、`/search/<kw>/N/` 404，必须走 `/search/?q=<kw>&mode=async&function=get_block&block_id=list_videos_videos_list_search_result&q=<kw>&category_ids=&sort_by=&from_videos=N&from_albums=N`，`from_videos` 与 `from_albums` 必须是两个独立参数（`from_videos+from_albums` 恒返回第一页）。③ X站镜像把搜索请求当首页返回，`xvidSearch` 以「标题是否含关键词」判定，不支持就提示「该源不支持搜索，请改用分类浏览」，不返回首页列表或空列表。
-- **导航口径（2026-11-16 v0.150 更新）**：只有一套侧栏「老郑分享」，无「老郑优化」树与品牌切换；应用默认页 = 主页（空白页，key `home`，点侧栏顶部「老郑分享」进入）；硬件（原「电脑信息」，key `sysinfo`）在导航「软件」下方；顺序 清单 → 影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 图书 → 模拟 → 游戏 → 补丁 → 软件 → 硬件 → 磁力 → 壁纸 → 套图 → 吃瓜 → 皇片（`settings.ts` 的 `NAV_ORDER_VERSION=3` 把旧保存顺序一次性重排为这套，未知 key 留末尾）。片源管理卡片同序：影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 补丁 → 磁力 → 壁纸 → 套图 → 皇片；收藏管理同序（watch → drama → tv → live → music → comic → novel → book → emu → game → trainer → wallpaper → meitu → melon → shuangkan）；下载分区视频置顶，其余音乐 → 漫画 → 小说 → 书籍 → 修改器 → 壁纸 → 套图；首页标题为「下载管理」。整体导入 / 导出按钮在页面左上角；皇片 / 图书导航项都不带「外网」标记（图书的「外网」提示放在图书页标题后）。
-- **播放器清晰度规则**：所有视频播放模块必须提供清晰度选择，默认自动选最高档，控件固定在播放器右上角（`VideoPlayer` 的 `.player-quality`，仅多码率 HLS 显示，切源自动重置）。
+- **导航口径（2026-11-16 v0.150 更新）**：只有一套侧栏「老郑分享」，无「老郑优化」树与品牌切换；应用默认页 = 主页（空白页，key `home`，点侧栏顶部「老郑分享」进入）；硬件（原「电脑信息」，key `sysinfo`）在导航「软件」下方；顺序 资讯 → 清单 → 影视 → 短剧 → 电视 → 直播 → 演唱 → 音乐 → 漫画 → 小说 → 图书 → 模拟 → 游戏 → 补丁 → 软件 → 硬件 → 磁力 → 壁纸 → 套图 → 吃瓜 → 皇片（`settings.ts` 的 `NAV_ORDER_VERSION=3` 把旧保存顺序一次性重排为这套，未知 key 留末尾，新模块按默认顺序插到前一个模块后）。片源管理卡片同序：影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 补丁 → 磁力 → 壁纸 → 套图 → 皇片（演唱无源，不出现）；收藏管理同序（news → watch → drama → tv → live → music → comic → novel → book → emu → game → trainer → wallpaper → meitu → melon → shuangkan）；下载分区视频置顶，其余音乐 → 漫画 → 小说 → 书籍 → 修改器 → 壁纸 → 套图；首页标题为「下载管理」。整体导入 / 导出按钮在页面左上角；皇片 / 图书导航项都不带「外网」标记（图书的「外网」提示放在图书页标题后）。
+- **播放器清晰度规则**：所有视频播放模块必须提供清晰度选择，默认自动选最高档，控件固定在播放器右上角（HLS 用 `VideoPlayer` 的 `.player-quality`，演唱用 `BiliPlayer` 的同位置 DASH 清晰度下拉，切源自动重置）。
 - **站点 500 自动恢复规则**：站点返回 500 时自动切到同站可用镜像线路（`requestSite` 前 3 步失败后用真实路径逐个实测同站线路，最多 8 条），无需用户手动操作；成功请求后把 `testStatus:'bad'` 的源自动改回 ok 并提示「已恢复可用」。
 
 ## 一、PC 端工程约定
@@ -57,7 +64,8 @@ electron/douban.ts      豆瓣条目搜索 / 详情           electron/vod.ts   
 electron/live.ts        电视 M3U 源                  electron/music.ts      音乐源
 electron/downloads.ts   直链 / HLS 合并 / 本地媒体服务  electron/sync.ts       WebDAV 云同步
 electron/xsite.ts       X站                          electron/psite.ts      P站
-electron/melon.ts       吃瓜                         electron/drama.ts      短剧
+electron/melon.ts       吃瓜                         electron/news.ts      资讯（今日热榜）
+electron/drama.ts       短剧
 electron/shuangkan.ts   皇片 / 肉视频                 electron/gohome.ts     SiteResolver 换址 / 鉴权
 electron/bika.ts        哔咔本子                      electron/komiic.ts     Komiic 漫画
 electron/bikahub.ts     哔咔小说 / 漫画                electron/bikahubImage.ts 图床解密
@@ -65,12 +73,12 @@ electron/tptoon.ts      头牌漫画                      electron/jmcomic.ts   
 electron/jmcomicImage.ts 禁漫章节图还原               electron/wallpaper.ts  壁纸
 electron/meitu.ts       套图（魅影画廊 / 雪月映画）   electron/wygamer.ts     无忧游戏                      electron/zlib.ts       Z-Library
 electron/trainers.ts    补丁 / 修改器                 electron/sysinfo.ts    硬件
-electron/accounts.ts    内置账号仓库                  electron/livePlatform/ 直播（B站/斗鱼/抖音）
+electron/accounts.ts    内置账号仓库                  electron/livePlatform/ 直播（B站/斗鱼/抖音） / singing.ts 演唱（B站收藏夹）
 electron/powershell.ts  PowerShell 封装
 src/shared/*.ts         两端共用类型 + normalizeData + 各模块默认源
 src/state/              DataProvider：启动加载、防抖 350ms 保存、replaceData 立即落盘
 src/components/         VideoPlayer（hls.js）/ LivePlayer / DownloadCenter / ui.tsx
-src/pages/              清单 / 搜索 / 影视 / 短剧 / 音乐 / 电视 / 直播 / 吃瓜 / 磁力 / 小说 /
+src/pages/              清单 / 搜索 / 影视 / 短剧 / 音乐 / 电视 / 直播 / 演唱 / 吃瓜 / 资讯 / 磁力 / 小说 /
                         壁纸 / 套图 / 漫画 / 本子 / 图书 / 番号 / P站 / X站 / 皇片 / 游戏 / 补丁 / 软件 / 硬件 / 主页 / 设置
 src/utils/data.ts       根清单、递归子清单、条目查询、收藏筛选
 docs/AI_PROJECT_MEMORY.md 本文件（docs/archive/ 为历史归档）
@@ -93,7 +101,7 @@ docs/AI_PROJECT_MEMORY.md 本文件（docs/archive/ 为历史归档）
 
 ### 6. 当前进度
 
-- 已完成模块（启动默认进入主页）：清单 / 搜索 / 影视（原「观影」，key 仍 `watch`）/ 短剧 / 音乐 / 游戏（无忧）/ 补丁（原「修改器」）/ 软件 / 电视 / 直播 / 吃瓜 / 磁力 / 小说 / 壁纸 / 套图 / 漫画 / 本子 / 图书（Z-Library）/ 番号 / P站 / X站 / 皇片 / 硬件 / 主页 / 设置；各模块完整功能清单见 `docs/archive/MODULE_DETAILS.md` 附 A。
+- 已完成模块（启动默认进入主页）：清单 / 搜索 / 影视（原「观影」，key 仍 `watch`）/ 短剧 / 音乐 / 游戏（无忧）/ 补丁（原「修改器」）/ 软件 / 电视 / 直播 / 演唱 / 吃瓜 / 资讯 / 磁力 / 小说 / 壁纸 / 套图 / 漫画 / 本子 / 图书（Z-Library）/ 番号 / P站 / X站 / 皇片 / 硬件 / 主页 / 设置；各模块完整功能清单见 `docs/archive/MODULE_DETAILS.md` 附 A。
 - 全局能力：返回栈、模块常驻挂载、`lzimg://` 图片磁盘缓存 + `apiCache`（永久命中 + 静默后台刷新）、全局下载中心（下载前必确认）、收藏管理按模块卡片、云同步 / 导入导出 / 托盘、主题与导航拖动排序。
 
 ### 7. 各模块实现口径（完整细节见 `docs/archive/MODULE_DETAILS.md`，先 Grep 再读）
@@ -117,7 +125,10 @@ docs/AI_PROJECT_MEMORY.md 本文件（docs/archive/ 为历史归档）
 - 源存 `userData/live-sources.json`（含 `testStatus/testMsg/testAt`），不进备份 JSON；M3U 解析 `group-title` / `tvg-name` / 逗号后频道名，同地址只留第一条，网络源 20s 超时，本地导入存 `content`。
 
 #### 7.4 音乐（`electron/music.ts`）
-- 源 `data.musicSources`：`mvmp3` 无名音乐 `http://www.mvmp3.com`、`s33ve` 33ve `https://www.33ve.com`；mvmp3 `GET /so.php?wd=&page=` + `POST /style/js/play.php` 拿直链，失败 / 空结果自动用 33ve 兜底。
+- 源 `data.musicSources`：默认源名称 **无名闪闪音乐**，包含两条线路：当前线路 `mvmp3` 无名音乐 `http://www.mvmp3.com` + 备用线路 `s33ve` 闪闪音乐 `https://www.33ve.com`（`backup` 字段）；音乐页音源下拉**不再有「全部源」**，默认选中无名闪闪音乐。旧数据的 s33ve 自动迁移成备用线路，旧名「无名音乐」自动改为「无名闪闪音乐」；主源失败 / 空结果自动走备用；老收藏 platform=`s33ve` 仍按默认地址解析。
+- 片源管理编辑音乐源：备用线路下拉固定列出「无名音乐 / 闪闪音乐」两条（延迟显示在选项里），刷新按钮同时测两条；选中当前线路会与另一条互换，两条线路始终互为主备。
+- 榜单：音乐页用**一级下拉（热门榜单 / 特色音乐 / 全球榜单）+ 二级下拉（组内分类）**，默认热门榜单 · 酷狗飙升榜并自动加载；切换任一下拉走 `music:top` 抓 `/list/<分类>.html`（单页 100 首、不分页，歌手取 `a.singer`，`size` 无「大小:」前缀）；榜单页首次访问会弹「安全人机验证」，`getPage` 自动勾选并缓存会话 Cookie（33ve 还需先访问首页拿 PHPSESSID），主源失败自动走备用。
+- mvmp3 `GET /so.php?wd=&page=` + `POST /style/js/play.php` 拿直链。
 - 无损音乐（flac.music.hi.cn）默认源已下线但适配器保留；网易云会员曲匿名接口只给试听（不当作成功），回落酷我同名替代。
 
 #### 7.4.1 小说（`electron/novel.ts` / `NovelPage.tsx`）
@@ -177,7 +188,7 @@ docs/AI_PROJECT_MEMORY.md 本文件（docs/archive/ 为历史归档）
 2. **应用内更新**：仓库已公开，Releases API 可匿名读 exe；API 不可达时回退 Gist 清单直链。
 3. **已下载漫画的模块内离线阅读**：图片与 `meta.json` 已落盘，目前只能从下载页用本地应用打开。
 4. **Z-Library 首次登录**：需用户在设置里保存一次账密（之后自动静默登录 / 自动填表），站点偶尔要求在窗口内手动验证。
-5. **音乐音源**：mvmp3 主源 + 33ve 兜底；无损音乐默认源下线（适配器保留），joox 直链未接（旧收藏按歌名回退）。
+5. **音乐音源**：无名闪闪音乐（无名音乐 + 闪闪音乐两条线路，自动互为主备）；无损音乐默认源下线（适配器保留），joox 直链未接（旧收藏按歌名回退）。
 6. **账号种子**：安装包把 `.secrets/accounts.json` 作为 `accounts.seed.json` 打进 resources，换机构建需先放种子。
 7. **短剧**：红果只公开前几集、河马多数付费锁定（代码保留）；西饭基本全免费；短剧下载 / 收藏已接。
 

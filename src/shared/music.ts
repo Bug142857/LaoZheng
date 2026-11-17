@@ -1,4 +1,4 @@
-/** 音乐模块共用类型（默认音源：无名音乐网 / 闪闪音乐网，可在片源管理里增删改；无损音乐适配器保留） */
+/** 音乐模块共用类型（默认音源：无名音乐网，备用线路：无名闪闪音乐；可在片源管理里增删改） */
 
 export type MusicPlatform = 'mvmp3' | 's33ve' | 'hi'
 
@@ -6,7 +6,25 @@ export type MusicPlatform = 'mvmp3' | 's33ve' | 'hi'
 export type MusicSourceKind = 'site' | 'lx'
 export type MusicLxPlatform = 'kw' | 'kg' | 'tx' | 'wy'
 
-/** 音乐源配置：默认两个站共用同一套 CMS 接口，搜索 / 解析由主进程按地址自动识别 */
+/** 音乐源备用线路（无名闪闪音乐），主源搜索失败 / 空结果时自动使用 */
+export interface MusicSourceBackup {
+  id: string
+  name: string
+  baseUrl: string
+  enabled: boolean
+  testStatus: 'ok' | 'bad' | null
+  testMsg: string | null
+  testAt: number
+}
+
+/** 主进程只关心地址；id 用来给歌曲打 platform 标记 */
+export interface MusicSourceBackupInput {
+  id: string
+  name?: string
+  baseUrl: string
+}
+
+/** 音乐源配置：默认站共用同一套 CMS 接口，搜索 / 解析由主进程按地址自动识别 */
 export interface MusicSource {
   id: string
   name: string
@@ -15,6 +33,8 @@ export interface MusicSource {
   kind?: MusicSourceKind
   /** 洛雪源启用的平台；不填时按脚本声明的全部平台搜索 */
   platforms?: MusicLxPlatform[]
+  /** 备用线路；null 表示不使用备用源 */
+  backup?: MusicSourceBackup | null
   enabled: boolean
   testStatus: 'ok' | 'bad' | null
   testMsg: string | null
@@ -28,6 +48,64 @@ export interface MusicSourceInput {
   baseUrl: string
   kind?: MusicSourceKind
   platforms?: MusicLxPlatform[]
+  backup?: MusicSourceBackupInput | null
+}
+
+/** 无名闪闪音乐：无名音乐 + 闪闪音乐两条线路，同一套建站系统 */
+export const MUSIC_SOURCE_LINES: MusicSourceLine[] = [
+  { id: 'mvmp3', name: '无名音乐', baseUrl: 'http://www.mvmp3.com' },
+  { id: 's33ve', name: '闪闪音乐', baseUrl: 'https://www.33ve.com' }
+]
+
+export interface MusicSourceLine {
+  id: string
+  name: string
+  baseUrl: string
+}
+
+/** 按地址识别线路名（无名音乐 / 闪闪音乐），自定义镜像返回空字符串 */
+export function musicLineName(baseUrl?: string | null): string {
+  if (!baseUrl) return ''
+  try {
+    const host = new URL(baseUrl.trim()).hostname.toLowerCase()
+    if (host === 'mvmp3.com' || host.endsWith('.mvmp3.com')) return '无名音乐'
+    if (host === '33ve.com' || host.endsWith('.33ve.com')) return '闪闪音乐'
+  } catch {
+    // 地址不完整时按自定义处理
+  }
+  return ''
+}
+
+/** 无名闪闪音乐的默认备用线路：闪闪音乐 */
+export const DEFAULT_MUSIC_BACKUP: MusicSourceBackup = {
+  id: 's33ve',
+  name: '闪闪音乐',
+  baseUrl: 'https://www.33ve.com',
+  enabled: true,
+  testStatus: 'ok',
+  testMsg: '可用',
+  testAt: 0
+}
+
+function cloneMusicBackup(backup: MusicSourceBackup): MusicSourceBackup {
+  return { ...backup }
+}
+
+/** 默认备用线路：优先取与主线路不同的那条内置线路 */
+function defaultBackupForPrimary(primaryBaseUrl: string): MusicSourceBackup {
+  const primaryName = musicLineName(primaryBaseUrl)
+  const line =
+    MUSIC_SOURCE_LINES.find((item) => !primaryName || item.name !== primaryName) ??
+    MUSIC_SOURCE_LINES[1]
+  return {
+    id: line.id,
+    name: line.name,
+    baseUrl: line.baseUrl,
+    enabled: true,
+    testStatus: 'ok',
+    testMsg: '可用',
+    testAt: 0
+  }
 }
 
 function isLxUrl(value: string): boolean {
@@ -42,17 +120,9 @@ function guessMusicSourceKind(source: Partial<MusicSource>): MusicSourceKind {
 export const DEFAULT_MUSIC_SOURCES: MusicSource[] = [
   {
     id: 'mvmp3',
-    name: '无名音乐',
-    baseUrl: 'http://www.mvmp3.com',
-    enabled: true,
-    testStatus: 'ok',
-    testMsg: '可用',
-    testAt: 0
-  },
-  {
-    id: 's33ve',
-    name: '33ve',
-    baseUrl: 'https://www.33ve.com',
+    name: '无名闪闪音乐',
+    baseUrl: MUSIC_SOURCE_LINES[0].baseUrl,
+    backup: cloneMusicBackup(DEFAULT_MUSIC_BACKUP),
     enabled: true,
     testStatus: 'ok',
     testMsg: '可用',
@@ -79,20 +149,55 @@ export const LX_MUSIC_SOURCES: MusicSource[] = [
 export const ADDED_LX_MUSIC_SOURCES = LX_MUSIC_SOURCES
 
 /** 旧收藏按 platform 找默认地址（用户删掉默认源时的兜底） */
-export const DEFAULT_MUSIC_BASE_URLS: Record<string, string> = Object.fromEntries(
-  [...DEFAULT_MUSIC_SOURCES, ...LX_MUSIC_SOURCES].map((s) => [s.id, s.baseUrl])
-)
+export const DEFAULT_MUSIC_BASE_URLS: Record<string, string> = {
+  ...Object.fromEntries(
+    [...DEFAULT_MUSIC_SOURCES, ...LX_MUSIC_SOURCES].map((s) => [s.id, s.baseUrl])
+  ),
+  // 旧收藏里 platform = s33ve 的歌仍要能找到无名闪闪音乐的地址
+  s33ve: DEFAULT_MUSIC_BACKUP.baseUrl
+}
+
+function normalizeMusicBackup(raw: unknown): MusicSourceBackup | null {
+  if (!raw || typeof raw !== 'object') return null
+  const backup = raw as Partial<MusicSourceBackup>
+  const baseUrl = typeof backup.baseUrl === 'string' ? backup.baseUrl.trim().replace(/\/+$/, '') : ''
+  if (!/^https?:\/\//i.test(baseUrl)) return null
+  const lineName = musicLineName(baseUrl)
+  const rawName = backup.name?.trim() ?? ''
+  // 内置线路统一叫「无名音乐 / 闪闪音乐」，自定义地址保留原名称
+  const name =
+    lineName && (!rawName || rawName === '无名闪闪音乐' || rawName === '33ve')
+      ? lineName
+      : rawName || DEFAULT_MUSIC_BACKUP.name
+  return {
+    id: typeof backup.id === 'string' && backup.id ? backup.id : 's33ve',
+    name,
+    baseUrl,
+    enabled: backup.enabled !== false,
+    testStatus:
+      backup.testStatus === 'ok' || backup.testStatus === 'bad' ? backup.testStatus : null,
+    testMsg: typeof backup.testMsg === 'string' ? backup.testMsg : null,
+    testAt:
+      typeof backup.testAt === 'number' && Number.isFinite(backup.testAt) ? backup.testAt : 0
+  }
+}
 
 /**
  * 音乐源配置：
  * - 旧数据没有 musicSources 时补默认源；
- * - 已经存在数组时完全以用户配置为准（删空也保持为空，不再自动加回）。
+ * - 已经存在数组时完全以用户配置为准（删空也保持为空，不再自动加回）；
+ * - 旧数据里独立的 33ve 源迁移成无名音乐的备用线路（名称统一为「无名闪闪音乐」）；
+ * - 新增字段 backup：缺省时无名音乐自动带无名闪闪音乐，显式 null 表示不使用备用源。
  */
 export function normalizeMusicSources(raw: unknown): MusicSource[] {
   if (!Array.isArray(raw)) {
-    return [...DEFAULT_MUSIC_SOURCES, ...LX_MUSIC_SOURCES].map((source) => ({ ...source }))
+    return [...DEFAULT_MUSIC_SOURCES, ...LX_MUSIC_SOURCES].map((source) => ({
+      ...source,
+      backup: source.backup ? cloneMusicBackup(source.backup) : null
+    }))
   }
-  const out: MusicSource[] = []
+  const parsed: { source: MusicSource; backupRaw?: unknown }[] = []
+  let legacyBackup: MusicSourceBackup | null = null
   for (const entry of raw) {
     if (!entry || typeof entry !== 'object') continue
     const source = entry as Partial<MusicSource>
@@ -100,29 +205,85 @@ export function normalizeMusicSources(raw: unknown): MusicSource[] {
       continue
     }
     if (typeof source.id !== 'string' || !source.id) continue
+    try {
+      new URL(source.baseUrl.trim())
+    } catch {
+      continue
+    }
+    // 只迁移旧的内置 s33ve 源：用户自己添加的 33ve 镜像保留原 id，避免收藏的 platform 失效
+    if (source.id === 's33ve') {
+      legacyBackup = normalizeMusicBackup({
+        ...source,
+        id: 's33ve',
+        name: DEFAULT_MUSIC_BACKUP.name
+      })
+      continue
+    }
     const rawName = source.name?.trim() || source.baseUrl
     // 老数据里的默认名自动换成新的 (Flac) 标识，用户改过的名字保持原样
     const name =
       source.id === 'lx_fish' && rawName === 'fish 聚合音源'
         ? 'fish 聚合音源 (Flac)'
-        : rawName
-    out.push({
-      id: source.id,
-      name,
-      baseUrl: source.baseUrl.trim().replace(/\/+$/, ''),
-      kind: guessMusicSourceKind(source),
-      platforms: Array.isArray(source.platforms)
-        ? source.platforms.filter((item): item is MusicLxPlatform =>
-            ['kw', 'kg', 'tx', 'wy'].includes(String(item))
-          )
+        : source.id === 'mvmp3' && (rawName === '无名音乐' || rawName === '无名音乐镜像')
+          ? '无名闪闪音乐'
+          : rawName
+    parsed.push({
+      backupRaw: Object.prototype.hasOwnProperty.call(entry, 'backup')
+        ? (entry as Partial<MusicSource>).backup
         : undefined,
-      enabled: source.enabled !== false,
-      testStatus:
-        source.testStatus === 'ok' || source.testStatus === 'bad' ? source.testStatus : null,
-      testMsg: typeof source.testMsg === 'string' ? source.testMsg : null,
-      testAt:
-        typeof source.testAt === 'number' && Number.isFinite(source.testAt) ? source.testAt : 0
+      source: {
+        id: source.id,
+        name,
+        baseUrl: source.baseUrl.trim().replace(/\/+$/, ''),
+        kind: guessMusicSourceKind(source),
+        platforms: Array.isArray(source.platforms)
+          ? source.platforms.filter((item): item is MusicLxPlatform =>
+              ['kw', 'kg', 'tx', 'wy'].includes(String(item))
+            )
+          : undefined,
+        enabled: source.enabled !== false,
+        testStatus:
+          source.testStatus === 'ok' || source.testStatus === 'bad' ? source.testStatus : null,
+        testMsg: typeof source.testMsg === 'string' ? source.testMsg : null,
+        testAt:
+          typeof source.testAt === 'number' && Number.isFinite(source.testAt) ? source.testAt : 0
+      }
     })
+  }
+  const hasMvmp3 = parsed.some((entry) => entry.source.id === 'mvmp3')
+  const out: MusicSource[] = []
+  for (const { source, backupRaw } of parsed) {
+    const hasBackupField = backupRaw !== undefined
+    const normalized = hasBackupField ? normalizeMusicBackup(backupRaw) : null
+    const legacyUsable =
+      !!legacyBackup && musicLineName(legacyBackup.baseUrl) !== musicLineName(source.baseUrl)
+    const fallback =
+      legacyUsable && legacyBackup
+        ? { ...legacyBackup }
+        : defaultBackupForPrimary(source.baseUrl)
+    out.push({
+      ...source,
+      // 无名闪闪音乐固定保留两条线路：显式 null 或缺失都补一条备用线路
+      backup: source.id === 'mvmp3' ? normalized ?? fallback : normalized
+    })
+  }
+  // 没有无名音乐但还留着 33ve 的老配置：保留成独立源，避免用户丢源
+  if (legacyBackup && !hasMvmp3) {
+    out.push({
+      id: 's33ve',
+      name: legacyBackup.name,
+      baseUrl: legacyBackup.baseUrl,
+      enabled: legacyBackup.enabled,
+      testStatus: legacyBackup.testStatus,
+      testMsg: legacyBackup.testMsg,
+      testAt: legacyBackup.testAt
+    })
+  }
+  // 老配置里主线路停用、33ve 启用：备用线路可用时至少保留一个可选源，
+  // 避免音乐页提示「没有启用的音乐源」且 UI 无法单独启用备用线路
+  if (out.length && !out.some((source) => source.enabled)) {
+    const withBackup = out.find((source) => source.backup?.enabled)
+    if (withBackup) withBackup.enabled = true
   }
   return out
 }
@@ -183,3 +344,74 @@ export interface MusicLyricsSaveResult {
   path?: string
   error?: string
 }
+
+/** 榜单分类（来自 mvmp3：/list/top.html 的热门榜单 / 特色音乐 / 全球榜单） */
+export interface MusicTopCategory {
+  /** 站点路径标识，例如 kugou → /list/kugou.html */
+  id: string
+  name: string
+}
+
+export interface MusicTopGroup {
+  id: string
+  name: string
+  categories: MusicTopCategory[]
+}
+
+export const MUSIC_TOP_GROUPS: MusicTopGroup[] = [
+  {
+    id: 'hot',
+    name: '热门榜单',
+    categories: [
+      { id: 'kugou', name: '酷狗飙升榜' },
+      { id: 'top', name: 'TOP排行榜' },
+      { id: 'douyin', name: '抖音热歌榜' },
+      { id: 'kuaishou', name: '快手热歌榜' },
+      { id: 'djtop', name: 'DJ热歌榜' },
+      { id: 'share', name: '音乐分享榜' },
+      { id: 'ndtop', name: '内地排行榜' },
+      { id: 'hktop', name: '香港排行榜' },
+      { id: 'twtop', name: '台湾排行榜' },
+      { id: 'ustop', name: '欧美排行榜' },
+      { id: 'krtop', name: '韩国排行榜' }
+    ]
+  },
+  {
+    id: 'special',
+    name: '特色音乐',
+    categories: [
+      { id: 'newacg', name: 'ACG新歌榜' },
+      { id: 'dytop', name: '电音热歌榜' },
+      { id: 'newzy', name: '综艺新歌榜' },
+      { id: 'sctop', name: '说唱先锋榜' },
+      { id: 'ystop', name: '影视金曲榜' },
+      { id: 'yytop', name: '粤语金曲榜' },
+      { id: 'omtop', name: '欧美金曲榜' },
+      { id: 'kkyc', name: '音乐人原创榜' },
+      { id: 'leida', name: '酷狗雷达榜' },
+      { id: 'blhot', name: '80后热歌榜' },
+      { id: 'jlhot', name: '90后热歌榜' }
+    ]
+  },
+  {
+    id: 'global',
+    name: '全球榜单',
+    categories: [
+      { id: 'mgtop', name: '美国单曲榜' },
+      { id: 'ygtop', name: '英国单曲榜' },
+      { id: 'rbtop', name: '日本歌曲榜' },
+      { id: 'hgtop', name: '韩国音乐榜' },
+      { id: 'joox', name: 'JOOX热歌榜' },
+      { id: 'kkbox', name: 'KKBOX风云榜' },
+      { id: 'space', name: 'SHOWER榜' },
+      { id: 'btptop', name: '电子舞曲榜' },
+      { id: 'xyztop', name: '小语种热歌' },
+      { id: 'song', name: '洗脑神曲' },
+      { id: 'djwuqu', name: 'DJ舞曲' }
+    ]
+  }
+]
+
+export const MUSIC_TOP_CATEGORIES: MusicTopCategory[] = MUSIC_TOP_GROUPS.flatMap(
+  (group) => group.categories
+)

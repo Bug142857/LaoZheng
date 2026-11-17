@@ -87,6 +87,19 @@ export interface VodSourceInput {
   baseUrl: string
 }
 
+/** 音乐源的备用线路：只有音乐源的 JSON 导入会带 */
+export interface VodSourceImportBackup {
+  id?: string
+  name?: string
+  baseUrl: string
+  enabled?: boolean
+}
+
+/** 导入解析结果：普通片源只用 VodSourceInput 的字段，音乐源额外保留备用线路 */
+export interface VodSourceImport extends VodSourceInput {
+  backup?: VodSourceImportBackup
+}
+
 export function vodHost(url: string): string {
   try {
     return new URL(url).host
@@ -104,24 +117,41 @@ export function normalizeBaseUrl(raw: string): string {
 }
 
 /** 订阅文本导入：JSON 数组 / 单对象 / 一行一个 URL 或「名称|URL」 */
-export function parseSourceImport(text: string): { sources: VodSourceInput[]; error?: string } {
+export function parseSourceImport(text: string): { sources: VodSourceImport[]; error?: string } {
   const trimmed = text.trim()
   if (!trimmed) return { sources: [], error: '内容为空' }
 
-  const toInput = (raw: unknown): VodSourceInput | null => {
+  const toInput = (raw: unknown): VodSourceImport | null => {
     if (!raw || typeof raw !== 'object') return null
     const o = raw as Record<string, unknown>
     const base = String(o.baseUrl ?? o.url ?? '').trim()
     if (!base.startsWith('http')) return null
     const name = String(o.name ?? '').trim() || vodHost(base)
-    return { id: String(o.id ?? '').trim() || genSourceId(base), name, baseUrl: base }
+    const backupRaw =
+      o.backup && typeof o.backup === 'object' ? (o.backup as Record<string, unknown>) : null
+    const backupBase = backupRaw ? String(backupRaw.baseUrl ?? '').trim() : ''
+    const backup: VodSourceImportBackup | undefined =
+      backupRaw && backupBase.startsWith('http')
+        ? {
+            id: String(backupRaw.id ?? '').trim() || undefined,
+            name: String(backupRaw.name ?? '').trim() || undefined,
+            baseUrl: backupBase,
+            enabled: backupRaw.enabled !== false
+          }
+        : undefined
+    return {
+      id: String(o.id ?? '').trim() || genSourceId(base),
+      name,
+      baseUrl: base,
+      ...(backup ? { backup } : {})
+    }
   }
 
   if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
     try {
       const parsed = JSON.parse(trimmed) as unknown
       const list = Array.isArray(parsed) ? parsed : [parsed]
-      const sources = list.map(toInput).filter((s): s is VodSourceInput => !!s)
+      const sources = list.map(toInput).filter((s): s is VodSourceImport => !!s)
       return sources.length
         ? { sources }
         : { sources: [], error: '未识别到有效源（缺少 baseUrl / url）' }
@@ -130,7 +160,7 @@ export function parseSourceImport(text: string): { sources: VodSourceInput[]; er
     }
   }
 
-  const sources: VodSourceInput[] = []
+  const sources: VodSourceImport[] = []
   for (const line of trimmed.split(/\r?\n/)) {
     const row = line.trim()
     if (!row) continue
