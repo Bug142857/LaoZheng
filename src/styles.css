@@ -1391,6 +1391,25 @@ button:disabled {
   display: block;
 }
 
+/* 游戏封面多次加载失败后的标题兜底 */
+.media-thumb .game-cover-fallback,
+.game-detail-cover .game-cover-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 10px;
+  box-sizing: border-box;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.72);
+  background: linear-gradient(135deg, #39334f, #232030);
+  overflow: hidden;
+  word-break: break-word;
+}
+
 .media-duration {
   position: absolute;
   right: 8px;

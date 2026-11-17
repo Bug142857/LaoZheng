@@ -37,6 +37,42 @@ const cache: ListCache = (() => {
 
 let categoryCache: GameCategory[] = loadCache<GameCategory[]>('game.categories', [])
 
+/**
+ * 游戏封面：直接用站点给出的封面地址；偶发断流时自动重试两次，
+ * 仍失败就用标题渐变兜底，避免个别封面一直空白。
+ */
+function GameCover({ src, title, eager = false }: { src: string; title: string; eager?: boolean }) {
+  const [attempt, setAttempt] = useState(0)
+  const [failed, setFailed] = useState(false)
+  const timer = useRef(0)
+
+  useEffect(() => {
+    setAttempt(0)
+    setFailed(false)
+    return () => window.clearTimeout(timer.current)
+  }, [src])
+
+  if (!src || failed) return <span className="game-cover-fallback">{title || '暂无封面'}</span>
+  // 重试时追加一次性参数，绕开浏览器 / 图片缓存对上次失败结果的复用
+  const url = attempt === 0 ? src : `${src}${src.includes('?') ? '&' : '?'}lzretry=${attempt}`
+  return (
+    <img
+      key={attempt}
+      src={url}
+      alt=""
+      loading={eager ? 'eager' : 'lazy'}
+      onError={() => {
+        window.clearTimeout(timer.current)
+        if (attempt >= 2) {
+          setFailed(true)
+          return
+        }
+        timer.current = window.setTimeout(() => setAttempt((value) => value + 1), 700 * (attempt + 1))
+      }}
+    />
+  )
+}
+
 interface DetailState {
   game: GameDetail | null
   loading: boolean
@@ -265,7 +301,7 @@ export function GamePage({
           <>
             <div className="comic-detail">
               <div className="comic-detail-cover game-detail-cover">
-                {game.cover ? <img src={game.cover} alt="" /> : null}
+                <GameCover src={game.cover ?? ''} title={game.title} eager />
               </div>
               <div className="comic-detail-info">
                 <div className="row-title" style={{ whiteSpace: 'normal' }}>
@@ -481,7 +517,7 @@ export function GamePage({
                 onClick={() => void loadDetail(item.id)}
               >
                 <span className="media-thumb" style={{ aspectRatio: '16 / 9' }}>
-                  {item.cover ? <img src={item.cover} alt="" loading="lazy" /> : null}
+                  <GameCover src={item.cover ?? ''} title={item.title} />
                   {item.badge ? (
                     <span className={`media-badge ${item.badge.includes('免费') ? 'free' : ''}`}>{item.badge}</span>
                   ) : null}

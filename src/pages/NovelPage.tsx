@@ -3,6 +3,7 @@ import { ChevronLeft, Download, Heart, RefreshCw } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import { ConfirmDialog, EmptyState, ModuleShortcuts, Pagination } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
+import { loadCache, saveCache } from '../utils/cache'
 import {
   NOVEL_SOURCE_CATEGORIES,
   normalizeNovelStatus,
@@ -27,6 +28,37 @@ interface ReaderState {
 
 /** 列表每页数量：蚂蚁文学搜索固定返回 50 条，客户端分页展示 */
 const PAGE_SIZE = 24
+
+interface NovelListCache {
+  sourceId: string
+  mode: 'home' | 'search' | 'category'
+  categoryId: string
+  categoryPage: number
+  keyword: string
+  items: NovelItem[]
+  page: number
+  loaded: boolean
+}
+
+const EMPTY_NOVEL_CACHE: NovelListCache = {
+  sourceId: '',
+  mode: 'home',
+  categoryId: '',
+  categoryPage: 1,
+  keyword: '',
+  items: [],
+  page: 1,
+  loaded: false
+}
+
+const cache: NovelListCache = (() => {
+  const cached = loadCache<NovelListCache>('novel', EMPTY_NOVEL_CACHE)
+  // 每次打开应用回到「全部源 · 推荐」；默认列表缓存仍直接显示
+  if (cached.mode !== 'home' || cached.keyword || cached.categoryId || cached.sourceId) {
+    return { ...EMPTY_NOVEL_CACHE }
+  }
+  return cached
+})()
 
 function toInput(source: NovelSource) {
   return {
@@ -125,9 +157,9 @@ export function NovelPage({
   )
   const availableKey = sources.map((source) => `${source.id}:${source.baseUrl}`).join(',')
   /** 空字符串 = 全部源（和其它带源模块统一：搜索框前默认「全部源」） */
-  const [sourceId, setSourceId] = useState('')
-  const [items, setItems] = useState<NovelItem[]>([])
-  const [mode, setMode] = useState<'home' | 'search' | 'category'>('home')
+  const [sourceId, setSourceId] = useState(cache.sourceId)
+  const [items, setItems] = useState<NovelItem[]>(cache.items)
+  const [mode, setMode] = useState<'home' | 'search' | 'category'>(cache.mode)
   const [categoryId, setCategoryId] = useState('')
   const [categoryPage, setCategoryPage] = useState(1)
   const [categoryHasMore, setCategoryHasMore] = useState(false)
@@ -135,8 +167,8 @@ export function NovelPage({
   const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({})
   const [keyword, setKeyword] = useState('')
   const [input, setInput] = useState('')
-  const [page, setPage] = useState(1)
-  const [loading, setLoading] = useState(false)
+  const [page, setPage] = useState(cache.page)
+  const [loading, setLoading] = useState(!cache.loaded)
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<NovelDetail | null>(null)
   const [detailSourceId, setDetailSourceId] = useState('')
@@ -196,12 +228,14 @@ export function NovelPage({
 
   const loadHome = async (scope: string) => {
     const seq = ++listSeq.current
+    // 已经在看同一个「推荐」列表时保留现有条目：切回模块只做后台刷新，不再白屏重载
+    const keepItems = mode === 'home' && !categoryId && !keyword && scope === sourceId
     setMode('home')
     setCategoryId('')
     setCategoryPage(1)
     setCategoryHasMore(false)
     setKeyword('')
-    setItems([])
+    if (!keepItems) setItems([])
     setPage(1)
     setLoading(true)
     setError(null)
@@ -240,6 +274,19 @@ export function NovelPage({
       }
     }
     setItems(merged)
+    // 只缓存「全部源 · 推荐」第一页，重开应用立即有内容
+    if (!scope) {
+      saveCache<NovelListCache>('novel', {
+        sourceId: '',
+        mode: 'home',
+        categoryId: '',
+        categoryPage: 1,
+        keyword: '',
+        items: merged,
+        page: 1,
+        loaded: true
+      })
+    }
   }
 
   const doSearch = async (scope: string, text: string) => {
@@ -865,7 +912,7 @@ export function NovelPage({
             </div>
           ) : null}
 
-          {loading ? (
+          {loading && items.length === 0 ? (
             <EmptyState
               title={
                 mode === 'search'

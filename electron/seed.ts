@@ -8,11 +8,12 @@ import type {
   ListItem,
   VodSource
 } from '../src/shared/types'
+import { normalizeSingingVideos } from '../src/shared/singing'
 import { loadData, saveData } from './store'
 
 /**
  * 首次启动的默认数据（与手机端 `DefaultSeed.kt` 同一份资产）：
- * 影视源、表世界清单（含条目与关联）一次性写入。
+ * 影视源、表世界清单（含条目与关联）、软件使用经验、演唱默认视频一次性写入。
  *
  * 只在对应数据为空、且从未播种过时写入；用户自己改过的配置一律不覆盖。
  * 资产位置：开发时 `resources/default-seed.json`，打包后 `process.resourcesPath/default-seed.json`。
@@ -42,19 +43,33 @@ async function readSeed(): Promise<Record<string, unknown> | null> {
   return null
 }
 
-async function markerDone(): Promise<boolean> {
+interface SeedMarker {
+  /** 影视源 / 清单 / 软件经验是否已经播过种 */
+  done: boolean
+  /** 演唱默认视频是否已经补过（v0.194） */
+  singing: boolean
+}
+
+async function readMarker(): Promise<SeedMarker> {
   try {
-    const raw = JSON.parse(await readFile(markerPath(), 'utf8')) as { done?: boolean }
-    return raw?.done === true
+    const raw = JSON.parse(await readFile(markerPath(), 'utf8')) as {
+      done?: boolean
+      singing?: boolean
+    }
+    return { done: raw?.done === true, singing: raw?.singing === true }
   } catch {
-    return false
+    return { done: false, singing: false }
   }
 }
 
-async function writeMarker(): Promise<void> {
+async function writeMarker(singing: boolean): Promise<void> {
   const path = markerPath()
   await mkdir(app.getPath('userData'), { recursive: true })
-  await writeFile(path, JSON.stringify({ done: true, at: Date.now() }, null, 2), 'utf8')
+  await writeFile(
+    path,
+    JSON.stringify({ done: true, singing, at: Date.now() }, null, 2),
+    'utf8'
+  )
 }
 
 function obj(value: unknown): Record<string, unknown> | null {
@@ -172,9 +187,9 @@ function mapToolNotes(value: unknown): Record<string, string> | null {
   return Object.keys(out).length ? out : null
 }
 
-/** 启动时调用：补齐空白的影视源、清单与软件使用经验，只播种一次 */
+/** 启动时调用：补齐空白的影视源、清单、软件使用经验与演唱默认视频，只播种一次 */
 export async function seedDefaultData(): Promise<void> {
-  if (await markerDone()) return
+  const marker = await readMarker()
   const seed = await readSeed()
   if (!seed) {
     console.warn('[seed] 未找到 default-seed.json，跳过默认数据')
@@ -183,36 +198,55 @@ export async function seedDefaultData(): Promise<void> {
 
   const data: AppData = await loadData()
   let changed = false
+  let markerChanged = false
 
-  if (data.vodSources.length === 0 && Array.isArray(seed.vodSources)) {
-    const sources = seed.vodSources.map(mapVod).filter((s): s is VodSource => !!s)
-    if (sources.length) {
-      data.vodSources = sources
-      changed = true
+  if (!marker.done) {
+    if (data.vodSources.length === 0 && Array.isArray(seed.vodSources)) {
+      const sources = seed.vodSources.map(mapVod).filter((s): s is VodSource => !!s)
+      if (sources.length) {
+        data.vodSources = sources
+        changed = true
+      }
     }
+
+    if (data.lists.length === 0 && Array.isArray(seed.lists)) {
+      const lists = seed.lists.map(mapList).filter((l): l is ItemList => !!l)
+      if (lists.length) {
+        const items = Array.isArray(seed.items)
+          ? seed.items.map(mapItem).filter((i): i is CollectionItem => !!i)
+          : []
+        data.lists = lists
+        data.items = items
+        data.listItems = mapListItems(seed.listItems, lists, items)
+        changed = true
+      }
+    }
+
+    if (!data.toolNotes || Object.keys(data.toolNotes).length === 0) {
+      const notes = mapToolNotes(seed.toolNotes)
+      if (notes) {
+        data.toolNotes = notes
+        changed = true
+      }
+    }
+
+    marker.done = true
+    markerChanged = true
   }
 
-  if (data.lists.length === 0 && Array.isArray(seed.lists)) {
-    const lists = seed.lists.map(mapList).filter((l): l is ItemList => !!l)
-    if (lists.length) {
-      const items = Array.isArray(seed.items)
-        ? seed.items.map(mapItem).filter((i): i is CollectionItem => !!i)
-        : []
-      data.lists = lists
-      data.items = items
-      data.listItems = mapListItems(seed.listItems, lists, items)
-      changed = true
+  // v0.194：演唱默认视频（225 个）。老用户列表为空时补一次，自己添加过的不覆盖
+  if (!marker.singing) {
+    if (data.singingVideos.length === 0) {
+      const videos = normalizeSingingVideos(seed.singingVideos)
+      if (videos.length) {
+        data.singingVideos = videos
+        changed = true
+      }
     }
-  }
-
-  if (!data.toolNotes || Object.keys(data.toolNotes).length === 0) {
-    const notes = mapToolNotes(seed.toolNotes)
-    if (notes) {
-      data.toolNotes = notes
-      changed = true
-    }
+    marker.singing = true
+    markerChanged = true
   }
 
   if (changed) await saveData(data)
-  await writeMarker()
+  if (markerChanged) await writeMarker(marker.singing)
 }
