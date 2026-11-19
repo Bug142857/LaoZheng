@@ -518,3 +518,12 @@ Electron 升级和隐藏窗口 `sandbox` 收紧建议单独安排一轮完整回
 - **P3-1 巨型文件**：不做纯搬家式大拆；`SourceSettings.tsx` / `downloads.ts` 只在改动对应功能时局部拆，避免无收益回归风险。
 
 后续新增功能自检见 `docs/FEATURE_CHECKLIST.md`，实施 / 放弃某项后必须同步更新本状态，禁止留下「未实施」的过期结论。
+
+### 11.1 v0.228 高风险冒烟（2026-11-20）
+
+- 21 个模块逐个打开：无 ErrorBoundary、无白屏、无 window error / unhandledrejection。
+- 电视 CCTV3 播放：ArtPlayer 5.4 正常挂载，video `readyState=4` 且播放中；切回主页后隐藏页视频自动暂停。
+- 下载：直链与 HLS 均完成；全局并发 2 生效（2 running + 1 queued）；本地媒体 URL 返回 200。
+- 更新检查：约 1.1 秒返回 0.228，走 gh-proxy 线路，sha256 与 Release 一致。
+- 启动隐藏页登录（无忧）页面加载正常，日志无 Unhandled / TypeError / ERROR。
+- 未做：各站点真实内容逐项人工回归、扫码登录交互、安装包代码签名。
