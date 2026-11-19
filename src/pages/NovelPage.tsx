@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronLeft, Download, Heart, RefreshCw } from 'lucide-react'
-import { useData } from '../state/DataContext'
-import { ConfirmDialog, EmptyState, ModuleShortcuts, Pagination } from '../components/ui'
+import { ChevronLeft, Download, Heart, RefreshCw, Type } from 'lucide-react'
+import { useData, useProgressValue } from '../state/DataContext'
+import { CacheTip, ConfirmDialog, EmptyState, ModuleShortcuts, Pagination } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import {
   NOVEL_SOURCE_CATEGORIES,
   normalizeNovelStatus,
@@ -49,6 +50,41 @@ const EMPTY_NOVEL_CACHE: NovelListCache = {
   items: [],
   page: 1,
   loaded: false
+}
+
+/** 阅读器排版：字号 / 行距 / 页宽 / 背景，按本机持久化（localStorage） */
+interface ReaderSettings {
+  fontSize: number
+  lineHeight: number
+  width: number
+  theme: 'dark' | 'paper' | 'green'
+}
+
+const READER_SETTINGS_KEY = 'lz-novel-reader'
+const DEFAULT_READER_SETTINGS: ReaderSettings = {
+  fontSize: 16,
+  lineHeight: 1.95,
+  width: 860,
+  theme: 'dark'
+}
+
+function loadReaderSettings(): ReaderSettings {
+  try {
+    const raw = JSON.parse(localStorage.getItem(READER_SETTINGS_KEY) || 'null') as Partial<ReaderSettings> | null
+    if (!raw) return DEFAULT_READER_SETTINGS
+    const fontSize = Number(raw.fontSize)
+    const lineHeight = Number(raw.lineHeight)
+    const width = Number(raw.width)
+    const theme = raw.theme === 'paper' || raw.theme === 'green' ? raw.theme : 'dark'
+    return {
+      fontSize: Number.isFinite(fontSize) ? Math.min(26, Math.max(13, fontSize)) : 16,
+      lineHeight: Number.isFinite(lineHeight) ? Math.min(2.6, Math.max(1.4, lineHeight)) : 1.95,
+      width: Number.isFinite(width) ? Math.min(1200, Math.max(600, width)) : 860,
+      theme
+    }
+  } catch {
+    return DEFAULT_READER_SETTINGS
+  }
 }
 
 const cache: NovelListCache = (() => {
@@ -150,7 +186,7 @@ export function NovelPage({
   onOpenFavorites?: () => void
   onOpenDownloads?: () => void
 }) {
-  const { data, update } = useData()
+  const { data, update, updateProgress } = useData()
   const sources = useMemo(
     () => data.novelSources.filter((source) => source.enabled),
     [data.novelSources]
@@ -175,6 +211,9 @@ export function NovelPage({
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [reader, setReader] = useState<ReaderState | null>(null)
+  const [readerSettings, setReaderSettings] = useState<ReaderSettings>(loadReaderSettings)
+  const [typesettingOpen, setTypesettingOpen] = useState(false)
+  useDetailScrollRestore(!!detail || !!reader, 'novel')
   const [downloading, setDownloading] = useState<{
     key: string
     done: number
@@ -186,6 +225,15 @@ export function NovelPage({
   const detailSeq = useRef(0)
   const readerSeq = useRef(0)
   const readerRef = useRef<HTMLDivElement | null>(null)
+
+  // 排版设置按本机持久化；改字号 / 行距不重置章节进度与滚动位置
+  useEffect(() => {
+    try {
+      localStorage.setItem(READER_SETTINGS_KEY, JSON.stringify(readerSettings))
+    } catch {
+      // 忽略存储失败
+    }
+  }, [readerSettings])
 
   const activeSource =
     sources.find((source) => source.id === sourceId) ?? null
@@ -214,6 +262,10 @@ export function NovelPage({
   }, [categoryCountKey])
   const detailSource =
     data.novelSources.find((source) => source.id === detailSourceId) ?? null
+  // 只订阅当前这本书的进度，其它进度变化不触发本页重渲染
+  const detailProgress = useProgressValue(
+    detail && detailSourceId ? progressKey(detailSourceId, detail.bookId) : ''
+  )
   const sourceOf = (item: NovelItem): NovelSource | null =>
     data.novelSources.find((source) => source.id === (item.sourceId ?? sourceId)) ??
     activeSource ??
@@ -465,13 +517,7 @@ export function NovelPage({
       return
     }
     setReader({ chapter, content: res.chapter.content, loading: false, error: null })
-    update((current) => ({
-      ...current,
-      readProgress: {
-        ...current.readProgress,
-        [progressKey(detailSource.id, detail.bookId)]: chapter.id
-      }
-    }))
+    updateProgress(progressKey(detailSource.id, detail.bookId), chapter.id)
   }
 
   const stepChapter = (delta: number) => {
@@ -603,7 +649,7 @@ export function NovelPage({
 
   useEffect(() => {
     if (reader) readerRef.current?.scrollIntoView({ block: 'start' })
-  }, [reader?.chapter.id, reader?.loading])
+  }, [reader])
 
   // 整本下载进度由主进程推送
   useEffect(() => {
@@ -635,6 +681,13 @@ export function NovelPage({
             {detail?.title ?? ''} · {reader.chapter.name}
           </h1>
           <div className="page-actions">
+            <button
+              className={`btn ghost${typesettingOpen ? ' active' : ''}`}
+              title="字号 / 行距 / 背景 / 页宽"
+              onClick={() => setTypesettingOpen((value) => !value)}
+            >
+              <Type size={15} /> 排版
+            </button>
             <button className="btn" disabled={!hasPrev} onClick={() => stepChapter(-1)}>
               上一章
             </button>
@@ -643,6 +696,77 @@ export function NovelPage({
             </button>
           </div>
         </header>
+
+        {typesettingOpen ? (
+          <div className="reader-settings">
+            <label>
+              字号
+              <input
+                type="range"
+                min={13}
+                max={26}
+                step={1}
+                value={readerSettings.fontSize}
+                onChange={(event) =>
+                  setReaderSettings((prev) => ({
+                    ...prev,
+                    fontSize: Number(event.target.value)
+                  }))
+                }
+              />
+              <span>{readerSettings.fontSize}px</span>
+            </label>
+            <label>
+              行距
+              <input
+                type="range"
+                min={1.4}
+                max={2.6}
+                step={0.05}
+                value={readerSettings.lineHeight}
+                onChange={(event) =>
+                  setReaderSettings((prev) => ({
+                    ...prev,
+                    lineHeight: Number(event.target.value)
+                  }))
+                }
+              />
+              <span>{readerSettings.lineHeight.toFixed(2)}</span>
+            </label>
+            <label>
+              页宽
+              <input
+                type="range"
+                min={600}
+                max={1200}
+                step={20}
+                value={readerSettings.width}
+                onChange={(event) =>
+                  setReaderSettings((prev) => ({ ...prev, width: Number(event.target.value) }))
+                }
+              />
+              <span>{readerSettings.width}px</span>
+            </label>
+            <div className="reader-theme-group">
+              <span>背景</span>
+              {(
+                [
+                  ['dark', '深色'],
+                  ['paper', '米黄'],
+                  ['green', '护眼']
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  className={`chip${readerSettings.theme === value ? ' active' : ''}`}
+                  onClick={() => setReaderSettings((prev) => ({ ...prev, theme: value }))}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         {reader.loading ? (
           <EmptyState title="正在加载章节正文…" />
@@ -658,7 +782,14 @@ export function NovelPage({
           />
         ) : (
           <>
-            <article className="novel-content">
+            <article
+              className={`novel-content reader-${readerSettings.theme}`}
+              style={{
+                fontSize: readerSettings.fontSize,
+                lineHeight: readerSettings.lineHeight,
+                maxWidth: readerSettings.width
+              }}
+            >
               {paragraphs.map((line, index) => (
                 <p key={`${index}-${line.slice(0, 8)}`}>{line}</p>
               ))}
@@ -678,9 +809,7 @@ export function NovelPage({
   }
 
   if (detail) {
-    const progress = detailSource
-      ? data.readProgress[progressKey(detailSource.id, detail.bookId)]
-      : undefined
+    const progress = detailSource ? detailProgress : undefined
     const resume = detail.chapters.find((chapter) => chapter.id === progress)
     const chapters = chapterDesc ? [...detail.chapters].reverse() : detail.chapters
     const downloadKey = detailSource ? `${detailSource.id}|${detail.bookId}` : ''
@@ -922,7 +1051,7 @@ export function NovelPage({
                     : '正在加载推荐…'
               }
             />
-          ) : error ? (
+          ) : error && items.length === 0 ? (
             <EmptyState
               title="加载失败"
               desc={error}
@@ -952,6 +1081,16 @@ export function NovelPage({
             />
           ) : (
             <>
+              {error ? (
+                <CacheTip
+                  message={`刷新失败：${error}，当前显示上次缓存。`}
+                  onRetry={() =>
+                    mode === 'search' && keyword
+                      ? void doSearch(sourceId, keyword)
+                      : void loadHome(sourceId)
+                  }
+                />
+              ) : null}
               <div className="comic-grid">
                 {pageItems.map((item) => {
                   const source = sourceOf(item)

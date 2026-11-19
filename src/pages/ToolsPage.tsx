@@ -63,6 +63,7 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import { useData } from '../state/DataContext'
+import { useDetailScrollRestore } from '../utils/scroll'
 import { TOOL_ITEMS, type ToolItem } from '../shared/tools'
 
 const ICONS: Record<string, LucideIcon> = {
@@ -563,13 +564,17 @@ function NoteEditor({
 
 export function ToolsPage({
   onNotice,
-  resetSignal
+  resetSignal,
+  developerMode
 }: {
   onNotice: (text: string) => void
   resetSignal?: number
+  /** 开发者模式：解锁使用经验编辑；密码只在设置页右上角输入一次 */
+  developerMode: boolean
 }) {
   const { data, update } = useData()
   const [activeId, setActiveId] = useState<string | null>(null)
+  useDetailScrollRestore(!!activeId, 'tools')
   const [editing, setEditing] = useState(false)
   const activeRef = useRef<string | null>(null)
   const draftRef = useRef('')
@@ -613,6 +618,8 @@ export function ToolsPage({
       else delete next[tool.id]
       return { ...current, toolNotes: next }
     })
+    // 老郑的编辑同步写回默认种子：用户更新版本后就能看到这份经验
+    void window.laozheng.saveToolNoteDefault(tool.id, clean).catch(() => undefined)
     if (notify) onNotice(`已保存「${tool.name}」的使用经验`)
   }
 
@@ -716,7 +723,17 @@ export function ToolsPage({
           <div className="tool-note-head">
             <h2>使用经验</h2>
             {editing ? null : (
-              <button className="btn tool-note-edit" onClick={() => setEditing(true)}>
+              <button
+                className="btn tool-note-edit"
+                title={developerMode ? undefined : '请先在设置页右上角进入开发者模式'}
+                onClick={() => {
+                  if (!developerMode) {
+                    onNotice('请先在 设置 → 右上角「开发者模式」输入密码解锁')
+                    return
+                  }
+                  setEditing(true)
+                }}
+              >
                 <Pencil size={14} />
                 {noteEmpty ? '写经验' : '编辑'}
               </button>

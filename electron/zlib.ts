@@ -1,7 +1,8 @@
-import { app, BrowserWindow, safeStorage, session } from 'electron'
+import { app, BrowserWindow, session } from 'electron'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { downloadsRoot, registerLocalFile } from './downloads'
+import { decryptSecret, encryptSecret } from './secureStorage'
 import type {
   ZlibBook,
   ZlibDetailResponse,
@@ -391,26 +392,6 @@ function credentialsPath(): string {
   return join(app.getPath('userData'), 'zlib-account.json')
 }
 
-function encryptValue(value: string): string {
-  if (safeStorage.isEncryptionAvailable()) {
-    return `enc:${safeStorage.encryptString(value).toString('base64')}`
-  }
-  return `raw:${Buffer.from(value, 'utf8').toString('base64')}`
-}
-
-function decryptValue(value: unknown): string {
-  if (typeof value !== 'string' || !value) return ''
-  try {
-    if (value.startsWith('enc:')) {
-      return safeStorage.decryptString(Buffer.from(value.slice(4), 'base64'))
-    }
-    if (value.startsWith('raw:')) return Buffer.from(value.slice(4), 'base64').toString('utf8')
-  } catch {
-    // 解密失败按未保存处理
-  }
-  return ''
-}
-
 async function readCredentials(): Promise<ZlibCredentials | null> {
   try {
     const raw = JSON.parse(await readFile(credentialsPath(), 'utf8')) as {
@@ -418,7 +399,9 @@ async function readCredentials(): Promise<ZlibCredentials | null> {
       password?: unknown
     }
     const username = typeof raw.username === 'string' ? raw.username.trim() : ''
-    const password = decryptValue(raw.password)
+    const password = await decryptSecret(
+      typeof raw.password === 'string' ? raw.password : ''
+    )
     return username && password ? { username, password } : null
   } catch {
     return null
@@ -431,7 +414,11 @@ async function writeCredentials(creds: ZlibCredentials): Promise<void> {
   const tmp = `${target}.tmp`
   await writeFile(
     tmp,
-    JSON.stringify({ username: creds.username, password: encryptValue(creds.password) }, null, 2),
+    JSON.stringify(
+      { username: creds.username, password: await encryptSecret(creds.password) },
+      null,
+      2
+    ),
     'utf8'
   )
   await rename(tmp, target)

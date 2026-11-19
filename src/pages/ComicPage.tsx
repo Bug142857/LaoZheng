@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, Download, Heart } from 'lucide-react'
-import { useData } from '../state/DataContext'
+import { useData, useProgressValue } from '../state/DataContext'
 import {
+  CacheTip,
   ConfirmDialog,
   EmptyState,
   LoadingBlock,
@@ -9,8 +10,10 @@ import {
   Pagination
 } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
+import { VirtualMasonry } from '../components/VirtualMasonry'
 import { ComicReader } from '../components/ComicReader'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import {
   KOMIIC_PAGE_SIZE,
   komiicStatusLabel,
@@ -285,7 +288,7 @@ export function ComicPage({
   onOpenFavorites?: () => void
   onOpenDownloads?: () => void
 }) {
-  const { data, update } = useData()
+  const { data, update, updateProgress } = useData()
   const comicSources = data.comicSources ?? DEFAULT_COMIC_SOURCES
   const enabledComicSources = comicSources.filter((item) => item.enabled)
   const [sourceId, setSourceId] = useState<ComicSourceId>(storedComicSource)
@@ -322,6 +325,7 @@ export function ComicPage({
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<DetailState | null>(null)
   const [reader, setReader] = useState<ReaderState | null>(null)
+  useDetailScrollRestore(!!detail || !!reader, 'comic')
   const [batch, setBatch] = useState<{ done: number; total: number } | null>(null)
   const [confirmBatch, setConfirmBatch] = useState<ChapterView[] | null>(null)
   const [chapterDesc, setChapterDesc] = useState(true)
@@ -870,7 +874,8 @@ export function ComicPage({
   }, [focusId])
 
   const progressKey = (id: string): string => `comic/${id}`
-  const progress = detail ? data.readProgress[progressKey(detail.comic.id)] : undefined
+  // 只订阅当前这部漫画的进度，其它进度变化不触发本页重渲染
+  const progress = useProgressValue(detail ? progressKey(detail.comic.id) : '')
   const resumeChapter = detail?.chapters.find((c) => c.id === progress)
   /** 分类模式能算出总页数；头牌用后台探到的末页，最近 / 热门分别对应 update / ranking */
   const tptoonPageKey =
@@ -914,10 +919,7 @@ export function ComicPage({
       error: res.ok ? (res.urls.length ? null : '本章没有图片') : res.error ?? '图片加载失败'
     })
     if (res.ok && res.urls.length) {
-      update((d) => ({
-        ...d,
-        readProgress: { ...d.readProgress, [progressKey(comic.id)]: chapter.id }
-      }))
+      updateProgress(progressKey(comic.id), chapter.id)
     }
   }
 
@@ -1392,7 +1394,7 @@ export function ComicPage({
 
       {loading && items.length === 0 ? (
         <EmptyState title="正在加载漫画列表…" />
-      ) : error ? (
+      ) : error && items.length === 0 ? (
         <EmptyState
           title="加载失败"
           desc={error}
@@ -1406,9 +1408,22 @@ export function ComicPage({
         <EmptyState title="没有找到漫画" desc="换个关键词或分类再试。" />
       ) : (
         <>
-          <div className="comic-grid">
-            {visibleItems.map((comic) => (
-              <button key={comic.id} className="comic-card" onClick={() => void openDetail(comic)}>
+          {error ? (
+            <CacheTip
+              message={`刷新失败：${error}，当前显示上次缓存。`}
+              onRetry={() => void load(mode, categoryId, query, pageNum)}
+            />
+          ) : null}
+          <VirtualMasonry
+            className="comic-grid"
+            minColumnWidth={150}
+            gap={14}
+            footerHeight={50}
+            aspectRatio={4 / 3}
+            items={visibleItems.map((comic) => ({
+              key: comic.id,
+              node: (
+                <button className="comic-card" onClick={() => void openDetail(comic)}>
                 <span className="comic-cover">
                   {comic.imageUrl ? <img src={comic.imageUrl} alt="" loading="lazy" /> : null}
                   <span className="comic-badge">{komiicStatusLabel(comic.status)}</span>
@@ -1428,9 +1443,10 @@ export function ComicPage({
                 <span className="comic-sub">
                   {comic.authors.map((a) => a.name).join(' / ') || comic.categories.map((c) => c.name).join(' · ') || '—'}
                 </span>
-              </button>
-            ))}
-          </div>
+                </button>
+              )
+            }))}
+          />
 
           {clientSearchPaging ? (
             <Pagination

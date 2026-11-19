@@ -315,7 +315,7 @@ export function normalizeShuangkanSources(raw: unknown): ShuangkanSource[] {
         host,
       baseUrl: baseUrl.replace(/\/+$/, ''),
       enabled: record.enabled !== false,
-      builtin: record.builtin === true || !!preset,
+      builtin: record.builtin === false ? false : record.builtin === true || !!preset,
       adapter: isSkAdapter(record.adapter) ? record.adapter : inferSkAdapter(baseUrl),
       testStatus: inheritedStatus,
       testMsg: inheritedMsg,

@@ -5,6 +5,7 @@ import { SearchBar } from '../components/SearchBar'
 import { VideoPlayer } from '../components/VideoPlayer'
 import { useData } from '../state/DataContext'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import { requestDownload } from '../utils/download'
 import {
   SK_SORT_OPTIONS,
@@ -114,6 +115,7 @@ export function ShuangkanPage({
   const [detail, setDetail] = useState<SkDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
+  useDetailScrollRestore(!!detail, 'shuangkan')
   const [playing, setPlaying] = useState<{ episode: SkEpisode | null; url: string } | null>(null)
   const [playLoading, setPlayLoading] = useState(false)
   /** 取播放地址失败的具体原因（站点侧过期 / 风控等），不要笼统显示「解析失败」 */

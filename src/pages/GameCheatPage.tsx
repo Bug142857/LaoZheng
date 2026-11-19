@@ -16,6 +16,7 @@ import {
 } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import type {
   InstalledTrainer,
   TrainerDetail,
@@ -107,6 +108,7 @@ export function GameCheatPage({
   const [error, setError] = useState<string | null>(null)
   const [translatedTo, setTranslatedTo] = useState('')
   const [detail, setDetail] = useState<DetailState | null>(null)
+  useDetailScrollRestore(!!detail, 'gamecheat')
   const [downloading, setDownloading] = useState<string | null>(null)
   const [showAllOptions, setShowAllOptions] = useState(false)
   const [showAllShots, setShowAllShots] = useState(false)

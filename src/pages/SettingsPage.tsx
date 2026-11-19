@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Cloud,
+  Code2,
   Database,
   Download,
   Eraser,
@@ -16,7 +17,7 @@ import {
   UserRound,
   type LucideIcon
 } from 'lucide-react'
-import type { AppData } from '../shared/types'
+import type { AppData, DataSnapshotInfo } from '../shared/types'
 import type { AccountSite, AccountsView } from '../shared/accounts'
 import type { DoubanAuthStatus } from '../shared/douban'
 import type { CacheInfo, ThemeMode, UiSettings } from '../shared/settings'
@@ -26,7 +27,7 @@ import type { UpdateCheckResult } from '../shared/update'
 import { formatBytes } from '../shared/downloads'
 import { useData } from '../state/DataContext'
 import { clearModuleCaches } from '../utils/cache'
-import { ConfirmDialog, Modal } from '../components/ui'
+import { ConfirmDialog, Modal, PasswordDialog } from '../components/ui'
 import { UpdateModal } from '../components/UpdateModal'
 import { SourceSettings } from './SourceSettings'
 import { ListManagerSection } from './ListManagerSection'
@@ -63,21 +64,50 @@ function accentLabel(key: string): string {
   return ACCENT_OPTIONS.find((a) => a.key === key)?.label ?? '紫'
 }
 
+function formatSnapshotTime(ms: number): string {
+  try {
+    return new Date(ms).toLocaleString('zh-CN', { hour12: false })
+  } catch {
+    return new Date(ms).toISOString()
+  }
+}
+
+/** 快照原因中文化，避免设置页直接显示 import / auto */
+function snapshotReasonLabel(reason: string): string {
+  const labels: Record<string, string> = {
+    auto: '每日自动备份',
+    import: '导入前',
+    sync: '云恢复前',
+    snapshot: '快照恢复前',
+    manual: '手动备份'
+  }
+  return labels[reason] ?? reason
+}
+
 export function SettingsPage({
   onNotice,
   onOpenPage,
-  resetSignal
+  resetSignal,
+  developerMode,
+  onEnterDeveloperMode
 }: {
   onNotice: (text: string) => void
   onOpenPage: (page: 'favorites' | 'downloads', moduleKey?: string) => void
   resetSignal?: number
+  /** 开发者模式：本次客户端运行期间有效 */
+  developerMode: boolean
+  onEnterDeveloperMode: () => void
 }) {
   const { data, replaceData } = useData()
   const [section, setSection] = useState<Section>('root')
+  const [devPasswordOpen, setDevPasswordOpen] = useState(false)
   const [version, setVersion] = useState('—')
   const [downloadDir, setDownloadDir] = useState('')
   const [downloadStats, setDownloadStats] = useState({ count: 0, bytes: 0 })
   const [pendingImport, setPendingImport] = useState<AppData | null>(null)
+  const [snapshots, setSnapshots] = useState<DataSnapshotInfo[]>([])
+  const [restoreTarget, setRestoreTarget] = useState<string | null>(null)
+  const [restoring, setRestoring] = useState(false)
   const [sync, setSync] = useState<SyncConfigView | null>(null)
   const [accounts, setAccounts] = useState<AccountsView | null>(null)
   const [accountBusy, setAccountBusy] = useState<AccountSite | null>(null)
@@ -116,6 +146,14 @@ export function SettingsPage({
     setCache(await window.laozheng.cacheInfo())
   }
 
+  const refreshSnapshots = async () => {
+    try {
+      setSnapshots(await window.laozheng.listSnapshots())
+    } catch {
+      setSnapshots([])
+    }
+  }
+
   const refreshDownloads = async () => {
     const res = await window.laozheng.listDownloads()
     setDownloadStats({
@@ -139,6 +177,7 @@ export function SettingsPage({
     })
     void window.laozheng.doubanStatus().then(setDouban)
     void refreshCache()
+    void refreshSnapshots()
     void refreshDownloads()
     void window.laozheng.loadLiveSources().then((list) => setLiveCount(list.length))
     void window.laozheng
@@ -156,7 +195,10 @@ export function SettingsPage({
 
   // 回到配置管理首页时刷新缓存大小 / 电视源数量 / 下载目录（子页面里可能刚改过）
   useEffect(() => {
-    if (section !== 'root') return
+    if (section !== 'root') {
+      if (section === 'data') void refreshSnapshots()
+      return
+    }
     void refreshCache()
     void refreshDownloads()
     void window.laozheng.loadLiveSources().then((list) => setLiveCount(list.length))
@@ -221,13 +263,20 @@ export function SettingsPage({
   const confirmImport = async () => {
     if (!pendingImport) return
     const imported = pendingImport
-    await replaceData(imported)
+    try {
+      await replaceData(imported)
+    } catch (err) {
+      onNotice(`导入已取消：${(err as Error).message}`)
+      setPendingImport(null)
+      return
+    }
     setUi(await window.laozheng.getUiSettings())
     setDownloadDir(await window.laozheng.downloadRoot())
     onNotice(
-      `已导入：${imported.items.length} 个条目 / ${imported.lists.length} 个清单 / ${imported.innerFavs.length} 条收藏`
+      `已导入：${imported.items.length} 个条目 / ${imported.lists.length} 个清单 / ${imported.innerFavs.length} 条收藏（覆盖前已留本地快照）`
     )
     setPendingImport(null)
+    void refreshSnapshots()
   }
 
   const doExport = async () => {
@@ -372,13 +421,43 @@ export function SettingsPage({
   const confirmSyncImport = async () => {
     if (!pendingSync) return
     const restored = pendingSync
-    await replaceData(restored)
+    try {
+      await replaceData(restored, 'sync')
+    } catch (err) {
+      onNotice(`恢复已取消：${(err as Error).message}`)
+      setPendingSync(null)
+      return
+    }
     setUi(await window.laozheng.getUiSettings())
     setDownloadDir(await window.laozheng.downloadRoot())
     onNotice(
-      `已从云端恢复：${restored.items.length} 个条目 / ${restored.lists.length} 个清单 / ${restored.innerFavs.length} 条收藏`
+      `已从云端恢复：${restored.items.length} 个条目 / ${restored.lists.length} 个清单 / ${restored.innerFavs.length} 条收藏（覆盖前已留本地快照）`
     )
     setPendingSync(null)
+    void refreshSnapshots()
+  }
+
+  /** 从本地快照恢复：同样先给当前数据留一份快照，恢复本身也可回滚 */
+  const restoreSnapshotNow = async () => {
+    if (!restoreTarget) return
+    setRestoring(true)
+    try {
+      const res = await window.laozheng.restoreSnapshot(restoreTarget)
+      if (!res.ok || !res.data) {
+        onNotice(`恢复快照失败：${res.error ?? '未知错误'}`)
+        return
+      }
+      await replaceData(res.data, 'snapshot')
+      setUi(await window.laozheng.getUiSettings())
+      setDownloadDir(await window.laozheng.downloadRoot())
+      onNotice(`已恢复本地快照（${restoreTarget}）`)
+      setRestoreTarget(null)
+      void refreshSnapshots()
+    } catch (err) {
+      onNotice(`恢复快照失败：${(err as Error).message}`)
+    } finally {
+      setRestoring(false)
+    }
   }
 
   /** 更换下载目录：选好后询问是否把旧目录内容一起迁移 */
@@ -419,6 +498,29 @@ export function SettingsPage({
     void refreshDownloads()
   }
 
+  /** 设置页右上角的开发者模式入口：本次客户端运行期间有效 */
+  const developerModeButton = (
+    <div className="page-actions">
+      <button
+        className={`btn ${developerMode ? 'primary' : ''}`}
+        title={
+          developerMode
+            ? '开发者模式已开启，退出客户端前无需重复输入'
+            : '输入密码进入开发者模式'
+        }
+        onClick={() => {
+          if (developerMode) {
+            onNotice('开发者模式已开启，退出客户端前无需重复输入')
+            return
+          }
+          setDevPasswordOpen(true)
+        }}
+      >
+        <Code2 size={15} /> {developerMode ? '开发者模式已开启' : '开发者模式'}
+      </button>
+    </div>
+  )
+
   const sourceTotal =
     data.vodSources.length +
     data.dramaSources.length +
@@ -447,6 +549,7 @@ export function SettingsPage({
         <>
           <header className="page-header">
             <h1 className="page-title">配置管理</h1>
+            {developerModeButton}
           </header>
           <div className="settings-list">
             <SettingsEntry
@@ -519,8 +622,10 @@ export function SettingsPage({
               icon={Eraser}
               title="清理缓存"
               hint={`当前缓存：${cache ? formatBytes(cache.bytes) : '计算中…'}${
-                cache?.parts ? ` · ${cache.parts} 个未完成文件` : ''
-              } · ${cache?.dir ?? '读取中…'}`}
+                cache
+                  ? `（图片 ${formatBytes(cache.imageBytes)} · 接口 ${formatBytes(cache.apiBytes)}）`
+                  : ''
+              }${cache?.parts ? ` · ${cache.parts} 个未完成文件` : ''} · ${cache?.dir ?? '读取中…'}`}
               onClick={() => setClearOpen(true)}
               action={
                 <button
@@ -556,6 +661,7 @@ export function SettingsPage({
               <ChevronLeft size={15} /> 返回配置管理
             </button>
             <h1 className="page-title">{SECTION_TITLE[section]}</h1>
+            {developerModeButton}
           </header>
 
           {section === 'theme' && (
@@ -680,6 +786,43 @@ export function SettingsPage({
                     <Download size={15} /> 导出备份
                   </button>
                 </div>
+                <p className="settings-hint">
+                  整体导入 / 云恢复覆盖前会自动生成本地快照（保留最近 20 份），快照创建失败会中止覆盖。
+                </p>
+              </section>
+
+              <section className="settings-card">
+                <h3>本地快照</h3>
+                <p className="settings-hint">
+                  整体导入、云恢复和快照恢复覆盖前都会自动留一份带时间戳的数据快照，
+                  恢复快照本身也会先给当前数据留一份，可再次回滚。
+                </p>
+                {snapshots.length ? (
+                  <div className="snapshot-list">
+                    {snapshots.map((snapshot) => (
+                      <div key={snapshot.name} className="snapshot-row">
+                        <div className="snapshot-main">
+                          <div className="snapshot-title">
+                            {formatSnapshotTime(snapshot.createdAt)}
+                          </div>
+                          <div className="snapshot-meta">
+                            {snapshotReasonLabel(snapshot.reason)} · {formatBytes(snapshot.bytes)} ·{' '}
+                            {snapshot.name}
+                          </div>
+                        </div>
+                        <button
+                          className="btn ghost"
+                          disabled={restoring}
+                          onClick={() => setRestoreTarget(snapshot.name)}
+                        >
+                          恢复
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="settings-hint">还没有本地快照。</p>
+                )}
               </section>
             </div>
           )}
@@ -799,8 +942,36 @@ export function SettingsPage({
 
           {section === 'sources' && <SourceSettings onNotice={onNotice} />}
 
-          {section === 'lists' && <ListManagerSection onNotice={onNotice} />}
+          {section === 'lists' && (
+            <ListManagerSection onNotice={onNotice} developerMode={developerMode} />
+          )}
         </>
+      )}
+
+      {devPasswordOpen ? (
+        <PasswordDialog
+          title="进入开发者模式"
+          hint="输入密码后解锁演唱管理与软件经验编辑，退出客户端前无需重复输入。"
+          onConfirm={() => {
+            setDevPasswordOpen(false)
+            onEnterDeveloperMode()
+            onNotice('已进入开发者模式')
+          }}
+          onCancel={() => setDevPasswordOpen(false)}
+        />
+      ) : null}
+
+      {restoreTarget && (
+        <ConfirmDialog
+          title="恢复本地快照"
+          message={`将用快照覆盖当前数据：\n${restoreTarget}\n\n恢复前会自动为当前数据再留一份快照，可再次回滚。`}
+          confirmText={restoring ? '恢复中…' : '恢复'}
+          danger
+          onConfirm={() => void restoreSnapshotNow()}
+          onCancel={() => {
+            if (!restoring) setRestoreTarget(null)
+          }}
+        />
       )}
 
       {pendingImport && (

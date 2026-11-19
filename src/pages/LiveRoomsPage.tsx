@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ExternalLink, Heart, LogIn } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { ConfirmDialog, EmptyState, Modal, ModuleShortcuts, Pagination } from '../components/ui'
+import { CacheTip, ConfirmDialog, EmptyState, LoadingBlock, Modal, ModuleShortcuts, Pagination } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { LivePlayer } from '../components/LivePlayer'
 import { tileGradient } from '../utils/data'
+import { useDetailScrollRestore } from '../utils/scroll'
 import { enabledLivePlatforms, livePlatformOfSource } from '../shared/livePlatformSources'
 import {
   LIVE_LOGIN_EVENT,
@@ -108,6 +109,7 @@ export function LiveRoomsPage({
   const [groupPicker, setGroupPicker] = useState('')
   const [areaPicker, setAreaPicker] = useState('')
   const [playing, setPlaying] = useState<{ input: string; room?: LiveRoom } | null>(null)
+  useDetailScrollRestore(!!playing, 'liveRooms')
   const [playback, setPlayback] = useState<LiveRoomPlayback | null>(null)
   const [playbackError, setPlaybackError] = useState('')
   const [playbackLoading, setPlaybackLoading] = useState(false)
@@ -120,6 +122,8 @@ export function LiveRoomsPage({
   const lastReset = useRef(resetSignal)
   const playRequestRef = useRef(0)
   const listRequestRef = useRef(0)
+  /** 当前 rooms 对应的平台 / 模式 / 分类 / 搜索词，用于区分刷新和切换范围 */
+  const roomsScopeRef = useRef('')
   const skipLoadRef = useRef(false)
   /** 抖音搜索是滚动加载：记录已展示的房间，翻页时让主进程跳过 */
   const searchSeenRef = useRef<string[]>([])
@@ -205,6 +209,9 @@ export function LiveRoomsPage({
   const loadList = async (nextPage: number, append = false): Promise<void> => {
     if (!enabledPlatforms.includes(platform)) return
     if (mode === 'category' && !areaPicker) return
+    const scope = `${platform}|${mode}|${query}|${groupPicker}|${areaPicker}`
+    // 切换平台 / 分类 / 搜索词时先清空旧范围的结果；同范围刷新保留列表
+    if (!append && roomsScopeRef.current && roomsScopeRef.current !== scope) setRooms([])
     const token = ++listRequestRef.current
     if (append) setLoadingMore(true)
     else setLoading(true)
@@ -240,13 +247,14 @@ export function LiveRoomsPage({
         })
       } else {
         setRooms(result.items)
+        roomsScopeRef.current = scope
       }
       setPage(nextPage)
       setHasMore(result.hasMore)
       setError(result.error ?? '')
     } catch (err) {
       if (token !== listRequestRef.current) return
-      if (!append) setRooms([])
+      // 同一个平台的刷新失败不要清空已有房间：保留当前列表，顶部提示后可重试
       setError(err instanceof Error ? err.message : '列表加载失败')
     } finally {
       if (token === listRequestRef.current) {
@@ -579,6 +587,7 @@ export function LiveRoomsPage({
       setAreaPicker(saved.areaPicker)
       setCategories(saved.categories)
       setRooms(saved.rooms)
+      roomsScopeRef.current = `${next}|${saved.mode}|${saved.query}|${saved.groupPicker}|${saved.areaPicker}`
       setPage(saved.page)
       setHasMore(saved.hasMore)
       setError(saved.error)
@@ -593,6 +602,7 @@ export function LiveRoomsPage({
     setAreaPicker('')
     setCategories([])
     setRooms([])
+    roomsScopeRef.current = ''
     setPage(1)
     setHasMore(false)
     setError('')
@@ -942,12 +952,16 @@ export function LiveRoomsPage({
         </div>
       ) : null}
 
-      {loading ? (
+      {loading && rooms.length > 0 ? (
+        <LoadingBlock text="正在刷新直播间，请稍等…" />
+      ) : null}
+
+      {loading && rooms.length === 0 ? (
         <EmptyState
           title="正在加载直播间…"
           desc={platform === 'douyin' ? '抖音需要打开直播页抓取列表，可能慢几秒。' : undefined}
         />
-      ) : error ? (
+      ) : error && rooms.length === 0 ? (
         <EmptyState
           title="加载失败"
           desc={error}
@@ -964,6 +978,12 @@ export function LiveRoomsPage({
         />
       ) : (
         <>
+          {error ? (
+            <CacheTip
+              message={`加载失败：${error}，当前显示上次加载的直播间。`}
+              onRetry={() => void loadList(page)}
+            />
+          ) : null}
           <div className="live-room-grid">
             {rooms.map((room, index) => renderRoomCard(room, index))}
           </div>

@@ -59,6 +59,7 @@ export function SearchBar({
         <Search size={16} />
         <input
           value={value}
+          aria-label={placeholder}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
         />
@@ -67,6 +68,7 @@ export function SearchBar({
             type="button"
             className="search-clear"
             title="清空"
+            aria-label="清空搜索"
             onClick={() => {
               onChange('')
               onClear?.()

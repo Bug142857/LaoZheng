@@ -27,7 +27,8 @@ function ensureWindow(): BrowserWindow {
     show: false,
     width: 1280,
     height: 900,
-    webPreferences: { partition: PARTITION, sandbox: false, backgroundThrottling: false }
+    // 该窗口没有 preload / Node 依赖，收紧 sandbox 不影响取页
+    webPreferences: { partition: PARTITION, sandbox: true, backgroundThrottling: false }
   })
   win.on('closed', () => {
     if (sharedWindow === win) sharedWindow = null

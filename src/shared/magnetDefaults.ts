@@ -16,6 +16,8 @@ const data = raw as unknown as DefaultSourceFile
 export const DEFAULT_MAGNET_SOURCES: MagnetSource[] = (data.sources ?? []).map((source) => ({
   ...source,
   api: source.api ?? null,
+  // 内置默认资源库不可删除，只能停用；用户自己添加的源可删
+  builtin: true,
   // 内置资源库均已实测可用：新安装默认显示有效，之后手动测试再覆盖真实结果
   testStatus: 'ok',
   testMsg: '可用',

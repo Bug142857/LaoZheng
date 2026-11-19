@@ -5,6 +5,7 @@ import { EmptyState, LoadingBlock, ModuleShortcuts, Pagination } from '../compon
 import { SearchBar } from '../components/SearchBar'
 import { VideoPlayer } from '../components/VideoPlayer'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import { requestDownload } from '../utils/download'
 import { P_CATEGORIES, formatDuration, type PVideo } from '../shared/psite'
 
@@ -68,6 +69,7 @@ export function PsitePage({
     url: string
     fallbackUrl?: string
   } | null>(null)
+  useDetailScrollRestore(!!playing)
   const [hasMore, setHasMore] = useState(cache.hasMore)
   const [pendingCat, setPendingCat] = useState<number | null>(null)
   /** 从收藏进入时先显示解析中的页面，避免闪一下搜索界面 */

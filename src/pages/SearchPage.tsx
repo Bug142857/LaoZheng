@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import { listNamesOfItem, nextId } from '../utils/data'
+import { useDetailScrollRestore } from '../utils/scroll'
 import { ConfirmDialog, EmptyState, Modal } from '../components/ui'
+import { VirtualRows } from '../components/VirtualRows'
 import { SearchBar } from '../components/SearchBar'
 import { ItemDetail } from '../components/ItemDetail'
 import { PersonDetail, personWorkToItem } from '../components/PersonDetail'
@@ -94,6 +96,7 @@ export function SearchPage({
   const [pending, setPending] = useState<SubjectSearchItem | null>(null)
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [detail, setDetail] = useState<CollectionItem | null>(null)
+  useDetailScrollRestore(!!detail)
   /** 详情从哪条搜索结果打开：加入清单时复用原结果 */
   const [detailSource, setDetailSource] = useState<SubjectSearchItem | null>(null)
   const [removingDetail, setRemovingDetail] = useState<CollectionItem | null>(null)
@@ -512,52 +515,57 @@ export function SearchPage({
           <div className="page-desc" style={{ marginBottom: 10 }}>
             「{submitted}」找到 {items.length} 条
           </div>
-          <div className="rows">
-            {items.map((item) => {
+          <VirtualRows
+            className="rows"
+            rowHeight={83}
+            items={items.map((item) => {
               const key = `${item.kind}|${item.id}`
               const saved = savedLabel(item)
               const isPerson = item.kind === 'person'
-              return (
-                <div key={key} className="row clickable" onClick={() => openResult(item)}>
-                  <div className="row-cover">
-                    {item.coverUrl ? (
-                      <img src={item.coverUrl} alt="" loading="lazy" />
+              return {
+                key,
+                node: (
+                  <div className="row clickable" onClick={() => openResult(item)}>
+                    <div className="row-cover">
+                      {item.coverUrl ? (
+                        <img src={item.coverUrl} alt="" loading="lazy" />
+                      ) : (
+                        KIND_LABELS[item.kind].slice(0, 2)
+                      )}
+                    </div>
+                    <div className="row-main">
+                      <div className="row-title">{item.title}</div>
+                      <div className="row-meta">
+                        {[KIND_LABELS[item.kind], item.year, item.subTitle]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </div>
+                    </div>
+                    {item.rating != null ? (
+                      <span className="badge">{item.rating.toFixed(1)} 分</span>
+                    ) : null}
+                    {saved ? (
+                      <span className="badge brand">{saved}</span>
+                    ) : isPerson ? (
+                      <span className="badge">资料</span>
                     ) : (
-                      KIND_LABELS[item.kind].slice(0, 2)
+                      <button
+                        className="btn"
+                        disabled={busyKey !== null}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setPending(item)
+                        }}
+                      >
+                        <Plus size={14} />
+                        {busyKey === key ? '加入中…' : '加入清单'}
+                      </button>
                     )}
                   </div>
-                  <div className="row-main">
-                    <div className="row-title">{item.title}</div>
-                    <div className="row-meta">
-                      {[KIND_LABELS[item.kind], item.year, item.subTitle]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </div>
-                  </div>
-                  {item.rating != null ? (
-                    <span className="badge">{item.rating.toFixed(1)} 分</span>
-                  ) : null}
-                  {saved ? (
-                    <span className="badge brand">{saved}</span>
-                  ) : isPerson ? (
-                    <span className="badge">资料</span>
-                  ) : (
-                    <button
-                      className="btn"
-                      disabled={busyKey !== null}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setPending(item)
-                      }}
-                    >
-                      <Plus size={14} />
-                      {busyKey === key ? '加入中…' : '加入清单'}
-                    </button>
-                  )}
-                </div>
-              )
+                )
+              }
             })}
-          </div>
+          />
         </>
       )}
 

@@ -26,6 +26,8 @@ import { ComicReader } from '../components/ComicReader'
 import { useMusicPlayer } from '../components/MusicPlayer'
 import {
   formatBytes,
+  formatEta,
+  formatSpeed,
   type DownloadItem,
   type DownloadKind,
   type DownloadListResponse
@@ -470,11 +472,19 @@ export function DownloadsPage({
                         ? `失败：${task.error ?? '未知错误'}`
                         : task.state === 'paused'
                           ? `已暂停${task.progress >= 0 ? ` · ${Math.round(task.progress * 100)}%` : ''}`
-                          : task.progress >= 0
-                            ? `${Math.round(task.progress * 100)}%`
-                            : formatBytes(task.bytes)}
+                          : task.state === 'queued'
+                            ? '排队中'
+                            : [
+                                task.progress >= 0
+                                  ? `${Math.round(task.progress * 100)}%`
+                                  : formatBytes(task.bytes),
+                                formatSpeed(task.speed),
+                                formatEta(task.eta) ? `剩余 ${formatEta(task.eta)}` : ''
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')}
                     </span>
-                    {task.state === 'running' ? (
+                    {task.state === 'running' || task.state === 'queued' ? (
                       <button className="icon-btn" title="暂停下载" onClick={() => void pause(task.id)}>
                         <Pause size={14} />
                       </button>
@@ -503,6 +513,8 @@ export function DownloadsPage({
                   <div className="page-desc">
                     {formatBytes(task.bytes)}
                     {task.totalBytes > 0 ? ` / ${formatBytes(task.totalBytes)}` : ''}
+                    {task.speed ? ` · ${formatSpeed(task.speed)}` : ''}
+                    {task.eta ? ` · 剩余 ${formatEta(task.eta)}` : ''}
                     {task.sourceName ? ` · 来自 ${task.sourceName}` : ''}
                   </div>
                 </div>

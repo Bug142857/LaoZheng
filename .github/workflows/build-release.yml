@@ -64,17 +64,39 @@ jobs:
           $target = "release/LaoZheng-$version-Setup.exe"
           Copy-Item $source $target -Force
           $hash = (Get-FileHash $target -Algorithm SHA256).Hash
+
+          # 更新清单必须带 sha256：应用内下载更新后按这个值校验安装包
+          $inputTag = '${{ inputs.tag }}'
+          $tag = if ($inputTag) { $inputTag } elseif ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "v$version" }
+          $manifest = [ordered]@{
+            version = $version
+            url = "https://github.com/Bug142857/LaoZheng/releases/tag/$tag"
+            exe = "https://github.com/Bug142857/LaoZheng/releases/download/$tag/LaoZheng-$version-Setup.exe"
+            sha256 = $hash.ToLowerInvariant()
+            notes = "自动构建：$tag"
+          }
+          $manifestPath = "release/update.json"
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD.Path $manifestPath),
+            ($manifest | ConvertTo-Json -Depth 4),
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
           "ASSET=$target" >> $env:GITHUB_ENV
+          "MANIFEST=$manifestPath" >> $env:GITHUB_ENV
           "VERSION=$version" >> $env:GITHUB_ENV
           "SHA256=$hash" >> $env:GITHUB_ENV
           Write-Host "asset: $target"
           Write-Host "sha256: $hash"
+          Write-Host "manifest: $manifestPath"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: Laozheng-Windows-${{ env.VERSION }}
-          path: ${{ env.ASSET }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.MANIFEST }}
           if-no-files-found: error
 
       # 推 v* tag 时自动建 Release 并上传；也可手动 dispatch 补传已存在的 Release
@@ -89,5 +111,5 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             gh release create $env:TAG --title $env:TAG --notes "自动构建：$env:TAG"
           }
-          gh release upload $env:TAG $env:ASSET --clobber
-          Write-Host "uploaded $env:ASSET to $env:TAG"
+          gh release upload $env:TAG $env:ASSET $env:MANIFEST --clobber
+          Write-Host "uploaded $env:ASSET and $env:MANIFEST to $env:TAG"

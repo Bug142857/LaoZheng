@@ -22,6 +22,7 @@ import type {
   VodCategoriesResponse,
   VodDetailResponse,
   VodListResponse,
+  VodQualityProbeResponse,
   VodSearchResponse,
   VodSourceInput,
   VodTestResponse
@@ -286,6 +287,8 @@ export interface VodSource {
   name: string
   baseUrl: string
   enabled: boolean
+  /** 内置默认源：不可删除，只能停用；自定义源可删 */
+  builtin?: boolean
   /** cn = 国内可访问；proxy = 需要外网 */
   region: string
   regionManual: boolean
@@ -316,8 +319,14 @@ export interface BackupSettings {
   lastImageDir?: string
   /** 各类导入 / 导出对话框上次选择的目录 */
   lastDirs?: Record<string, string>
-  /** 侧栏导航顺序（share / optimize 两套树各自保存模块 key） */
-  navOrder?: Record<string, string[]>
+  /** 音乐播放器音量 / 静音（随备份与云同步走） */
+  musicVolume?: number
+  musicMuted?: boolean
+  /** 音乐播放队列与进度（随备份与云同步走） */
+  musicQueue?: import('./music').MusicQueueItem[]
+  musicQueueIndex?: number
+  musicMode?: import('./settings').MusicPlayMode
+  musicQueueTime?: number
 }
 
 export interface AppData {
@@ -370,6 +379,26 @@ export interface AppData {
 
 export interface ImportResult {
   canceled: boolean
+  data?: AppData
+  error?: string
+}
+
+/** 覆盖前本地快照（整体导入 / 云恢复前自动生成） */
+export interface DataSnapshotInfo {
+  name: string
+  createdAt: number
+  bytes: number
+  reason: string
+}
+
+export interface DataSnapshotCreateResult {
+  ok: boolean
+  snapshot?: DataSnapshotInfo | null
+  error?: string
+}
+
+export interface DataSnapshotRestoreResult {
+  ok: boolean
   data?: AppData
   error?: string
 }
@@ -503,6 +532,14 @@ export interface LaozhengApi {
   saveData: (data: AppData) => Promise<void>
   /** 退出前同步落盘（避免防抖内的最后一次修改丢失） */
   saveDataSync: (data: AppData) => void
+  /** 播放 / 阅读进度独立存储：只提交 key + seconds */
+  setReadProgress: (key: string, value: string) => Promise<void>
+  /** 暂停 / 切集 / 退出前立即把进度刷到磁盘 */
+  flushReadProgress: () => Promise<void>
+  /** 覆盖前生成带时间戳的本地快照；失败时调用方中止覆盖 */
+  snapshotData: (reason: string) => Promise<DataSnapshotCreateResult>
+  listSnapshots: () => Promise<DataSnapshotInfo[]>
+  restoreSnapshot: (name: string) => Promise<DataSnapshotRestoreResult>
   /** 导入 / 云恢复后，把电视源、下载记录、本机设置一起写回 */
   applyBackupExtras: (data: AppData) => Promise<void>
   importData: () => Promise<ImportResult>
@@ -596,6 +633,7 @@ export interface LaozhengApi {
   fetchVodDetail: (source: VodSourceInput, vodId: number) => Promise<VodDetailResponse>
   testVodSource: (source: VodSourceInput) => Promise<VodTestResponse>
   vodCategories: (source: VodSourceInput) => Promise<VodCategoriesResponse>
+  probeVodQualities: (from: string, playUrl: string) => Promise<VodQualityProbeResponse>
   exportVodSources: (sources: { name: string; baseUrl: string; enabled?: boolean }[]) => Promise<SourcesExportResult>
   exportH1Sources: (sources: {
     id?: string
@@ -699,9 +737,6 @@ export interface LaozhengApi {
   chooseCacheDir: () => Promise<CacheDirResult>
   getUiSettings: () => Promise<UiSettings>
   setUiSettings: (input: Partial<UiSettings>) => Promise<UiSettings>
-  /** 侧栏导航顺序（随本机设置一起备份 / 云同步） */
-  getNavOrder: () => Promise<Record<string, string[]>>
-  setNavOrder: (order: Record<string, string[]>) => Promise<void>
   exportTrainerSources: (sources: {
     id?: string
     name: string
@@ -825,7 +860,7 @@ export interface LaozhengApi {
   uploadSync: (data: AppData) => Promise<SyncActionResult>
   downloadSync: () => Promise<SyncActionResult>
   checkUpdate: () => Promise<UpdateCheckResult>
-  downloadUpdate: (url: string) => Promise<UpdateDownloadResult>
+  downloadUpdate: (url: string, sha256?: string) => Promise<UpdateDownloadResult>
   pauseUpdate: () => Promise<void>
   resumeUpdate: () => Promise<void>
   cancelUpdate: () => Promise<void>
@@ -839,6 +874,10 @@ export interface LaozhengApi {
     name: string,
     dataUrl: string
   ) => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>
+  /** 老郑专用：把软件经验写回默认种子（资源目录只读时返回 false） */
+  saveToolNoteDefault: (toolId: string, html: string) => Promise<boolean>
+  /** 老郑专用：把演唱视频写回默认种子（资源目录只读时返回 false） */
+  saveSingingVideoDefault: (video: unknown) => Promise<boolean>
   listAccounts: () => Promise<AccountsView>
   loginAccount: (site: AccountSite) => Promise<AccountActionResult>
   openAccountLogin: (site: AccountSite) => Promise<void>
@@ -990,6 +1029,8 @@ export interface LaozhengApi {
   openDownloadFolder: (id: string) => Promise<void>
   /** 把下载的壁纸设为 Windows 桌面壁纸 */
   setWallpaper: (id: string) => Promise<void>
+  /** 壁纸详情页：把远程原图直接设为桌面壁纸（无需先下载） */
+  setWallpaperFromUrl: (url: string, referer?: string) => Promise<void>
   runDownloadTrainer: (id: string) => Promise<void>
   playDownloadItem: (id: string) => Promise<void>
   readDownloadItem: (id: string) => Promise<DownloadReadResult>
@@ -1065,8 +1106,14 @@ export function normalizeData(raw: unknown): AppData {
     listItems: objectRows<ListItem>(o.listItems),
     vodSources: objectRows<VodSource>(o.vodSources),
     innerFavs: objectRows<InnerFav>(o.innerFavs),
-    readProgress: o.readProgress && typeof o.readProgress === 'object' ? o.readProgress : {},
-    config: o.config && typeof o.config === 'object' ? o.config : {},
+    readProgress:
+      o.readProgress && typeof o.readProgress === 'object' && !Array.isArray(o.readProgress)
+        ? (o.readProgress as Record<string, string>)
+        : {},
+    config:
+      o.config && typeof o.config === 'object' && !Array.isArray(o.config)
+        ? (o.config as Record<string, string>)
+        : {},
     liveFavorites: normalizeLiveFavorites(o.liveFavorites),
     liveHistory: normalizeLiveHistory(o.liveHistory),
     // 短剧源始终补全四个内置条目，旧备份 / 手机端备份导入后也能直接用

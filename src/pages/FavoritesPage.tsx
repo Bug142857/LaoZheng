@@ -1,82 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
-import {
-  BookOpen,
-  BookText,
-  Camera,
-  ChevronLeft,
-  ChevronRight,
-  Clapperboard,
-  Gamepad,
-  Gamepad2,
-  Heart,
-  ImageIcon,
-  Images,
-  MonitorPlay,
-  Music,
-  Newspaper,
-  PlayCircle,
-  Popcorn,
-  Radio,
-  RefreshCw,
-  Search,
-  Trash2,
-  Tv,
-  Wand2,
-  type LucideIcon
-} from 'lucide-react'
+import { ChevronLeft, ChevronRight, Heart, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import { favModuleLabel, filterFavs, formatTime } from '../utils/data'
+import {
+  FAV_MODULE_ICONS,
+  FAV_MODULE_ORDER,
+  HIDDEN_FAV_MODULES,
+  liveFavsFromData
+} from '../utils/favorites'
 import { ConfirmDialog, EmptyState } from '../components/ui'
+import { VirtualRows } from '../components/VirtualRows'
 import { MelonImage } from '../components/MelonImage'
 import { useMusicPlayer } from '../components/MusicPlayer'
-import {
-  livePlatformDefaultName,
-  livePlatformOfSource
-} from '../shared/livePlatformSources'
 import type { InnerFav } from '../shared/types'
 import { parseNewsFavPayload, type NewsItem } from '../shared/news'
-
-/** 收藏管理按模块整理（顺序与侧栏导航一致） */
-const FAV_MODULE_ORDER = [
-  'news',
-  'watch',
-  'drama',
-  'tv',
-  'live',
-  'music',
-  'comic',
-  'novel',
-  'book',
-  'emu',
-  'game',
-  'trainer',
-  'wallpaper',
-  'meitu',
-  'melon',
-  'shuangkan'
-] as const
-
-/** 已移除模块的旧收藏不再展示，但数据仍保留在备份里 */
-const HIDDEN_FAV_MODULES = new Set(['h2', 'h1', 'psite', 'xsite'])
-
-const MODULE_ICONS: Record<string, LucideIcon> = {
-  news: Newspaper,
-  watch: MonitorPlay,
-  drama: Clapperboard,
-  shuangkan: PlayCircle,
-  music: Music,
-  emu: Gamepad,
-  game: Gamepad2,
-  trainer: Wand2,
-  tv: Tv,
-  melon: Popcorn,
-  novel: BookText,
-  book: BookOpen,
-  comic: Images,
-  live: Radio,
-  wallpaper: ImageIcon,
-  meitu: Camera
-}
 
 export function FavoritesPage({
   onOpen,
@@ -114,34 +51,14 @@ export function FavoritesPage({
   }
 
   /** 平台直播收藏单独存在 data.liveFavorites，这里转换成统一收藏行参与收藏管理 */
-  const liveFavs = useMemo<InnerFav[]>(() => {
-    return data.liveFavorites.map((fav) => {
-      const source = data.livePlatformSources.find(
-        (item) => livePlatformOfSource(item) === fav.platform
-      )
-      const platformName = source?.name || livePlatformDefaultName(fav.platform)
-      return {
-        module: 'live',
-        id: `${fav.platform}:${fav.roomId}`,
-        title: fav.title || '未命名直播间',
-        subtitle: [platformName, fav.anchor].filter(Boolean).join(' · '),
-        cover: fav.cover || null,
-        savedAt: fav.savedAt,
-        videoUrl: null,
-        mediaId: 0,
-        durationSec: 0,
-        tweetUrl: null,
-        payload: JSON.stringify({
-          platform: fav.platform,
-          roomId: fav.roomId,
-          title: fav.title,
-          anchor: fav.anchor,
-          cover: fav.cover,
-          area: fav.area
-        })
-      }
-    })
-  }, [data.liveFavorites, data.livePlatformSources])
+  const liveFavs = useMemo<InnerFav[]>(
+    () =>
+      liveFavsFromData({
+        liveFavorites: data.liveFavorites,
+        livePlatformSources: data.livePlatformSources
+      }),
+    [data.liveFavorites, data.livePlatformSources]
+  )
 
   const allFavs = useMemo(
     () =>
@@ -197,11 +114,12 @@ export function FavoritesPage({
       : `${m}:${String(s).padStart(2, '0')}`
   }
 
-  /** 短剧 / 皇片 / 直播 / 壁纸用网格展示，其余模块保持列表 */
+  /** 短剧 / 皇片 / 直播 / 壁纸 / 演唱用网格卡片展示，其余模块保持列表 */
   const gridModule =
     moduleKey === 'drama' ||
     moduleKey === 'shuangkan' ||
     moduleKey === 'live' ||
+    moduleKey === 'singing' ||
     moduleKey === 'wallpaper'
 
   /** 删除前先确认，避免误点垃圾桶直接删掉收藏 */
@@ -216,7 +134,17 @@ export function FavoritesPage({
   useEffect(() => {
     setSelectMode(false)
     setSelected(new Set())
-  }, [moduleKey, query])
+  }, [moduleKey])
+
+  // 搜索变化时保留批量模式，但把已选收敛到当前可见项，避免删除看不见的收藏
+  useEffect(() => {
+    setSelected((prev) => {
+      if (!prev.size) return prev
+      const visible = new Set(favs.map((fav) => `${fav.module}-${fav.id}`))
+      const next = new Set([...prev].filter((key) => visible.has(key)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [favs])
 
   const toggleSelect = (key: string) => {
     setSelected((previous) => {
@@ -369,7 +297,7 @@ export function FavoritesPage({
 
         <div className="settings-list">
           {modules.map((key) => {
-            const Icon = MODULE_ICONS[key] ?? Heart
+            const Icon = FAV_MODULE_ICONS[key] ?? Heart
             const count = counts.get(key) ?? 0
             return (
               <button key={key} className="settings-entry" onClick={() => changeModule(key)}>
@@ -420,17 +348,16 @@ export function FavoritesPage({
             >
               <RefreshCw size={15} className={newsRefreshing ? 'spin' : ''} />
             </button>
-          ) : (
-            <button
-              className={`btn ${selectMode ? 'primary' : ''}`}
-              onClick={() => {
-                setSelectMode((value) => !value)
-                setSelected(new Set())
-              }}
-            >
-              {selectMode ? '完成' : '批量管理'}
-            </button>
-          )}
+          ) : null}
+          <button
+            className={`btn ${selectMode ? 'primary' : ''}`}
+            onClick={() => {
+              setSelectMode((value) => !value)
+              setSelected(new Set())
+            }}
+          >
+            {selectMode ? '完成' : '批量管理'}
+          </button>
         </div>
       </header>
 
@@ -460,11 +387,13 @@ export function FavoritesPage({
           <button
             className="chip"
             onClick={() => {
-              const allSelected = favs.every((fav) => selected.has(favKey(fav)))
+              const allSelected = favs.length > 0 && favs.every((fav) => selected.has(favKey(fav)))
               setSelected(allSelected ? new Set() : new Set(favs.map(favKey)))
             }}
           >
-            {favs.every((fav) => selected.has(favKey(fav))) ? '取消全选' : '全选'}
+            {favs.length > 0 && favs.every((fav) => selected.has(favKey(fav)))
+              ? '取消全选'
+              : '全选'}
           </button>
           <span className="page-desc">已选 {selected.size} 项</span>
           <button
@@ -502,11 +431,38 @@ export function FavoritesPage({
       ) : moduleKey === 'news' ? (
         <div className="news-grid">
           {favs.map((f) => {
+            const key = favKey(f)
+            const isSelected = selected.has(key)
             const payload = parseNewsFavPayload(f.payload)
             const items = payload?.items ?? []
             const name = payload?.name || f.title
             return (
-              <article key={favKey(f)} className="news-card">
+              <article
+                key={key}
+                className={`news-card${selectMode ? ' select-mode' : ''}${
+                  isSelected ? ' selected' : ''
+                }`}
+                role={selectMode ? 'button' : undefined}
+                tabIndex={selectMode ? 0 : undefined}
+                onClick={() => {
+                  if (selectMode) toggleSelect(key)
+                }}
+                onKeyDown={(event) => {
+                  if (selectMode && (event.key === 'Enter' || event.key === ' ')) {
+                    event.preventDefault()
+                    toggleSelect(key)
+                  }
+                }}
+              >
+                {selectMode ? (
+                  <label className="select-check" onClick={(event) => event.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleSelect(key)}
+                    />
+                  </label>
+                ) : null}
                 <div className="news-card-head">
                   {f.cover ? (
                     <img
@@ -525,14 +481,19 @@ export function FavoritesPage({
                     <span className="news-card-name">{name}</span>
                     <span className="news-card-board">{payload?.board || f.subtitle}</span>
                   </span>
-                  <button
-                    className="icon-btn danger"
-                    title="删除收藏"
-                    aria-label="删除收藏"
-                    onClick={() => setRemoving(f)}
-                  >
-                    <Trash2 size={15} />
-                  </button>
+                  {selectMode ? null : (
+                    <button
+                      className="icon-btn danger"
+                      title="删除收藏"
+                      aria-label="删除收藏"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setRemoving(f)
+                      }}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  )}
                 </div>
                 <div className="news-card-items">
                   {items.length ? (
@@ -541,7 +502,14 @@ export function FavoritesPage({
                         key={`${item.rank}-${item.title}`}
                         className="news-item"
                         title={item.url ? item.title : '暂无原文链接'}
-                        onClick={() => openNewsItem(item)}
+                        onClick={(event) => {
+                          if (selectMode) {
+                            event.stopPropagation()
+                            toggleSelect(key)
+                            return
+                          }
+                          openNewsItem(item)
+                        }}
                       >
                         <span className={`news-item-rank ${item.rank <= 3 ? 'top' : ''}`}>
                           {item.rank}
@@ -617,8 +585,10 @@ export function FavoritesPage({
           })}
         </div>
       ) : (
-        <div className={`rows ${moduleKey === 'music' ? 'compact' : ''}`}>
-          {favs.map((f, index) => {
+        <VirtualRows
+          className={`rows ${moduleKey === 'music' ? 'compact' : ''}`}
+          rowHeight={moduleKey === 'music' ? 47 : 83}
+          items={favs.map((f, index) => {
             const isMusic = f.module === 'music'
             const key = favKey(f)
             const open = (): void => {
@@ -629,66 +599,77 @@ export function FavoritesPage({
               if (selectMode) toggleSelect(key)
               else open()
             }
-            return (
-              <div
-                key={key}
-                className={`row clickable${selected.has(key) ? ' selected' : ''}`}
-                role="button"
-                tabIndex={0}
-                title={selectMode ? '选择收藏' : isMusic ? '用内置播放器播放，并播放当前列表' : '打开对应模块'}
-                onClick={activate}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') activate()
-                }}
-              >
-                {selectMode ? (
-                  <input
-                    type="checkbox"
-                    className="row-check"
-                    checked={selected.has(key)}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={() => toggleSelect(key)}
-                  />
-                ) : null}
-                <div className="row-cover">
-                  {f.cover ? (
-                    f.module === 'melon' ? (
-                      <MelonImage url={f.cover} />
+            return {
+              key,
+              node: (
+                <div
+                  className={`row clickable${selected.has(key) ? ' selected' : ''}`}
+                  role="button"
+                  tabIndex={0}
+                  title={
+                    selectMode
+                      ? '选择收藏'
+                      : isMusic
+                        ? '用内置播放器播放，并播放当前列表'
+                        : '打开对应模块'
+                  }
+                  onClick={activate}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') activate()
+                  }}
+                >
+                  {selectMode ? (
+                    <input
+                      type="checkbox"
+                      className="row-check"
+                      checked={selected.has(key)}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => toggleSelect(key)}
+                    />
+                  ) : null}
+                  <div className="row-cover">
+                    {f.cover ? (
+                      f.module === 'melon' ? (
+                        <MelonImage url={f.cover} />
+                      ) : (
+                        <img src={f.cover} alt="" loading="lazy" />
+                      )
                     ) : (
-                      <img src={f.cover} alt="" loading="lazy" />
-                    )
-                  ) : (
-                    favModuleLabel(f.module).slice(0, 2)
-                  )}
-                </div>
-                <div className="row-main">
-                  <div className="row-title">{f.title}</div>
-                  <div className="row-meta">
-                    {isMusic
-                      ? [f.subtitle, musicDuration(f)].filter(Boolean).join(' · ')
-                      : [f.subtitle, videoDuration(f), formatTime(f.savedAt)]
-                          .filter(Boolean)
-                          .join(' · ')}
+                      favModuleLabel(f.module).slice(0, 2)
+                    )}
                   </div>
+                  <div className="row-main">
+                    <div className="row-title">{f.title}</div>
+                    <div className="row-meta">
+                      {isMusic
+                        ? [f.subtitle, musicDuration(f)].filter(Boolean).join(' · ')
+                        : [f.subtitle, videoDuration(f), formatTime(f.savedAt)]
+                            .filter(Boolean)
+                            .join(' · ')}
+                    </div>
+                  </div>
+                  <span className="badge brand">
+                    {isMusic ? '播放' : favModuleLabel(f.module)}
+                  </span>
+                  {selectMode ? null : (
+                    <button
+                      className="icon-btn danger"
+                      title="删除收藏"
+                      aria-label="删除收藏"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setRemoving(f)
+                      }}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  )}
+                  <ChevronRight size={15} className="row-arrow" />
                 </div>
-                <span className="badge brand">{isMusic ? '播放' : favModuleLabel(f.module)}</span>
-                {selectMode ? null : (
-                  <button
-                    className="icon-btn danger"
-                    title="删除收藏"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setRemoving(f)
-                    }}
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                )}
-                <ChevronRight size={15} className="row-arrow" />
-              </div>
-            )
+              )
+            }
           })}
-        </div>
+        />
       )}
 
       {batchRemoving ? (

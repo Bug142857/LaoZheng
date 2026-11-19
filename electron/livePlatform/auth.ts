@@ -1,4 +1,4 @@
-import { app, BrowserWindow, safeStorage } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -22,6 +22,7 @@ import type {
   LiveQrPollResult,
   LiveQrStart
 } from '../../src/shared/livePlatform'
+import { decryptSecret, encryptSecret } from '../secureStorage'
 
 interface StoredAccount {
   cookie: string
@@ -44,28 +45,7 @@ let store: StoredFile = { v: 1, accounts: {} }
 let loaded = false
 let writeChain: Promise<void> = Promise.resolve()
 
-function encrypt(value: string): string {
-  if (!value) return ''
-  if (safeStorage.isEncryptionAvailable()) {
-    return `enc:${safeStorage.encryptString(value).toString('base64')}`
-  }
-  return `raw:${Buffer.from(value, 'utf8').toString('base64')}`
-}
-
-function decrypt(value: string | undefined): string {
-  if (!value) return ''
-  try {
-    if (value.startsWith('enc:')) {
-      return safeStorage.decryptString(Buffer.from(value.slice(4), 'base64'))
-    }
-    if (value.startsWith('raw:')) return Buffer.from(value.slice(4), 'base64').toString('utf8')
-  } catch (err) {
-    console.error('[liveAuth] 解密失败', err)
-  }
-  return ''
-}
-
-function readStore(): StoredFile {
+async function readStore(): Promise<StoredFile> {
   if (!existsSync(filePath())) return { v: 1, accounts: {} }
   try {
     const raw = JSON.parse(readFileSync(filePath(), 'utf8')) as Record<string, unknown>
@@ -73,7 +53,7 @@ function readStore(): StoredFile {
     const source = asRecord(raw.accounts)
     for (const platform of ['bilibili', 'douyu', 'douyin'] as LivePlatformId[]) {
       const entry = asRecord(source[platform])
-      const cookie = decrypt(asString(entry.cookie))
+      const cookie = await decryptSecret(asString(entry.cookie))
       if (!cookie) continue
       accounts[platform] = {
         cookie,
@@ -96,39 +76,40 @@ function readStore(): StoredFile {
 }
 
 function ensureLoaded(): void {
-  if (loaded) return
-  loaded = true
-  store = readStore()
+  // 账号文件由 initLiveAuth 在启动时异步加载，这里只保留调用点兼容
+  if (!loaded) loaded = true
 }
 
-function persist(): Promise<void> {
-  const snapshot: Record<string, unknown> = { v: 1, accounts: {}, douyuDeviceId: store.douyuDeviceId }
-  const accounts: Record<string, unknown> = {}
-  for (const [platform, account] of Object.entries(store.accounts)) {
-    if (!account) continue
-    accounts[platform] = {
-      cookie: encrypt(account.cookie),
-      name: account.name,
-      avatar: account.avatar,
-      uid: account.uid,
-      expireAt: account.expireAt,
-      savedAt: account.savedAt
-    }
-  }
-  snapshot.accounts = accounts
+async function persist(): Promise<void> {
   writeChain = writeChain
     .catch(() => undefined)
     .then(async () => {
+      const accounts: Record<string, unknown> = {}
+      for (const [platform, account] of Object.entries(store.accounts)) {
+        if (!account) continue
+        accounts[platform] = {
+          cookie: await encryptSecret(account.cookie),
+          name: account.name,
+          avatar: account.avatar,
+          uid: account.uid,
+          expireAt: account.expireAt,
+          savedAt: account.savedAt
+        }
+      }
+      const snapshot = { v: 1, accounts, douyuDeviceId: store.douyuDeviceId }
       await mkdir(app.getPath('userData'), { recursive: true })
       const tmp = `${filePath()}.${process.pid}.${Date.now()}.tmp`
       await writeFile(tmp, JSON.stringify(snapshot, null, 2), 'utf8')
       await rename(tmp, filePath())
     })
+    .catch((err) => console.error('[liveAuth] 保存账号文件失败', err))
   return writeChain
 }
 
-export function initLiveAuth(): void {
-  ensureLoaded()
+export async function initLiveAuth(): Promise<void> {
+  if (loaded) return
+  store = await readStore()
+  loaded = true
 }
 
 export function getDouyuDeviceId(): string {

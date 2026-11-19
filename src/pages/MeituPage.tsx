@@ -9,8 +9,10 @@ import {
   Pagination
 } from '../components/ui'
 import { ComicReader } from '../components/ComicReader'
+import { VirtualMasonry } from '../components/VirtualMasonry'
 import { SearchBar } from '../components/SearchBar'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import {
   meituFallbackCategories,
   toMeituSourceRef,
@@ -128,6 +130,7 @@ export function MeituPage({
   const [loading, setLoading] = useState(!initial.data)
   const [error, setError] = useState<string | null>(null)
   const [viewer, setViewer] = useState<ViewerState | null>(null)
+  useDetailScrollRestore(!!viewer, 'meitu')
   const [confirmDownload, setConfirmDownload] = useState(false)
   const [saving, setSaving] = useState(false)
   const [broken, setBroken] = useState<Record<string, true>>({})
@@ -155,7 +158,7 @@ export function MeituPage({
   )
   const viewerUrls = useMemo(
     () => (viewer ? viewer.images.map((image) => image.url) : []),
-    [viewer?.images]
+    [viewer]
   )
 
   const load = async (next?: {
@@ -520,8 +523,14 @@ export function MeituPage({
     return (
       <>
         <header className="page-header">
-          <button className="btn ghost" onClick={() => setViewer(null)}>
-            <ChevronLeft size={15} /> 返回列表
+          <button
+            className="btn ghost"
+            onClick={() => {
+              setViewer(null)
+              if (focus && onExit) onExit()
+            }}
+          >
+            <ChevronLeft size={15} /> {focus && onExit ? '返回' : '返回列表'}
           </button>
           <h1 className="page-title">{viewer.album.title}</h1>
           <span className="page-desc">
@@ -549,17 +558,6 @@ export function MeituPage({
               {saving ? <Loader2 size={15} className="spin" /> : <Download size={15} />}{' '}
               下载全部
             </button>
-            {focus && onExit ? (
-              <button
-                className="btn ghost"
-                onClick={() => {
-                  setViewer(null)
-                  onExit()
-                }}
-              >
-                返回
-              </button>
-            ) : null}
           </div>
         </header>
 
@@ -728,12 +726,18 @@ export function MeituPage({
       ) : null}
 
       {visibleItems.length > 0 ? (
-        <div className="wallpaper-grid">
-          {visibleItems.map((item) => (
-            <div
-              key={`${item.source}-${item.id}`}
-              className="wallpaper-card"
-              role="button"
+        <VirtualMasonry
+          className="wallpaper-grid"
+          minColumnWidth={230}
+          gap={14}
+          footerHeight={74}
+          aspectRatio={4 / 3}
+          items={visibleItems.map((item) => ({
+            key: `${item.source}-${item.id}`,
+            node: (
+              <div
+                className="wallpaper-card"
+                role="button"
               tabIndex={0}
               title="点击查看图集"
               onClick={() => void openAlbum(item)}
@@ -773,9 +777,10 @@ export function MeituPage({
                     .join(' · ')}
                 </div>
               </div>
-            </div>
-          ))}
-        </div>
+              </div>
+            )
+          }))}
+        />
       ) : null}
 
       {data && (data.items.length > 0 || data.stars?.length) ? (

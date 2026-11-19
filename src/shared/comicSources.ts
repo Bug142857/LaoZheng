@@ -7,6 +7,8 @@ export interface ComicSource {
   name: string
   baseUrl: string
   template: ComicSourceTemplate
+  /** 内置漫画源：不可删除，只能停用；自定义源可删 */
+  builtin?: boolean
   enabled: boolean
   testStatus: 'ok' | 'bad' | null
   testMsg: string | null
@@ -115,7 +117,9 @@ export function inferComicTemplate(baseUrl: string): ComicSourceTemplate {
 }
 
 export function normalizeComicSources(raw: unknown): ComicSource[] {
-  if (!Array.isArray(raw)) return DEFAULT_COMIC_SOURCES.map((source) => ({ ...source }))
+  if (!Array.isArray(raw)) {
+    return DEFAULT_COMIC_SOURCES.map((source) => ({ ...source, builtin: true }))
+  }
   const out: ComicSource[] = []
   for (const entry of raw) {
     if (!entry || typeof entry !== 'object') continue
@@ -139,6 +143,13 @@ export function normalizeComicSources(raw: unknown): ComicSource[] {
       name: source.name?.trim() || source.baseUrl,
       baseUrl: source.baseUrl.trim().replace(/\/+$/, ''),
       template: source.template,
+      // 内置漫画源（含后续补进的默认源）不可删除，只能停用；显式 builtin:false 的是自定义源
+      builtin:
+        source.builtin === false
+          ? false
+          : DEFAULT_COMIC_SOURCES.some(
+              (preset) => preset.id === source.id || preset.baseUrl === source.baseUrl
+            ),
       enabled: source.enabled !== false,
       testStatus:
         source.testStatus === 'ok' || source.testStatus === 'bad' ? source.testStatus : null,

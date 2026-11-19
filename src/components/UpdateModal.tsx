@@ -63,7 +63,7 @@ export function UpdateModal({
     setDownloadedPath(null)
     setProgress({ received: 0, total: 0, percent: 0, speed: 0, phase: 'selecting' })
     try {
-      const res = await window.laozheng.downloadUpdate(info.downloadUrl)
+      const res = await window.laozheng.downloadUpdate(info.downloadUrl, info.sha256)
       if (res.canceled) {
         setProgress(null)
         onNotice?.('已取消下载')

@@ -1,10 +1,13 @@
 import { protocol, type Session } from 'electron'
 import { createDecipheriv, createHash } from 'node:crypto'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { cacheRoot } from './settings'
 import { decryptBikahubImage } from './bikahubImage'
 import { descrambleJmImage, jmImageNeedsDescramble } from './jmcomicImage'
+import { sniffImageMime } from '../src/shared/imageSniff'
+
+export { sniffImageMime } from '../src/shared/imageSniff'
 
 /**
  * 图片磁盘缓存：所有 http(s) 图片请求在请求层重定向到 lzimg://，
@@ -23,6 +26,121 @@ const RETRY_DELAY_MS = 150
  * 切分类再回来才恢复」。按浏览器同款 6 并发限流后实测 0 失败。
  */
 const HOST_CONCURRENCY = 6
+/**
+ * 图片缓存容量上限（10GB）+ LRU 淘汰：
+ * 以前缓存只写不删，长期使用会无限增长；命中时更新 mtime 作为最近使用时间，
+ * 超过上限后按 mtime 从旧到新删除，刚访问过的文件（10 分钟内）跳过，避免删掉正在读取的图。
+ */
+const IMAGE_CACHE_MAX_BYTES = 10 * 1024 * 1024 * 1024
+const IMAGE_CACHE_TRIM_RATIO = 0.9
+const MIN_EVICT_AGE_MS = 10 * 60_000
+const TOUCH_INTERVAL_MS = 6 * 60 * 60_000
+let cacheBytes: number | null = null
+let scanning = false
+let evictScheduled = false
+const touchedAt = new Map<string, number>()
+
+/** 图片缓存当前占用（供设置页与容量淘汰使用） */
+export async function imageCacheBytes(): Promise<number> {
+  if (cacheBytes != null) return cacheBytes
+  return scanImageCache()
+}
+
+export function invalidateImageCacheSize(): void {
+  cacheBytes = null
+}
+
+async function scanImageCache(): Promise<number> {
+  if (scanning) return cacheBytes ?? 0
+  scanning = true
+  try {
+    let total = 0
+    let entries
+    try {
+      entries = await readdir(imageCacheDir(), { withFileTypes: true })
+    } catch {
+      cacheBytes = 0
+      return 0
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || entry.name.endsWith('.tmp')) continue
+      const info = await stat(join(imageCacheDir(), entry.name)).catch(() => null)
+      if (info) total += info.size
+    }
+    cacheBytes = total
+    return total
+  } finally {
+    scanning = false
+  }
+}
+
+/** 命中缓存时更新 mtime（LRU 依据），同一文件 6 小时内只写一次 */
+function touchCacheFile(file: string): void {
+  const now = Date.now()
+  if (now - (touchedAt.get(file) ?? 0) < TOUCH_INTERVAL_MS) return
+  touchedAt.set(file, now)
+  if (touchedAt.size > 4000) {
+    for (const key of touchedAt.keys()) {
+      touchedAt.delete(key)
+      if (touchedAt.size <= 2000) break
+    }
+  }
+  void utimes(file, new Date(), new Date()).catch(() => undefined)
+}
+
+function scheduleEviction(): void {
+  if (evictScheduled) return
+  evictScheduled = true
+  const timer = setTimeout(() => {
+    evictScheduled = false
+    void evictImageCache()
+  }, 800)
+  timer.unref?.()
+}
+
+/** 超过 10GB 时按 mtime 从旧到新淘汰到 9GB；删除失败（正被占用）直接跳过 */
+export async function evictImageCache(): Promise<void> {
+  if (scanning) return
+  const total = await imageCacheBytes()
+  if (total <= IMAGE_CACHE_MAX_BYTES) return
+  scanning = true
+  try {
+    const dir = imageCacheDir()
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      cacheBytes = 0
+      return
+    }
+    const files: { path: string; size: number; mtime: number }[] = []
+    for (const entry of entries) {
+      if (!entry.isFile() || entry.name.endsWith('.tmp')) continue
+      const path = join(dir, entry.name)
+      const info = await stat(path).catch(() => null)
+      if (info) files.push({ path, size: info.size, mtime: info.mtimeMs })
+    }
+    files.sort((a, b) => a.mtime - b.mtime)
+    const target = IMAGE_CACHE_MAX_BYTES * IMAGE_CACHE_TRIM_RATIO
+    const now = Date.now()
+    let current = total
+    for (const file of files) {
+      if (current <= target) break
+      if (now - file.mtime < MIN_EVICT_AGE_MS) continue
+      await rm(file.path, { force: true }).catch(() => undefined)
+      touchedAt.delete(file.path)
+      current -= file.size
+    }
+    cacheBytes = current
+    console.log(
+      `[imageCache] 缓存超限已淘汰：${(total / 1024 ** 3).toFixed(2)}GB → ${(
+        current / 1024 ** 3
+      ).toFixed(2)}GB`
+    )
+  } finally {
+    scanning = false
+  }
+}
 
 /** 各图床的并发信号量；waiter 被唤醒时名额直接转交，active 不变 */
 const hostSlots = new Map<string, { active: number; waiters: Array<() => void> }>()
@@ -120,25 +238,6 @@ function isLoopbackHost(host: string): boolean {
   )
 }
 
-/** 按文件头判断图片类型（豆瓣图床多数地址没有扩展名）；不是已知图片格式时返回 null */
-export function sniffImageMime(buf: Buffer): string | null {
-  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg'
-  if (buf.length >= 8 && buf.subarray(0, 8).toString('hex') === '89504e470d0a1a0a') return 'image/png'
-  if (buf.length >= 6 && buf.subarray(0, 4).toString('ascii') === 'GIF8') return 'image/gif'
-  if (
-    buf.length >= 12 &&
-    buf.subarray(0, 4).toString('ascii') === 'RIFF' &&
-    buf.subarray(8, 12).toString('ascii') === 'WEBP'
-  ) {
-    return 'image/webp'
-  }
-  if (buf.length >= 12 && buf.subarray(4, 12).toString('ascii') === 'ftypavif') return 'image/avif'
-  if (buf.length >= 12 && buf.subarray(4, 12).toString('ascii') === 'ftypavis') return 'image/avif'
-  const head = buf.subarray(0, 200).toString('utf8').trimStart().toLowerCase()
-  if (head.startsWith('<?xml') || head.startsWith('<svg')) return 'image/svg+xml'
-  return null
-}
-
 /** 把图片请求重定向到缓存协议；本地媒体服务与 data/blob 不处理 */
 export function setupImageRequestRedirect(ses: Session): void {
   ses.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, callback) => {
@@ -199,6 +298,7 @@ export function setupImageCacheHandler(headerFor: (url: string) => Record<string
       const mime = sniffImageMime(buf)
       // 缓存文件损坏 / 不是可识别图片：删掉后重新走网络，避免一直显示坏图
       if (mime) {
+        touchCacheFile(file)
         return new Response(new Uint8Array(buf), {
           headers: { 'content-type': mime, 'cache-control': CACHE_CONTROL }
         })
@@ -256,6 +356,9 @@ export function setupImageCacheHandler(headerFor: (url: string) => Record<string
         await rename(tmp, file).catch(async () => {
           await rm(tmp).catch(() => undefined)
         })
+        touchCacheFile(file)
+        if (cacheBytes != null) cacheBytes += data.length
+        if (cacheBytes == null || cacheBytes > IMAGE_CACHE_MAX_BYTES) scheduleEviction()
       } catch {
         // 忽略落盘失败
       }

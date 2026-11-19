@@ -153,6 +153,7 @@ export const FAV_MODULE_LABELS: Record<string, string> = {
   game: '游戏',
   trainer: '补丁',
   live: '直播',
+  singing: '演唱',
   wallpaper: '壁纸',
   meitu: '套图'
 }

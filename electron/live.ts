@@ -19,6 +19,7 @@ const DEFAULT_LIVE_SOURCES: LiveSource[] = [
     name: 'IPv4 直播源',
     url: 'https://gh-proxy.com/raw.githubusercontent.com/vbskycn/iptv/refs/heads/master/tv/iptv4.m3u',
     content: '',
+    builtin: true,
     enabled: true,
     testStatus: 'ok',
     testMsg: '可用',
@@ -31,11 +32,18 @@ function normalizeSource(raw: unknown): LiveSource | null {
   const o = raw as Record<string, unknown>
   const url = typeof o.url === 'string' ? o.url.trim() : ''
   if (!url) return null
+  const id = typeof o.id === 'string' && o.id ? o.id : `live_${Math.abs(hash(url))}`
   return {
-    id: typeof o.id === 'string' && o.id ? o.id : `live_${Math.abs(hash(url))}`,
+    id,
     name: typeof o.name === 'string' && o.name ? o.name : '直播源',
     url,
     content: typeof o.content === 'string' ? o.content : '',
+    // 内置电视源不可删除，只能停用；显式 builtin:false 的是导入 / 自定义源
+    builtin:
+      o.builtin === false
+        ? false
+        : o.builtin === true ||
+          DEFAULT_LIVE_SOURCES.some((preset) => preset.id === id || preset.url === url),
     enabled: o.enabled !== false,
     testStatus: o.testStatus === 'ok' || o.testStatus === 'failed' ? o.testStatus : null,
     testMsg: typeof o.testMsg === 'string' ? o.testMsg : null,
@@ -54,10 +62,13 @@ export async function loadLiveSources(): Promise<LiveSource[]> {
     const text = await readFile(path, 'utf8')
     return normalizeLiveSources(JSON.parse(text))
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      console.error('[live] 读取电视源失败，使用内置源', err)
+    const code = (err as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT') {
+      console.error('[live] 读取电视源失败，已备份原文件并使用内置源', err)
+      // 文件损坏 / 被占用：先备份，避免随后写入默认源把用户的自定义源覆盖掉
+      await rename(path, `${path}.broken-${Date.now()}`).catch(() => undefined)
     }
-    await saveLiveSources(DEFAULT_LIVE_SOURCES)
+    await saveLiveSources(DEFAULT_LIVE_SOURCES).catch(() => undefined)
     return DEFAULT_LIVE_SOURCES
   }
 }

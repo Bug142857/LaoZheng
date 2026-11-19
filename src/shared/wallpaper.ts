@@ -26,6 +26,8 @@ export interface WallpaperSource {
   name: string
   baseUrl: string
   template: WallpaperSourceTemplate
+  /** 内置默认源：不可删除，只能停用；自定义源可删 */
+  builtin?: boolean
   enabled: boolean
   testStatus: 'ok' | 'bad' | null
   testMsg: string | null
@@ -301,7 +303,9 @@ export function toWallpaperSourceRef(source: WallpaperSource): WallpaperSourceRe
 
 /** 缺失时补默认源；已有配置（包括用户删空）以用户为准 */
 export function normalizeWallpaperSources(raw: unknown): WallpaperSource[] {
-  if (!Array.isArray(raw)) return DEFAULT_WALLPAPER_SOURCES.map((source) => ({ ...source }))
+  if (!Array.isArray(raw)) {
+    return DEFAULT_WALLPAPER_SOURCES.map((source) => ({ ...source, builtin: true }))
+  }
   const rows: WallpaperSource[] = []
   const ids = new Set<string>()
   const urls = new Set<string>()
@@ -333,6 +337,13 @@ export function normalizeWallpaperSources(raw: unknown): WallpaperSource[] {
       name: (typeof record.name === 'string' && record.name.trim()) || host,
       baseUrl: baseUrl.replace(/\/+$/, ''),
       template,
+      // 内置默认源不可删除，只能停用；显式 builtin:false 的是自定义源
+      builtin:
+        record.builtin === false
+          ? false
+          : DEFAULT_WALLPAPER_SOURCES.some(
+              (preset) => preset.id === id || preset.baseUrl === baseUrl.replace(/\/+$/, '')
+            ),
       enabled: record.enabled !== false,
       testStatus: record.testStatus === 'bad' ? 'bad' : record.testStatus === 'ok' ? 'ok' : null,
       testMsg: typeof record.testMsg === 'string' ? record.testMsg : null,

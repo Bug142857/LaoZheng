@@ -29,18 +29,28 @@ function configPath(): string {
   return join(app.getPath('userData'), 'sync.json')
 }
 
-function encrypt(password: string): { value: string; plain: boolean } {
-  if (safeStorage.isEncryptionAvailable()) {
-    return { value: safeStorage.encryptString(password).toString('base64'), plain: false }
+async function encrypt(password: string): Promise<{ value: string; plain: boolean }> {
+  // Electron 45 起同步 safeStorage 接口已废弃，改用异步版本（不存在时退回明文 + 标记）
+  if (await safeStorage.isAsyncEncryptionAvailable()) {
+    return {
+      value: (await safeStorage.encryptStringAsync(password)).toString('base64'),
+      plain: false
+    }
   }
   return { value: Buffer.from(password, 'utf8').toString('base64'), plain: true }
 }
 
-function decrypt(stored: StoredSyncConfig): string {
+async function decrypt(stored: StoredSyncConfig): Promise<string> {
   try {
     const buf = Buffer.from(stored.password, 'base64')
     if (stored.plain) return buf.toString('utf8')
-    return safeStorage.decryptString(buf)
+    const first = await safeStorage.decryptStringAsync(buf)
+    // 系统密钥轮换时 Electron 要求再解一次拿到最新明文
+    if (first.shouldReEncrypt) {
+      const second = await safeStorage.decryptStringAsync(buf)
+      return second.result
+    }
+    return first.result
   } catch {
     return ''
   }
@@ -85,7 +95,7 @@ export async function saveSyncConfig(input: SyncConfigInput): Promise<SyncConfig
   let password = old?.password ?? ''
   let plain = old?.plain ?? false
   if (input.password) {
-    const enc = encrypt(input.password)
+    const enc = await encrypt(input.password)
     password = enc.value
     plain = enc.plain
   }
@@ -98,9 +108,9 @@ export async function saveSyncConfig(input: SyncConfigInput): Promise<SyncConfig
   return { url, username, hasPassword: !!password }
 }
 
-function authHeader(config: StoredSyncConfig): Record<string, string> {
+async function authHeader(config: StoredSyncConfig): Promise<Record<string, string>> {
   if (!config.username) return {}
-  const pass = decrypt(config)
+  const pass = await decrypt(config)
   return {
     Authorization: `Basic ${Buffer.from(`${config.username}:${pass}`, 'utf8').toString('base64')}`
   }
@@ -144,7 +154,7 @@ async function requireConfig(): Promise<StoredSyncConfig> {
 async function propfind(url: string, config: StoredSyncConfig): Promise<number> {
   const res = await fetch(url, {
     method: 'PROPFIND',
-    headers: { ...authHeader(config), Depth: '0' },
+    headers: { ...(await authHeader(config)), Depth: '0' },
     signal: AbortSignal.timeout(15_000)
   })
   return res.status
@@ -160,7 +170,7 @@ async function mkcolChain(base: string, config: StoredSyncConfig): Promise<void>
     const url = `${parsed.origin}${path}/`
     const res = await fetch(url, {
       method: 'MKCOL',
-      headers: authHeader(config),
+      headers: await authHeader(config),
       signal: AbortSignal.timeout(15_000)
     })
     // 201 创建成功；405 已存在；其余（如 403 只读根目录）继续下一级尝试
@@ -211,7 +221,7 @@ export async function uploadSync(data: AppData): Promise<SyncActionResult> {
       fetch(url, {
         method: 'PUT',
         headers: {
-          ...authHeader(config),
+          ...(await authHeader(config)),
           'Content-Type': 'application/json; charset=utf-8'
         },
         body: JSON.stringify(
@@ -248,7 +258,7 @@ export async function downloadSync(): Promise<SyncActionResult> {
     let lastStatus = 0
     for (const candidate of candidates) {
       const res = await fetch(candidate, {
-        headers: authHeader(config),
+        headers: await authHeader(config),
         signal: AbortSignal.timeout(60_000)
       })
       lastStatus = res.status

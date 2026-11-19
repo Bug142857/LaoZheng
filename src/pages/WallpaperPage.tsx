@@ -5,12 +5,15 @@ import {
   Download,
   Heart,
   Loader2,
+  Monitor,
   X
 } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import { EmptyState, LoadingBlock, ModuleShortcuts, Pagination } from '../components/ui'
+import { VirtualMasonry } from '../components/VirtualMasonry'
 import { SearchBar } from '../components/SearchBar'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import {
   WALLPAPER_DEVICES,
   isWallpaperDevice,
@@ -131,7 +134,9 @@ export function WallpaperPage({
   const [previewList, setPreviewList] = useState<WallpaperItem[]>([])
   const [previewIndex, setPreviewIndex] = useState(0)
   const [previewUrl, setPreviewUrl] = useState('')
+  useDetailScrollRestore(!!preview, 'wallpaper')
   const [savingId, setSavingId] = useState<string | null>(null)
+  const [wallpaperBusyId, setWallpaperBusyId] = useState<string | null>(null)
   const [broken, setBroken] = useState<Record<string, true>>({})
   const [categoriesMap, setCategoriesMap] = useState<Record<string, WallpaperCategory[]>>({})
   const [categoryLoading, setCategoryLoading] = useState(false)
@@ -296,7 +301,7 @@ export function WallpaperPage({
   useEffect(() => {
     if (prevFocusAt.current !== undefined && !focus) setPreview(null)
     prevFocusAt.current = focus?.at
-  }, [focus?.at])
+  }, [focus])
 
   // 预览只用列表自带的小图 / 预览图，不再为预览解析高清原图
   useEffect(() => {
@@ -505,6 +510,43 @@ export function WallpaperPage({
     }
   }
 
+  /** 详情页直接设为桌面壁纸：复用主进程已有的壁纸设置逻辑，不用先下载 */
+  const applyWallpaper = async (item: WallpaperItem) => {
+    if (wallpaperBusyId) return
+    setWallpaperBusyId(item.id)
+    try {
+      let url = item.fullUrl
+      if (!url) {
+        const itemSource = appData.wallpaperSources.find((entry) => entry.id === item.source)
+        if (!itemSource) {
+          onNotice('这个壁纸源已被删除，无法设置壁纸')
+          return
+        }
+        const res = await window.laozheng.wallpaperResolve(
+          toWallpaperSourceRef(itemSource),
+          item.pageUrl,
+          item.width,
+          item.height
+        )
+        if (res.ok && res.url) url = res.url
+      }
+      if (!url) {
+        onNotice('没有找到可用的原图地址')
+        return
+      }
+      const itemSource = appData.wallpaperSources.find((entry) => entry.id === item.source)
+      await window.laozheng.setWallpaperFromUrl(
+        url,
+        itemSource ? sourceReferer(itemSource) : undefined
+      )
+      onNotice('已设为桌面壁纸')
+    } catch (err) {
+      onNotice(`设置壁纸失败：${(err as Error).message}`)
+    } finally {
+      setWallpaperBusyId(null)
+    }
+  }
+
   const openPreview = (item: WallpaperItem) => {
     const items = visibleItems
     const index = items.findIndex((entry) => entry.id === item.id)
@@ -671,11 +713,19 @@ export function WallpaperPage({
       ) : null}
 
       {visibleItems.length > 0 ? (
-        <div className="wallpaper-grid">
-          {visibleItems.map((item) => (
-            <div
-              key={`${item.source}-${item.id}`}
-              className="wallpaper-card"
+        <VirtualMasonry
+          className="wallpaper-grid"
+          minColumnWidth={230}
+          gap={14}
+          footerHeight={74}
+          aspectRatio={9 / 16}
+          items={visibleItems.map((item) => ({
+            key: `${item.source}-${item.id}`,
+            width: item.width,
+            height: item.height,
+            node: (
+              <div
+                className="wallpaper-card"
               role="button"
               tabIndex={0}
               title="点击预览大图"
@@ -733,8 +783,9 @@ export function WallpaperPage({
                 <span className="wallpaper-meta">{formatMeta(item)}</span>
               </div>
             </div>
-          ))}
-        </div>
+            )
+          }))}
+        />
       ) : null}
 
       {data ? (
@@ -814,6 +865,18 @@ export function WallpaperPage({
               <button className="btn" onClick={() => toggleFav(preview)}>
                 <Heart size={15} fill={isFav(preview) ? 'currentColor' : 'none'} />{' '}
                 {isFav(preview) ? '已收藏' : '收藏'}
+              </button>
+              <button
+                className="btn"
+                disabled={wallpaperBusyId === wallpaperKey(preview)}
+                onClick={() => void applyWallpaper(preview)}
+              >
+                {wallpaperBusyId === wallpaperKey(preview) ? (
+                  <Loader2 size={15} className="spin" />
+                ) : (
+                  <Monitor size={15} />
+                )}{' '}
+                设为壁纸
               </button>
               <button
                 className="btn primary"

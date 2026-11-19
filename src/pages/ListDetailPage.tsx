@@ -11,6 +11,8 @@ import {
   nextId
 } from '../utils/data'
 import { ConfirmDialog, EmptyState, ListCoverMosaic, PromptDialog } from '../components/ui'
+import { VirtualRows } from '../components/VirtualRows'
+import { useDetailScrollRestore } from '../utils/scroll'
 import { ItemDetail } from '../components/ItemDetail'
 
 type ViewMode = 'grid' | 'list'
@@ -37,6 +39,7 @@ export function ListDetailPage({
   const [removing, setRemoving] = useState<number | null>(null)
   const [view, setView] = useState<ViewMode>('grid')
   const [detail, setDetail] = useState<CollectionItem | null>(null)
+  useDetailScrollRestore(!!detail)
   const [query, setQuery] = useState('')
 
   useEffect(() => {
@@ -326,54 +329,60 @@ export function ListDetailPage({
           {visibleItems.map(itemCard)}
         </div>
       ) : (
-        <div className="rows">
-          {visibleChildren.map((child) => (
-            <div key={`child-${child.id}`} className="row clickable" onClick={() => onOpenList(child.id)}>
-              <ListCoverMosaic
-                covers={listCovers(data, child.id)}
-                name={child.name}
-                className="row-cover"
-              />
-              <div className="row-main">
-                <div className="row-title">{child.name}</div>
-                <div className="row-meta">子清单 · {countItems(data, child.id)} 件</div>
-              </div>
-            </div>
-          ))}
-          {visibleItems.map((item) => (
-            <div
-              key={`item-${item.id}`}
-              className="row clickable"
-              onClick={() => setDetail(item)}
-            >
-              <div className="row-cover">
-                {item.coverUrl ? (
-                  <img src={item.coverUrl} alt="" loading="lazy" />
-                ) : (
-                  (item.category || '条目').slice(0, 2)
-                )}
-              </div>
-              <div className="row-main">
-                <div className="row-title">{item.title || '未命名条目'}</div>
-                <div className="row-meta">
-                  {[item.subTitle, item.year, item.doubanRating ? `评分 ${item.doubanRating}` : '']
-                    .filter(Boolean)
-                    .join(' · ') || item.category || '—'}
+        <VirtualRows
+          className="rows"
+          rowHeight={83}
+          items={[
+            ...visibleChildren.map((child) => ({
+              key: `child-${child.id}`,
+              node: (
+                <div className="row clickable" onClick={() => onOpenList(child.id)}>
+                  <ListCoverMosaic
+                    covers={listCovers(data, child.id)}
+                    name={child.name}
+                    className="row-cover"
+                  />
+                  <div className="row-main">
+                    <div className="row-title">{child.name}</div>
+                    <div className="row-meta">子清单 · {countItems(data, child.id)} 件</div>
+                  </div>
                 </div>
-              </div>
-              <button
-                className="icon-btn danger"
-                title="从清单移除"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setRemoving(item.id)
-                }}
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ))}
-        </div>
+              )
+            })),
+            ...visibleItems.map((item) => ({
+              key: `item-${item.id}`,
+              node: (
+                <div className="row clickable" onClick={() => setDetail(item)}>
+                  <div className="row-cover">
+                    {item.coverUrl ? (
+                      <img src={item.coverUrl} alt="" loading="lazy" />
+                    ) : (
+                      (item.category || '条目').slice(0, 2)
+                    )}
+                  </div>
+                  <div className="row-main">
+                    <div className="row-title">{item.title || '未命名条目'}</div>
+                    <div className="row-meta">
+                      {[item.subTitle, item.year, item.doubanRating ? `评分 ${item.doubanRating}` : '']
+                        .filter(Boolean)
+                        .join(' · ') || item.category || '—'}
+                    </div>
+                  </div>
+                  <button
+                    className="icon-btn danger"
+                    title="从清单移除"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setRemoving(item.id)
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              )
+            }))
+          ]}
+        />
       )}
 
       {dialogs}

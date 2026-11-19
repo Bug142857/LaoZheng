@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, Heart } from 'lucide-react'
 import { useData } from '../state/DataContext'
+import { useDetailScrollRestore } from '../utils/scroll'
 import { EmptyState, ModuleShortcuts } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { VideoPlayer } from '../components/VideoPlayer'
@@ -44,6 +45,7 @@ export function LivePage({
   const [query, setQuery] = useState('')
   const [group, setGroup] = useState('全部')
   const [playing, setPlaying] = useState<Playing | null>(null)
+  useDetailScrollRestore(!!playing, 'live')
 
   const clearFilter = () => {
     setGroup('全部')
@@ -144,7 +146,7 @@ export function LivePage({
   const current = sources?.find((s) => s.id === selectedId) ?? null
   const enabledSources = useMemo(() => (sources ?? []).filter((s) => s.enabled), [sources])
   const currentResult = selectedId ? cache[selectedId] : undefined
-  const channels = currentResult?.channels ?? []
+  const channels = useMemo(() => currentResult?.channels ?? [], [currentResult])
 
   const changeSource = (next: string) => {
     if (next === ALL_SOURCES_ID) {

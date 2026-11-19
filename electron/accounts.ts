@@ -1,7 +1,8 @@
-import { app, BrowserWindow, safeStorage } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { encryptSecret, decryptSecret } from './secureStorage'
 import type {
   AccountSite,
   AccountState,
@@ -47,35 +48,25 @@ export function accountsFilePath(): string {
   return join(app.getPath('userData'), 'accounts.json')
 }
 
-function encryptValue(value: string): string {
-  if (!value) return ''
-  if (safeStorage.isEncryptionAvailable()) {
-    return `enc:${safeStorage.encryptString(value).toString('base64')}`
-  }
-  return `raw:${Buffer.from(value, 'utf8').toString('base64')}`
-}
-
-function decryptValue(value: string | undefined): string {
-  if (!value) return ''
-  try {
-    if (value.startsWith('enc:')) {
-      return safeStorage.decryptString(Buffer.from(value.slice(4), 'base64'))
-    }
-    if (value.startsWith('raw:')) return Buffer.from(value.slice(4), 'base64').toString('utf8')
-  } catch (err) {
-    console.error('[accounts] 解密失败', err)
-  }
-  return ''
-}
-
-function readFileStore(): StoredFile | null {
+async function readFileStore(): Promise<StoredFile | null> {
   const file = accountsFilePath()
   if (!existsSync(file)) return null
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<StoredFile>
+    const accounts = raw.accounts && typeof raw.accounts === 'object' ? raw.accounts : {}
+    const decoded: StoredFile['accounts'] = {}
+    for (const site of SITES) {
+      const entry = accounts[site]
+      if (!entry) continue
+      decoded[site] = {
+        ...entry,
+        password: await decryptSecret(entry.password),
+        token: entry.token ? await decryptSecret(entry.token) : undefined
+      }
+    }
     return {
       v: 1,
-      accounts: raw.accounts && typeof raw.accounts === 'object' ? raw.accounts : {},
+      accounts: decoded,
       status: raw.status && typeof raw.status === 'object' ? raw.status : {}
     }
   } catch (err) {
@@ -121,21 +112,21 @@ function fromSeed(seed: SeedEntry | undefined): StoredEntry | null {
   const username = typeof seed.username === 'string' ? seed.username.trim() : ''
   const password = typeof seed.password === 'string' ? seed.password : ''
   if (!username || !password) return null
-  return { username, password: encryptValue(password) }
+  return { username, password }
 }
 
 /** 启动时调用：加载账号文件、按需从种子补齐，任何异常都不阻断应用启动 */
-export function initAccounts(): void {
+export async function initAccounts(): Promise<void> {
   if (loaded) return
   loaded = true
-  const loadedStore = readFileStore()
+  const loadedStore = await readFileStore()
   if (loadedStore) store = loadedStore
 
   const seed = readSeed()
   let changed = !loadedStore
   for (const site of SITES) {
     const current = store.accounts[site]
-    const hasPassword = current ? !!decryptValue(current.password) : false
+    const hasPassword = !!current?.password
     if (!current || !current.username || !hasPassword) {
       const seeded = fromSeed(seed[site])
       if (seeded) {
@@ -159,13 +150,24 @@ function setStatusMemory(site: AccountSite, status: AccountState, message: strin
 }
 
 async function persist(): Promise<void> {
-  const payload = JSON.stringify(store, null, 2)
   writeChain = writeChain
+    .catch(() => undefined)
     .then(async () => {
+      // 内存里保存明文，落盘前统一加密
+      const snapshot: StoredFile = { v: 1, accounts: {}, status: store.status }
+      for (const site of SITES) {
+        const entry = store.accounts[site]
+        if (!entry) continue
+        snapshot.accounts[site] = {
+          ...entry,
+          password: entry.password ? await encryptSecret(entry.password) : '',
+          token: entry.token ? await encryptSecret(entry.token) : undefined
+        }
+      }
       await mkdir(app.getPath('userData'), { recursive: true })
       const target = accountsFilePath()
       const tmp = `${target}.tmp`
-      await writeFile(tmp, payload, 'utf8')
+      await writeFile(tmp, JSON.stringify(snapshot, null, 2), 'utf8')
       await rename(tmp, target)
     })
     .catch((err) => console.error('[accounts] 保存账号文件失败', err))
@@ -174,19 +176,19 @@ async function persist(): Promise<void> {
 
 export function hasCredentials(site: AccountSite): boolean {
   const entry = store.accounts[site]
-  return !!entry?.username && !!decryptValue(entry.password)
+  return !!entry?.username && !!entry.password
 }
 
 export function getCredentials(site: AccountSite): { username: string; password: string } | null {
   const entry = store.accounts[site]
   if (!entry) return null
-  const password = decryptValue(entry.password)
+  const password = entry.password
   if (!entry.username || !password) return null
   return { username: entry.username, password }
 }
 
 export function getToken(site: AccountSite): string {
-  return decryptValue(store.accounts[site]?.token)
+  return store.accounts[site]?.token ?? ''
 }
 
 export function getTokenAt(site: AccountSite): number {
@@ -196,7 +198,7 @@ export function getTokenAt(site: AccountSite): number {
 export function setToken(site: AccountSite, token: string): void {
   const entry = store.accounts[site]
   if (!entry) return
-  entry.token = encryptValue(token)
+  entry.token = token
   entry.tokenAt = Date.now()
   void persist()
 }
@@ -222,7 +224,7 @@ export function listAccounts(): AccountsView {
     const meta = ACCOUNT_SITE_META[site]
     const entry = store.accounts[site]
     const st = store.status[site]
-    const configured = !!entry?.username && !!decryptValue(entry.password)
+    const configured = !!entry?.username && !!entry.password
     return {
       site,
       title: meta.title,

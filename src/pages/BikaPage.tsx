@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, Download, Heart } from 'lucide-react'
-import { useData } from '../state/DataContext'
+import { useData, useProgressValue } from '../state/DataContext'
 import { EmptyState, LoadingBlock, ConfirmDialog, ModuleShortcuts, Pagination } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { ComicReader } from '../components/ComicReader'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import type { BikaCategory, BikaChapter, BikaComic } from '../shared/bika'
 
 interface ListCache {
@@ -77,7 +78,7 @@ export function BikaPage({
   onOpenFavorites?: () => void
   onOpenDownloads?: () => void
 }) {
-  const { data, update } = useData()
+  const { data, update, updateProgress } = useData()
   const [categories, setCategories] = useState<BikaCategory[]>(cache.categories)
   const [counts, setCounts] = useState<Record<string, number>>(bikaCounts)
   const [category, setCategory] = useState(cache.category)
@@ -91,6 +92,7 @@ export function BikaPage({
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<DetailState | null>(null)
   const [reader, setReader] = useState<ReaderState | null>(null)
+  useDetailScrollRestore(!!detail || !!reader)
   const [batch, setBatch] = useState<{ done: number; total: number } | null>(null)
   const [confirmBatch, setConfirmBatch] = useState<BikaChapter[] | null>(null)
   const [chapterDesc, setChapterDesc] = useState(true)
@@ -274,7 +276,8 @@ export function BikaPage({
   }, [focusId])
 
   const progressKey = (id: string): string => `bika/${id}`
-  const progress = detail ? data.readProgress[progressKey(detail.comic.id)] : undefined
+  // 只订阅当前这部漫画的进度，其它进度变化不触发本页重渲染
+  const progress = useProgressValue(detail ? progressKey(detail.comic.id) : '')
   const resumeChapter = detail?.chapters.find((c) => String(c.order) === progress)
 
   const openChapter = async (chapter: BikaChapter) => {
@@ -292,10 +295,7 @@ export function BikaPage({
       error: res.ok ? (res.urls.length ? null : '本章没有图片') : res.error ?? '图片加载失败'
     })
     if (res.ok && res.urls.length) {
-      update((d) => ({
-        ...d,
-        readProgress: { ...d.readProgress, [progressKey(comic.id)]: String(chapter.order) }
-      }))
+      updateProgress(progressKey(comic.id), String(chapter.order))
     }
   }
 

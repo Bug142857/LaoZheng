@@ -13,7 +13,7 @@ import type {
 } from '../src/shared/magnet'
 import { DEFAULT_MAGNET_OPTIONS } from '../src/shared/magnet'
 import type { SourcesExportResult } from '../src/shared/types'
-import { cloneDefaultMagnetSources } from '../src/shared/magnetDefaults'
+import { cloneDefaultMagnetSources, DEFAULT_MAGNET_SOURCES } from '../src/shared/magnetDefaults'
 import { lastDialogDir, rememberDialogDir } from './settings'
 import type { ParsedMagnetItem } from './magnetParse'
 import {
@@ -132,6 +132,12 @@ function normalizeSource(raw: unknown): MagnetSource | null {
   return {
     id: value.id.trim(),
     name: value.name.trim(),
+    // 内置默认资源库不可删除，只能停用；显式 builtin:false 的是自定义源
+    builtin:
+      value.builtin === false
+        ? false
+        : value.builtin === true ||
+          DEFAULT_MAGNET_SOURCES.some((preset) => preset.id === value.id?.trim()),
     enabled: value.enabled !== false,
     needProxy: value.needProxy === true,
     searchUrl: value.searchUrl.trim(),
@@ -195,11 +201,16 @@ export async function loadMagnetState(): Promise<MagnetState> {
   if (stateCache) return stateCache
   let saved: Partial<MagnetState> = {}
   let loaded = false
+  let loadError: NodeJS.ErrnoException | null = null
   try {
     saved = JSON.parse(await readFile(statePath(), 'utf8')) as Partial<MagnetState>
     loaded = true
-  } catch {
-    // 首次启动或文件损坏时使用内置配置
+  } catch (err) {
+    loadError = err as NodeJS.ErrnoException
+  }
+  // 文件存在但读取 / 解析失败：先备份，避免随后写入默认源把用户自定义源覆盖掉
+  if (loadError && loadError.code !== 'ENOENT') {
+    await rename(statePath(), `${statePath()}.broken-${Date.now()}`).catch(() => undefined)
   }
   const loadedVersion =
     typeof saved.configVersion === 'number' ? saved.configVersion : 1

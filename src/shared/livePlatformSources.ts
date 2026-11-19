@@ -73,7 +73,9 @@ export function livePlatformDefaultName(platform: LivePlatformId): string {
  * - 无法识别平台的地址直接丢弃，避免出现无法播放的源。
  */
 export function normalizeLivePlatformSources(raw: unknown): LivePlatformSource[] {
-  if (!Array.isArray(raw)) return DEFAULT_LIVE_PLATFORM_SOURCES.map((source) => ({ ...source }))
+  if (!Array.isArray(raw)) {
+    return DEFAULT_LIVE_PLATFORM_SOURCES.map((source) => ({ ...source, builtin: true }))
+  }
   const out: LivePlatformSource[] = []
   const seen = new Set<LivePlatformId>()
   for (const entry of raw) {
@@ -91,6 +93,11 @@ export function normalizeLivePlatformSources(raw: unknown): LivePlatformSource[]
       id: source.id.trim(),
       name: source.name?.trim() || DEFAULT_NAMES[platform],
       baseUrl,
+      // 默认三站不可删除，只能停用；显式 builtin:false 的是自定义镜像
+      builtin:
+        source.builtin === false
+          ? false
+          : DEFAULT_LIVE_PLATFORM_SOURCES.some((preset) => preset.id === source.id),
       enabled: source.enabled !== false,
       region: source.region === 'proxy' ? 'proxy' : 'cn',
       regionManual: source.regionManual !== false,

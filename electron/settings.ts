@@ -1,7 +1,8 @@
 import { app } from 'electron'
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { ThemeMode, UiSettings } from '../src/shared/settings'
+import { normalizeMusicQueue } from '../src/shared/music'
+import type { MusicPlayMode, ThemeMode, UiSettings } from '../src/shared/settings'
 import type { BackupSettings } from '../src/shared/types'
 
 /**
@@ -15,6 +16,14 @@ interface AppSettings {
   cacheRoot: string
   theme: ThemeMode
   accent: string
+  /** 音乐播放器音量（0~1）与静音状态，记住上次值 */
+  musicVolume?: number
+  musicMuted?: boolean
+  /** 音乐播放队列 / 当前条目 / 播放模式 / 续播位置 */
+  musicQueue?: ReturnType<typeof normalizeMusicQueue>
+  musicQueueIndex?: number
+  musicMode?: MusicPlayMode
+  musicQueueTime?: number
   /**
    * 各类文件对话框上次选择的目录：
    * data / vod / live / magnet / image / downloadRoot
@@ -22,37 +31,27 @@ interface AppSettings {
   lastDirs?: Record<string, string>
   /** 旧字段：上次保存图片的目录，读取时迁移到 lastDirs.image */
   lastImageDir?: string
-  /** 侧栏导航顺序（share / optimize 两套树各自保存模块 key） */
-  navOrder?: Record<string, string[]>
-  /** 导航顺序迁移版本：旧版本把「图书」排在「漫画 / 本子」上面，升级后一次性纠正 */
-  navOrderVersion?: number
 }
 
 const THEME_MODES: ThemeMode[] = ['system', 'light', 'dark']
 const ACCENT_KEYS = ['purple', 'green', 'blue', 'cyan', 'orange', 'pink']
-const NAV_ORDER_VERSION = 3
+const PLAY_MODES: MusicPlayMode[] = ['single', 'order', 'shuffle']
 
-/** 当前默认导航顺序：旧版保存的顺序升到 v3 时按它重排 */
-const SHARE_NAV_ORDER = [
-  'lists',
-  'watch',
-  'drama',
-  'live',
-  'liveRooms',
-  'music',
-  'comic',
-  'novel',
-  'book',
-  'game',
-  'gamecheat',
-  'tools',
-  'sysinfo',
-  'magnet',
-  'wallpaper',
-  'meitu',
-  'melon',
-  'shuangkan'
-]
+function isPlayMode(value: unknown): value is MusicPlayMode {
+  return typeof value === 'string' && PLAY_MODES.includes(value as MusicPlayMode)
+}
+
+function clampQueueIndex(value: unknown, length: number): number {
+  if (!length) return -1
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0
+  return Math.min(length - 1, Math.max(0, Math.floor(value)))
+}
+
+function clampQueueTime(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.min(value, 24 * 60 * 60)
+    : 0
+}
 
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
@@ -125,36 +124,16 @@ export async function setCacheRoot(root: string): Promise<string> {
 }
 
 export function uiSettings(): UiSettings {
-  return { theme: current.theme, accent: current.accent }
-}
-
-export function navOrderSettings(): Record<string, string[]> {
-  return current.navOrder ? { ...current.navOrder } : {}
-}
-
-/**
- * 导航顺序升级（v3）：顺序口径改为
- * 清单 → 影视 → 短剧 → 电视 → 直播 → 音乐 → 漫画 → 小说 → 图书 → 游戏 → 补丁 → 软件 → 硬件 → 磁力 → 壁纸 → 美图 → 吃瓜 → 皇片。
- * 已下线模块等未知 key 保留在末尾，不丢数据。
- */
-function upgradeNavOrder(order: Record<string, string[]>): Record<string, string[]> {
-  const share = order.share
-  if (!share?.length) return order
-  const present = new Set(share)
-  const next = SHARE_NAV_ORDER.filter((key) => present.has(key))
-  const extras = share.filter((key) => !SHARE_NAV_ORDER.includes(key))
-  return { ...order, share: [...next, ...extras] }
-}
-
-/** 保存某个导航树的顺序；只接受字符串数组，避免把坏数据写进设置 */
-export async function setNavOrder(input: Record<string, string[]>): Promise<void> {
-  const next: Record<string, string[]> = {}
-  for (const [tree, keys] of Object.entries(input ?? {})) {
-    if (!Array.isArray(keys)) continue
-    next[tree] = keys.filter((key): key is string => typeof key === 'string').slice(0, 100)
+  return {
+    theme: current.theme,
+    accent: current.accent,
+    musicVolume: current.musicVolume,
+    musicMuted: current.musicMuted,
+    musicQueue: current.musicQueue ? [...current.musicQueue] : undefined,
+    musicQueueIndex: current.musicQueueIndex,
+    musicMode: current.musicMode,
+    musicQueueTime: current.musicQueueTime
   }
-  current.navOrder = next
-  await saveSettings()
 }
 
 /** 某个文件对话框上次使用的目录，没记过时返回 fallback */
@@ -187,7 +166,12 @@ export function settingsSnapshot(): BackupSettings {
     downloadRoot: current.downloadRoot,
     lastImageDir: current.lastDirs?.image,
     lastDirs: current.lastDirs ? { ...current.lastDirs } : undefined,
-    navOrder: current.navOrder ? { ...current.navOrder } : undefined
+    musicVolume: current.musicVolume,
+    musicMuted: current.musicMuted,
+    musicQueue: current.musicQueue ? [...current.musicQueue] : undefined,
+    musicQueueIndex: current.musicQueueIndex,
+    musicMode: current.musicMode,
+    musicQueueTime: current.musicQueueTime
   }
 }
 
@@ -222,28 +206,37 @@ export async function applySettingsSnapshot(input: BackupSettings): Promise<void
       changed = true
     }
   }
+  if (typeof input.musicVolume === 'number' && Number.isFinite(input.musicVolume)) {
+    current.musicVolume = Math.min(1, Math.max(0, input.musicVolume))
+    changed = true
+  }
+  if (typeof input.musicMuted === 'boolean') {
+    current.musicMuted = input.musicMuted
+    changed = true
+  }
+  if (input.musicQueue !== undefined) {
+    const queue = normalizeMusicQueue(input.musicQueue)
+    current.musicQueue = queue.length ? queue : undefined
+    current.musicQueueIndex = queue.length
+      ? clampQueueIndex(input.musicQueueIndex, queue.length)
+      : undefined
+    current.musicQueueTime = queue.length ? clampQueueTime(input.musicQueueTime) : 0
+    changed = true
+  }
+  if (isPlayMode(input.musicMode)) {
+    current.musicMode = input.musicMode
+    changed = true
+  }
   // 旧备份只有 lastImageDir
   if (typeof input.lastImageDir === 'string' && input.lastImageDir.trim()) {
     if (!current.lastDirs) current.lastDirs = {}
     current.lastDirs.image = input.lastImageDir.trim()
     changed = true
   }
-  if (input.navOrder && typeof input.navOrder === 'object') {
-    const next: Record<string, string[]> = {}
-    for (const [tree, keys] of Object.entries(input.navOrder)) {
-      if (!Array.isArray(keys)) continue
-      next[tree] = keys.filter((key): key is string => typeof key === 'string').slice(0, 100)
-    }
-    if (Object.keys(next).length) {
-      current.navOrder = upgradeNavOrder(next)
-      changed = true
-    }
-  }
   if (changed) await saveSettings()
 }
 
 export async function initSettings(): Promise<void> {
-  let migrated = false
   try {
     const raw = JSON.parse(await readFile(settingsPath(), 'utf8')) as Partial<AppSettings>
     if (typeof raw.downloadRoot === 'string' && raw.downloadRoot.trim()) {
@@ -256,6 +249,17 @@ export async function initSettings(): Promise<void> {
     if (typeof raw.accent === 'string' && ACCENT_KEYS.includes(raw.accent)) {
       current.accent = raw.accent
     }
+    if (typeof raw.musicVolume === 'number' && Number.isFinite(raw.musicVolume)) {
+      current.musicVolume = Math.min(1, Math.max(0, raw.musicVolume))
+    }
+    if (typeof raw.musicMuted === 'boolean') current.musicMuted = raw.musicMuted
+    if (raw.musicQueue !== undefined) {
+      const queue = normalizeMusicQueue(raw.musicQueue)
+      current.musicQueue = queue.length ? queue : undefined
+      current.musicQueueIndex = queue.length ? clampQueueIndex(raw.musicQueueIndex, queue.length) : undefined
+      current.musicQueueTime = queue.length ? clampQueueTime(raw.musicQueueTime) : 0
+    }
+    if (isPlayMode(raw.musicMode)) current.musicMode = raw.musicMode
     if (raw.lastDirs && typeof raw.lastDirs === 'object') {
       const dirs: Record<string, string> = {}
       for (const [key, value] of Object.entries(raw.lastDirs)) {
@@ -268,25 +272,11 @@ export async function initSettings(): Promise<void> {
       if (!current.lastDirs) current.lastDirs = {}
       if (!current.lastDirs.image) current.lastDirs.image = raw.lastImageDir.trim()
     }
-    if (raw.navOrder && typeof raw.navOrder === 'object') {
-      const order: Record<string, string[]> = {}
-      for (const [tree, keys] of Object.entries(raw.navOrder)) {
-        if (!Array.isArray(keys)) continue
-        const list = keys.filter((key): key is string => typeof key === 'string')
-        if (list.length) order[tree] = list.slice(0, 100)
-      }
-      current.navOrder = order
-    }
-    if ((raw.navOrderVersion ?? 0) < NAV_ORDER_VERSION) {
-      if (current.navOrder) current.navOrder = upgradeNavOrder(current.navOrder)
-      current.navOrderVersion = NAV_ORDER_VERSION
-      migrated = true
-    }
   } catch (err) {
     const missing = (err as NodeJS.ErrnoException).code === 'ENOENT'
     if (!missing) {
       console.error('[settings] 读取本机设置失败，已备份损坏文件并使用默认设置', err)
-      // 文件损坏时先另存一份，避免默认值直接覆盖用户的下载目录 / 缓存目录 / 导航顺序
+      // 文件损坏时先另存一份，避免默认值直接覆盖用户的下载目录 / 缓存目录
       await rename(settingsPath(), `${settingsPath()}.broken-${Date.now()}`).catch(() => undefined)
     } else if (await isFirstRun()) {
       // 全新安装：下载 / 缓存默认放到 D:\laozheng，老用户（已有 data.json 等）不受影响
@@ -295,7 +285,6 @@ export async function initSettings(): Promise<void> {
     await saveSettings()
     return
   }
-  if (migrated) await saveSettings()
 }
 
 export async function setDownloadRoot(root: string): Promise<string> {
@@ -311,6 +300,19 @@ export async function setUiSettings(input: Partial<UiSettings>): Promise<UiSetti
   if (typeof input.accent === 'string' && ACCENT_KEYS.includes(input.accent)) {
     current.accent = input.accent
   }
+  if (typeof input.musicVolume === 'number' && Number.isFinite(input.musicVolume)) {
+    current.musicVolume = Math.min(1, Math.max(0, input.musicVolume))
+  }
+  if (typeof input.musicMuted === 'boolean') current.musicMuted = input.musicMuted
+  if (input.musicQueue !== undefined) {
+    const queue = normalizeMusicQueue(input.musicQueue)
+    current.musicQueue = queue.length ? queue : undefined
+    current.musicQueueIndex = queue.length
+      ? clampQueueIndex(input.musicQueueIndex, queue.length)
+      : undefined
+    current.musicQueueTime = queue.length ? clampQueueTime(input.musicQueueTime) : 0
+  }
+  if (isPlayMode(input.musicMode)) current.musicMode = input.musicMode
   await saveSettings()
   return uiSettings()
 }

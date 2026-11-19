@@ -5,6 +5,7 @@ import { EmptyState, LoadingBlock, ModuleShortcuts, Pagination } from '../compon
 import { SearchBar } from '../components/SearchBar'
 import { VideoPlayer } from '../components/VideoPlayer'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import { requestDownload } from '../utils/download'
 import {
   formatCount,
@@ -74,6 +75,7 @@ export function XSitePage({
   const [tagInput, setTagInput] = useState('')
   const [tagMatches, setTagMatches] = useState<XCategory[] | null>(null)
   const [playing, setPlaying] = useState<XPost | null>(null)
+  useDetailScrollRestore(!!playing)
   /** 从收藏进入时先显示打开中，避免闪一下榜单界面 */
   const [opening, setOpening] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)

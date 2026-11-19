@@ -1,6 +1,6 @@
 {
   "name": "laozheng-pc",
-  "version": "0.194.0",
+  "version": "0.228.0",
   "private": true,
   "description": "老郑分享 PC 端（Electron + React）",
   "author": "老郑",
@@ -9,6 +9,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
     "build": "npm run typecheck && electron-vite build",
     "start": "electron-vite preview",
     "dist": "npm run build && electron-builder --win --publish never && node scripts/pack-artifact.cjs"
@@ -16,6 +18,8 @@
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "adm-zip": "^0.6.1",
+    "artplayer": "^5.4.0",
+    "danmaku": "^2.0.10",
     "hls.js": "^1.7.3",
     "iconv-lite": "^0.6.3",
     "lucide-react": "^0.469.0",
@@ -26,17 +30,23 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/adm-zip": "^0.5.8",
     "@types/node": "^22.10.2",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
-    "electron": "^33.3.0",
+    "electron": "^45.4.1",
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.14.0",
     "typescript": "^5.7.2",
-    "vite": "^5.4.11"
+    "typescript-eslint": "^8.73.0",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.9"
   },
   "build": {
     "appId": "com.laozheng.pc",
@@ -45,8 +55,17 @@
       "output": "release"
     },
     "files": [
-      "out/**/*"
+      "out/**/*",
+      "!node_modules/hls.js/**",
+      "!node_modules/lucide-react/**",
+      "!node_modules/react/**",
+      "!node_modules/react-dom/**",
+      "!node_modules/mpegts.js/**",
+      "!node_modules/artplayer/**",
+      "!node_modules/danmaku/**"
     ],
+    "electronLanguages": ["zh-CN", "zh-TW", "en-US", "en-GB", "ja", "ko"],
+    "compression": "maximum",
     "extraResources": [
       {
         "from": ".secrets/accounts.json",

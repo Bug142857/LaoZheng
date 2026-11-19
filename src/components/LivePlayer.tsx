@@ -1,10 +1,11 @@
+import Artplayer from 'artplayer'
 import Hls from 'hls.js'
-import mpegts from 'mpegts.js'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { LivePlayLine } from '../shared/livePlatform'
+import { addStageFullscreen, artBase, attachFlv } from './artCore'
 
 /**
- * 平台直播播放器：m3u8 走 hls.js，flv 走 mpegts.js。
+ * 平台直播播放器（ArtPlayer 内核）：m3u8 走 hls.js，flv 走 mpegts.js。
  * 线路失败自动切下一条，全部失败时把原因交给页面显示。
  * 直播没有进度，不记录续播位置。
  */
@@ -15,7 +16,8 @@ export function LivePlayer({
   lines: LivePlayLine[]
   onError?: (message: string) => void
 }) {
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
+  const mountRef = useRef<HTMLDivElement>(null)
   const [index, setIndex] = useState(0)
   const [error, setError] = useState('')
 
@@ -48,12 +50,11 @@ export function LivePlayer({
   }, [lines])
 
   useEffect(() => {
-    const video = videoRef.current
-    if (!video || !active) return undefined
+    const stage = stageRef.current
+    const mount = mountRef.current
+    if (!stage || !mount || !active) return undefined
 
     setError('')
-    let hls: Hls | null = null
-    let flv: ReturnType<typeof mpegts.createPlayer> | null = null
     let disposed = false
 
     const fail = (message: string): void => {
@@ -66,60 +67,56 @@ export function LivePlayer({
       onError?.(message)
     }
 
-    const play = (): void => {
-      video.play().catch(() => {
-        // 浏览器可能拦截自动播放，保留控制条让用户手动点
-      })
+    const play = (attempt = 0): void => {
+      if (disposed) return
+      const request = art.video.play()
+      if (request) {
+        request.catch(() => {
+          // 直播流首包晚到时 autoplay 时机会错过，有界重试兜住
+          if (attempt < 5) window.setTimeout(() => play(attempt + 1), 700)
+        })
+      }
     }
 
-    if (active.format === 'hls') {
-      if (Hls.isSupported()) {
-        hls = new Hls({
-          enableWorker: true,
-          lowLatencyMode: true,
-          backBufferLength: 30
-        })
-        hls.on(Hls.Events.ERROR, (_event, payload) => {
-          if (payload.fatal) fail('直播流已中断，可能是线路失效')
-        })
-        hls.loadSource(active.url)
-        hls.attachMedia(video)
-        hls.on(Hls.Events.MANIFEST_PARSED, play)
-      } else {
-        video.src = active.url
-        play()
+    const art = new Artplayer({
+      ...artBase(mount, active.url),
+      type: active.format === 'flv' ? 'flv' : 'm3u8',
+      isLive: true,
+      autoMini: false,
+      playbackRate: false,
+      setting: false,
+      customType: {
+        m3u8: (video, url, instance) => {
+          if (!Hls.isSupported()) {
+            video.src = url
+            return
+          }
+          const hls = new Hls({
+            enableWorker: true,
+            lowLatencyMode: true,
+            backBufferLength: 30
+          })
+          instance.hls = hls
+          hls.on(Hls.Events.ERROR, (_event, payload) => {
+            if (payload.fatal) fail('直播流已中断，可能是线路失效')
+          })
+          hls.on(Hls.Events.MANIFEST_PARSED, () => play())
+          hls.loadSource(url)
+          hls.attachMedia(video)
+          instance.on('destroy', () => hls.destroy())
+        },
+        flv: (video, url, instance) => void attachFlv(video, url, instance, fail)
       }
-    } else if (mpegts.isSupported()) {
-      flv = mpegts.createPlayer(
-        { type: 'flv', url: active.url, isLive: true, cors: true },
-        {
-          enableWorker: true,
-          liveBufferLatencyChasing: true,
-          lazyLoad: false
-        }
-      )
-      flv.attachMediaElement(video)
-      flv.on(mpegts.Events.ERROR, () => fail('FLV 直播流已中断，可能是线路失效'))
-      flv.load()
-      play()
-    } else {
-      fail('当前环境不支持 FLV 播放')
-    }
+    })
+    addStageFullscreen(art, stage)
+    art.video.addEventListener('canplay', () => play())
 
     return () => {
       disposed = true
-      try {
-        video.pause()
-        video.removeAttribute('src')
-        video.load()
-      } catch {
-        // 忽略
-      }
-      hls?.destroy()
-      flv?.destroy()
+      art.destroy()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lines, index, available.length])
+  }, [active?.url, index, available.length])
 
   if (!active) {
     return (
@@ -131,7 +128,9 @@ export function LivePlayer({
 
   return (
     <div className="live-player">
-      <video ref={videoRef} controls autoPlay playsInline />
+      <div className="player-stage" ref={stageRef}>
+        <div className="art-mount" ref={mountRef} />
+      </div>
       {lineGroups.length > 1 ? (
         <div className="live-lines">
           {lineGroups.map((line) => (

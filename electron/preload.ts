@@ -9,6 +9,11 @@ const api: LaozhengApi = {
   saveDataSync: (data) => {
     ipcRenderer.sendSync('data:saveSync', data)
   },
+  setReadProgress: (key, value) => ipcRenderer.invoke('data:setProgress', key, value),
+  flushReadProgress: () => ipcRenderer.invoke('data:flushProgress'),
+  snapshotData: (reason) => ipcRenderer.invoke('data:snapshot', reason),
+  listSnapshots: () => ipcRenderer.invoke('data:snapshots'),
+  restoreSnapshot: (name) => ipcRenderer.invoke('data:restoreSnapshot', name),
   applyBackupExtras: (data) => ipcRenderer.invoke('data:applyExtras', data) as Promise<void>,
   importData: () => ipcRenderer.invoke('data:import') as Promise<ImportResult>,
   exportData: (data) => ipcRenderer.invoke('data:export', data) as Promise<ExportResult>,
@@ -56,6 +61,7 @@ const api: LaozhengApi = {
   fetchVodDetail: (source, vodId) => ipcRenderer.invoke('vod:detail', source, vodId),
   testVodSource: (source) => ipcRenderer.invoke('vod:test', source),
   vodCategories: (source) => ipcRenderer.invoke('vod:categories', source),
+  probeVodQualities: (from, playUrl) => ipcRenderer.invoke('vod:probe', from, playUrl),
   exportVodSources: (sources) => ipcRenderer.invoke('vod:exportSources', sources),
   exportH1Sources: (sources) => ipcRenderer.invoke('h1:exportSources', sources),
   magnetState: () => ipcRenderer.invoke('magnet:state'),
@@ -128,8 +134,6 @@ const api: LaozhengApi = {
   chooseCacheDir: () => ipcRenderer.invoke('app:chooseCacheDir'),
   getUiSettings: () => ipcRenderer.invoke('settings:getUi'),
   setUiSettings: (input) => ipcRenderer.invoke('settings:setUi', input),
-  getNavOrder: () => ipcRenderer.invoke('settings:getNavOrder'),
-  setNavOrder: (order) => ipcRenderer.invoke('settings:setNavOrder', order),
   doubanStatus: () => ipcRenderer.invoke('douban:status'),
   doubanLogin: () => ipcRenderer.invoke('douban:login'),
   doubanLogout: () => ipcRenderer.invoke('douban:logout'),
@@ -199,7 +203,7 @@ const api: LaozhengApi = {
   uploadSync: (data) => ipcRenderer.invoke('sync:upload', data),
   downloadSync: () => ipcRenderer.invoke('sync:download'),
   checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
-  downloadUpdate: (url) => ipcRenderer.invoke('app:downloadUpdate', url),
+  downloadUpdate: (url, sha256) => ipcRenderer.invoke('app:downloadUpdate', url, sha256),
   pauseUpdate: () => ipcRenderer.invoke('app:pauseUpdate') as Promise<void>,
   resumeUpdate: () => ipcRenderer.invoke('app:resumeUpdate') as Promise<void>,
   cancelUpdate: () => ipcRenderer.invoke('app:cancelUpdate') as Promise<void>,
@@ -217,6 +221,10 @@ const api: LaozhengApi = {
   pendingUpdate: () => ipcRenderer.invoke('app:pendingUpdate'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   saveNoteFile: (name, dataUrl) => ipcRenderer.invoke('app:saveNoteFile', name, dataUrl),
+  saveToolNoteDefault: (toolId, html) =>
+    ipcRenderer.invoke('app:saveToolNoteDefault', toolId, html) as Promise<boolean>,
+  saveSingingVideoDefault: (video) =>
+    ipcRenderer.invoke('app:saveSingingVideoDefault', video) as Promise<boolean>,
   listAccounts: () => ipcRenderer.invoke('accounts:list'),
   loginAccount: (site) => ipcRenderer.invoke('accounts:login', site),
   openAccountLogin: (site) => ipcRenderer.invoke('accounts:openLogin', site) as Promise<void>,
@@ -320,6 +328,8 @@ const api: LaozhengApi = {
   openDownloadItem: (id) => ipcRenderer.invoke('downloads:openItem', id) as Promise<void>,
   openDownloadFolder: (id) => ipcRenderer.invoke('downloads:openFolder', id) as Promise<void>,
   setWallpaper: (id) => ipcRenderer.invoke('downloads:setWallpaper', id) as Promise<void>,
+  setWallpaperFromUrl: (url, referer) =>
+    ipcRenderer.invoke('wallpaper:setFromUrl', url, referer) as Promise<void>,
   runDownloadTrainer: (id) => ipcRenderer.invoke('downloads:runTrainer', id) as Promise<void>,
   playDownloadItem: (id) => ipcRenderer.invoke('downloads:playItem', id) as Promise<void>,
   readDownloadItem: (id) => ipcRenderer.invoke('downloads:readItem', id),

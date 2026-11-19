@@ -8,6 +8,8 @@ export interface LiveSource {
   name: string
   url: string
   content: string
+  /** 内置电视源：不可删除，只能停用；自定义 / 导入源可删 */
+  builtin?: boolean
   enabled: boolean
   /** 最近一次测试结果：保存在 live-sources.json，重开应用后仍显示 */
   testStatus?: LiveSourceTestStatus | null

@@ -5,6 +5,7 @@ import { SearchBar } from '../components/SearchBar'
 import { VideoPlayer } from '../components/VideoPlayer'
 import { useData } from '../state/DataContext'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import { requestDownload } from '../utils/download'
 import {
   XIFAN_DRAMA_SOURCE_ID,
@@ -128,6 +129,7 @@ export function DramaPage({
   const [detailSource, setDetailSource] = useState<DramaSource | null>(null)
   const [detail, setDetail] = useState<DramaDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  useDetailScrollRestore(!!detail, 'drama')
   const [playing, setPlaying] = useState<{ episode: DramaEpisode; url: string } | null>(null)
   const [playLoading, setPlayLoading] = useState(false)
   const seqRef = useRef(0)
@@ -576,8 +578,8 @@ export function DramaPage({
     return (
       <>
         <header className="page-header">
-          <button className="btn ghost" onClick={backToList}>
-            <ChevronLeft size={15} /> 返回短剧
+          <button className="btn ghost" onClick={focus && onExit ? onExit : backToList}>
+            <ChevronLeft size={15} /> {focus && onExit ? '返回' : '返回短剧'}
           </button>
           <h1 className="page-title">{detail.title}</h1>
           {shortcuts}
@@ -648,8 +650,8 @@ export function DramaPage({
     return (
       <>
         <header className="page-header">
-          <button className="btn ghost" onClick={backToList}>
-            <ChevronLeft size={15} /> 返回短剧
+          <button className="btn ghost" onClick={focus && onExit ? onExit : backToList}>
+            <ChevronLeft size={15} /> {focus && onExit ? '返回' : '返回短剧'}
           </button>
           <h1 className="page-title">正在打开短剧…</h1>
         </header>

@@ -1,8 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
-  ArrowUpDown,
-  ChevronDown,
-  ChevronUp,
   Download,
   Pencil,
   Plus,
@@ -11,11 +8,10 @@ import {
   Upload
 } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { ConfirmDialog, EmptyState, Modal } from '../components/ui'
+import { ConfirmDialog, EmptyState } from '../components/ui'
 import {
   genSourceId,
   normalizeBaseUrl,
-  parseSourceImport,
   vodHost,
   type VodSourceImport,
   type VodSourceInput
@@ -44,23 +40,19 @@ import {
 } from '../shared/trainers'
 import {
   DEFAULT_MUSIC_BACKUP,
-  MUSIC_SOURCE_LINES,
   musicLineName,
   type MusicLxPlatform,
   type MusicSource,
-  type MusicSourceBackup,
-  type MusicSourceLine
+  type MusicSourceBackup
 } from '../shared/music'
 import {
   NOVEL_SOURCE_TEMPLATE_LABEL,
-  NOVEL_SOURCE_TEMPLATE_OPTIONS,
   type NovelSource,
   type NovelSourceInput,
   type NovelSourceTemplate
 } from '../shared/novel'
 import {
   inferComicTemplate,
-  type ComicMirrorOption,
   type ComicSource,
   type ComicSourceInput,
   type ComicSourceTemplate
@@ -68,36 +60,30 @@ import {
 import type { AllSourcesBundle, VodSource } from '../shared/types'
 import { clearModuleCaches } from '../utils/cache'
 import {
-  WALLPAPER_SOURCE_TEMPLATES,
   inferWallpaperTemplate,
-  isWallpaperTemplate,
-  toWallpaperSourceRef,
-  wallpaperTemplateLabel,
-  type WallpaperSource,
-  type WallpaperSourceInput,
-  type WallpaperSourceTemplate
+  isWallpaperTemplate
 } from '../shared/wallpaper'
-import {
-  SK_ADAPTER_LABEL,
-  SK_DEFAULT_BASE,
-  inferSkAdapter,
-  isSkAdapter,
-  toShuangkanSourceRef,
-  type SkAdapter,
-  type SkMirrorOption,
-  type ShuangkanSource
-} from '../shared/shuangkan'
-import {
-  MEITU_SOURCE_TEMPLATES,
-  inferMeituTemplate,
-  isMeituTemplate,
-  meituTemplateLabel,
-  toMeituSourceRef,
-  type MeituSource,
-  type MeituSourceInput,
-  type MeituSourceTemplate
-} from '../shared/meitu'
+import { isSkAdapter } from '../shared/shuangkan'
+import { inferMeituTemplate, isMeituTemplate } from '../shared/meitu'
 import { MagnetSettings } from './MagnetSettings'
+import {
+  ComicSourceModal,
+  DramaSourceModal,
+  ImportModal,
+  LiveSourceModal,
+  MusicSourceModal,
+  NovelSourceModal,
+  SourceEditModal,
+  TrainerSourceModal
+} from './SourceSettingsModals'
+import { probeLatency, testMsgText, withMs } from './sourceSettings/sourceTest'
+import {
+  PreferredSortButton,
+  SourceCard,
+  byPreferredOrder,
+  sourceSummary
+} from './sourceSettings/shared'
+import { ExtraSourcesSection } from './sourceSettings/ExtraSourcesSection'
 
 function toInput(source: VodSource): VodSourceInput {
   return { id: source.id, name: source.name, baseUrl: source.baseUrl }
@@ -113,14 +99,6 @@ function toDramaInput(source: DramaSource): DramaSourceInput {
 
 function newDramaSourceId(baseUrl: string, taken: { id: string }[]): string {
   const baseId = `drama_${genSourceId(baseUrl)}`
-  let id = baseId
-  let n = 2
-  while (taken.some((s) => s.id === id)) id = `${baseId}_${n++}`
-  return id
-}
-
-function newShuangkanSourceId(baseUrl: string, taken: { id: string }[]): string {
-  const baseId = `sk_${genSourceId(baseUrl)}`
   let id = baseId
   let n = 2
   while (taken.some((s) => s.id === id)) id = `${baseId}_${n++}`
@@ -185,130 +163,6 @@ function newLiveSourceId(url: string): string {
   return `live_${Math.abs(h)}`
 }
 
-function sourceSummary(total: number, enabled: number, ok: number, bad: number): string {
-  return `共 ${total} 个 · 启用 ${enabled} · 有效 ${ok} · 无效 ${bad}`
-}
-
-/** 测试结果后追加真实访问延迟（ms）；测不到延迟时只显示测试结果，不写「超时」误导 */
-function withMs(message: string, ms: number | null | undefined): string {
-  return ms != null ? `${message} · ${Math.max(1, Math.round(ms))}ms` : message
-}
-
-/** 旧版本写进数据的「· 超时」在展示时去掉，避免测试成功却显示超时 */
-function testMsgText(message?: string | null): string {
-  return (message ?? '未测试').replace(/\s*·\s*超时\s*$/, '')
-}
-
-function probeLatency(url?: string | null): Promise<number | null | undefined> {
-  if (!url || !/^https?:\/\//i.test(url)) return Promise.resolve(undefined)
-  return window.laozheng.probeSourceLatency(url).catch(() => null)
-}
-
-/** 从测试文案末尾解析延迟（123ms）；没有测速结果返回 null */
-function sourceMs(source: { testMsg?: string | null }): number | null {
-  const matched = /·\s*(\d+)ms\s*$/.exec(source.testMsg ?? '')
-  return matched ? Number(matched[1]) : null
-}
-
-/** 0 = 有效（ok），1 = 未测试，2 = 无效；优选排序时无效源统一放最后 */
-function sourceGroup(source: { testStatus?: string | null }): number {
-  if (source.testStatus === 'ok') return 0
-  if (
-    source.testStatus === 'bad' ||
-    source.testStatus === 'failed' ||
-    source.testStatus === 'dead'
-  ) {
-    return 2
-  }
-  return 1
-}
-
-/** 有效的源按测速延迟升序；未测试 / 无效的源保持原相对顺序排后面 */
-function byPreferredOrder<T extends { testMsg?: string | null; testStatus?: string | null }>(
-  list: T[]
-): T[] {
-  return [...list].sort((a, b) => {
-    const group = sourceGroup(a) - sourceGroup(b)
-    if (group !== 0) return group
-    if (sourceGroup(a) !== 0) return 0
-    return (sourceMs(a) ?? Number.MAX_SAFE_INTEGER) - (sourceMs(b) ?? Number.MAX_SAFE_INTEGER)
-  })
-}
-
-function PreferredSortButton({ disabled, onSort }: { disabled?: boolean; onSort: () => void }) {
-  return (
-    <button
-      className="btn"
-      disabled={disabled}
-      onClick={onSort}
-      title="有效的源按测速延迟从快到慢排列，无效的排后面；对应模块的源下拉同步生效"
-    >
-      <ArrowUpDown size={15} /> 优选排序
-    </button>
-  )
-}
-
-interface MirrorLatencyEntry {
-  at: number
-  mirrors: { url: string; ms: number | null }[]
-}
-
-/** 优选地址延迟缓存：测过一次后重开弹窗直接显示上次的 ms，不再自动测速 */
-const MIRROR_LATENCY_KEY = 'lz_mirror_latency_v1'
-
-function readMirrorLatency(key: string): MirrorLatencyEntry | null {
-  try {
-    const raw = localStorage.getItem(MIRROR_LATENCY_KEY)
-    if (!raw) return null
-    const all = JSON.parse(raw) as Record<string, MirrorLatencyEntry>
-    const entry = all[key]
-    return entry && Array.isArray(entry.mirrors) && entry.mirrors.length ? entry : null
-  } catch {
-    return null
-  }
-}
-
-function writeMirrorLatency(key: string, mirrors: { url: string; ms: number | null }[]): void {
-  try {
-    const raw = localStorage.getItem(MIRROR_LATENCY_KEY)
-    const all = raw ? (JSON.parse(raw) as Record<string, MirrorLatencyEntry>) : {}
-    all[key] = { at: Date.now(), mirrors }
-    localStorage.setItem(MIRROR_LATENCY_KEY, JSON.stringify(all))
-  } catch {
-    // 缓存失败不影响选择
-  }
-}
-
-/** 可折叠的源配置卡片：标题右侧统一显示 共 / 启用 / 有效 / 无效 */
-function SourceCard({
-  title,
-  summary,
-  open,
-  onToggle,
-  children
-}: {
-  title: string
-  summary: string
-  open: boolean
-  onToggle: () => void
-  children: ReactNode
-}) {
-  return (
-    <section className="settings-card">
-      <button
-        type="button"
-        className="settings-card-toggle"
-        onClick={onToggle}
-        aria-expanded={open}
-      >
-        <h3>{title}</h3>
-        <span className="settings-value">{summary}</span>
-        {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-      </button>
-      {open ? <div style={{ marginTop: 10 }}>{children}</div> : null}
-    </section>
-  )
-}
 
 /**
  * 片源管理（配置管理 → 片源管理）：
@@ -322,27 +176,6 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   const [vodOpen, setVodOpen] = useState(false)
   const [liveOpen, setLiveOpen] = useState(false)
   const [dramaOpen, setDramaOpen] = useState(false)
-  const [wallpaperOpen, setWallpaperOpen] = useState(false)
-  const [editingWallpaper, setEditingWallpaper] = useState<WallpaperSource | 'new' | null>(null)
-  const [importingWallpaper, setImportingWallpaper] = useState(false)
-  const [deletingWallpaper, setDeletingWallpaper] = useState<WallpaperSource | null>(null)
-  const [testingWallpaperId, setTestingWallpaperId] = useState<string | null>(null)
-  const [testingWallpaperAll, setTestingWallpaperAll] = useState(false)
-  const [meituOpen, setMeituOpen] = useState(false)
-  const [editingMeitu, setEditingMeitu] = useState<MeituSource | 'new' | null>(null)
-  const [importingMeitu, setImportingMeitu] = useState(false)
-  const [deletingMeitu, setDeletingMeitu] = useState<MeituSource | null>(null)
-  const [testingMeituId, setTestingMeituId] = useState<string | null>(null)
-  const [testingMeituAll, setTestingMeituAll] = useState(false)
-  const [shuangkanOpen, setShuangkanOpen] = useState(false)
-  const [editingShuangkan, setEditingShuangkan] = useState<ShuangkanSource | 'new' | null>(
-    null
-  )
-  const [importingShuangkan, setImportingShuangkan] = useState(false)
-  const [deletingShuangkan, setDeletingShuangkan] = useState<ShuangkanSource | null>(null)
-  const [testingShuangkanId, setTestingShuangkanId] = useState<string | null>(null)
-  const [testingShuangkanAll, setTestingShuangkanAll] = useState(false)
-
   const [editing, setEditing] = useState<VodSource | 'new' | null>(null)
   const [importing, setImporting] = useState(false)
   const [deleting, setDeleting] = useState<VodSource | null>(null)
@@ -584,7 +417,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const removeSource = () => {
-    if (!deleting) return
+    if (!deleting || deleting.builtin) return
     update((d) => ({ ...d, vodSources: d.vodSources.filter((s) => s.id !== deleting.id) }))
     onNotice(`已删除片源「${deleting.name}」`)
     setDeleting(null)
@@ -783,7 +616,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const removeDramaSource = (): void => {
-    if (!deletingDrama) return
+    if (!deletingDrama || deletingDrama.builtin) return
     update((d) => ({
       ...d,
       dramaSources: d.dramaSources.filter((s) => s.id !== deletingDrama.id)
@@ -948,7 +781,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const removeNovelSource = (): void => {
-    if (!deletingNovel) return
+    if (!deletingNovel || deletingNovel.builtin) return
     update((d) => ({
       ...d,
       novelSources: d.novelSources.filter((s) => s.id !== deletingNovel.id)
@@ -1115,7 +948,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const removeComicSource = (): void => {
-    if (!deletingComic) return
+    if (!deletingComic || deletingComic.builtin) return
     update((d) => ({
       ...d,
       comicSources: d.comicSources.filter((s) => s.id !== deletingComic.id)
@@ -1302,7 +1135,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const removeTrainerSource = () => {
-    if (!deletingTrainer) return
+    if (!deletingTrainer || deletingTrainer.builtin) return
     update((d) => ({
       ...d,
       trainerSources: d.trainerSources.filter((s) => s.id !== deletingTrainer.id)
@@ -1581,7 +1414,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const removeMusicSource = () => {
-    if (!deletingMusic) return
+    if (!deletingMusic || deletingMusic.builtin) return
     update((d) => ({
       ...d,
       musicSources: d.musicSources.filter((s) => s.id !== deletingMusic.id)
@@ -1630,6 +1463,8 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
               id,
               name: input.name.trim(),
               baseUrl,
+              // 用户自己添加的镜像可删除（即使 id 与默认站相同）
+              builtin: false,
               enabled: true,
               region: 'cn',
               regionManual: true,
@@ -1800,7 +1635,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const removeLivePlatformSource = () => {
-    if (!deletingLivePlatform) return
+    if (!deletingLivePlatform || deletingLivePlatform.builtin) return
     update((d) => ({
       ...d,
       livePlatformSources: d.livePlatformSources.filter((s) => s.id !== deletingLivePlatform.id)
@@ -1946,7 +1781,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const removeLiveSource = () => {
-    if (!deletingLive || !liveSources) return
+    if (!deletingLive || !liveSources || deletingLive.builtin) return
     persistLive(liveSources.filter((s) => s.id !== deletingLive.id))
     onNotice(`已删除电视源「${deletingLive.name}」`)
     setDeletingLive(null)
@@ -2607,615 +2442,6 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   const musicEnabled = data.musicSources.filter((s) => s.enabled).length
   // ---------- 壁纸源（Wallspic / 壁纸迷站点模板） ----------
 
-  const patchWallpaper = (id: string, patch: Partial<WallpaperSource>) => {
-    update((d) => ({
-      ...d,
-      wallpaperSources: d.wallpaperSources.map((source) =>
-        source.id === id ? { ...source, ...patch } : source
-      )
-    }))
-  }
-
-  const runWallpaperTest = async (
-    source: WallpaperSource
-  ): Promise<{ status: 'ok' | 'bad'; msg: string }> => {
-    const latency = probeLatency(source.baseUrl)
-    try {
-      const res = await window.laozheng.wallpaperCategories(toWallpaperSourceRef(source), 'pc')
-      const status: 'ok' | 'bad' = res.ok ? 'ok' : 'bad'
-      const msg = withMs(
-        res.ok ? `可用 · ${res.categories?.length ?? 0} 个分类` : res.error ?? '不可用',
-        await latency
-      )
-      patchWallpaper(source.id, { testStatus: status, testMsg: msg, testAt: Date.now() })
-      return { status, msg }
-    } catch (err) {
-      const msg = withMs((err as Error).message || '测试失败', await latency)
-      patchWallpaper(source.id, { testStatus: 'bad', testMsg: msg, testAt: Date.now() })
-      return { status: 'bad', msg }
-    }
-  }
-
-  const testWallpaper = async (source: WallpaperSource) => {
-    if (testingWallpaperId) return
-    setTestingWallpaperId(source.id)
-    const res = await runWallpaperTest(source)
-    setTestingWallpaperId(null)
-    onNotice(`「${source.name}」${res.status === 'ok' ? '可用' : `不可用：${res.msg}`}`)
-  }
-
-  const testAllWallpaper = async () => {
-    if (testingWallpaperAll || data.wallpaperSources.length === 0) return
-    setTestingWallpaperAll(true)
-    let ok = 0
-    let bad = 0
-    for (const entry of data.wallpaperSources) {
-      setTestingWallpaperId(entry.id)
-      const res = await runWallpaperTest(entry)
-      if (res.status === 'ok') ok += 1
-      else bad += 1
-    }
-    setTestingWallpaperId(null)
-    setTestingWallpaperAll(false)
-    onNotice(`壁纸源测试完成：可用 ${ok} 个 · 不可用 ${bad} 个`)
-  }
-
-  const saveWallpaperSource = (input: WallpaperSourceInput) => {
-    if (!(editingWallpaper === 'new' || editingWallpaper)) return
-    const baseUrl = normalizeBaseUrl(input.baseUrl)
-    if (!input.name.trim() || !/^https?:\/\//i.test(baseUrl)) {
-      onNotice('壁纸源名称和站点地址不能为空')
-      return
-    }
-    const name = input.name.trim()
-    if (
-      data.wallpaperSources.some(
-        (source) => source.id !== input.id && source.baseUrl === baseUrl
-      )
-    ) {
-      onNotice('该壁纸源地址已经存在')
-      return
-    }
-    if (editingWallpaper === 'new') {
-      update((d) => {
-        const baseId = `wp_${genSourceId(baseUrl)}`
-        let id = baseId
-        let n = 2
-        while (d.wallpaperSources.some((source) => source.id === id)) {
-          id = `${baseId}_${n++}`
-        }
-        return {
-          ...d,
-          wallpaperSources: [
-            ...d.wallpaperSources,
-            {
-              id,
-              name,
-              baseUrl,
-              template: input.template,
-              enabled: true,
-              testStatus: 'ok',
-              testMsg: '可用',
-              testAt: Date.now()
-            }
-          ]
-        }
-      })
-      onNotice(`已添加壁纸源「${name}」`)
-    } else {
-      const current = editingWallpaper
-      const changed = current.baseUrl !== baseUrl || current.template !== input.template
-      update((d) => ({
-        ...d,
-        wallpaperSources: d.wallpaperSources.map((source) =>
-          source.id === current.id
-            ? {
-                ...source,
-                name,
-                baseUrl,
-                template: input.template,
-                testStatus: changed ? null : source.testStatus,
-                testMsg: changed ? null : source.testMsg,
-                testAt: changed ? 0 : source.testAt
-              }
-            : source
-        )
-      }))
-      onNotice(`已保存壁纸源「${name}」`)
-    }
-    setEditingWallpaper(null)
-  }
-
-  const importWallpaperSources = (inputs: VodSourceInput[]) => {
-    const urls = new Set(data.wallpaperSources.map((source) => source.baseUrl))
-    const ids = new Set(data.wallpaperSources.map((source) => source.id))
-    const fresh: WallpaperSource[] = []
-    let skipped = 0
-    for (const input of inputs) {
-      const baseUrl = normalizeBaseUrl(input.baseUrl)
-      if (!/^https?:\/\//i.test(baseUrl) || urls.has(baseUrl)) {
-        skipped += 1
-        continue
-      }
-      const template = inferWallpaperTemplate(baseUrl)
-      if (!template) {
-        skipped += 1
-        continue
-      }
-      urls.add(baseUrl)
-      const baseId = `wp_${genSourceId(baseUrl)}`
-      let id = baseId
-      let n = 2
-      while (ids.has(id)) id = `${baseId}_${n++}`
-      ids.add(id)
-      fresh.push({
-        id,
-        name: input.name.trim() || vodHost(baseUrl),
-        baseUrl,
-        template,
-        enabled: true,
-        testStatus: 'ok',
-        testMsg: '可用',
-        testAt: Date.now()
-      })
-    }
-    if (!fresh.length) {
-      onNotice('没有可导入的壁纸源（地址已存在或不是 Wallspic / 壁纸迷站点）')
-      setImportingWallpaper(false)
-      return
-    }
-    update((d) => ({ ...d, wallpaperSources: [...d.wallpaperSources, ...fresh] }))
-    onNotice(`已导入 ${fresh.length} 个壁纸源${skipped ? ` · 跳过 ${skipped} 个` : ''}`)
-    setImportingWallpaper(false)
-  }
-
-  const exportWallpaper = async (): Promise<void> => {
-    if (!data.wallpaperSources.length) {
-      onNotice('还没有可导出的壁纸源')
-      return
-    }
-    const res = await window.laozheng.exportWallpaperSources(
-      data.wallpaperSources.map((source) => ({
-        id: source.id,
-        name: source.name,
-        baseUrl: source.baseUrl,
-        template: source.template,
-        enabled: source.enabled
-      }))
-    )
-    if (res.canceled) return
-    if (res.error) {
-      onNotice(`导出失败：${res.error}`)
-      return
-    }
-    onNotice(`已导出 ${res.count ?? 0} 个壁纸源到 ${res.path}`)
-  }
-
-  const removeWallpaperSource = () => {
-    if (!deletingWallpaper) return
-    update((d) => ({
-      ...d,
-      wallpaperSources: d.wallpaperSources.filter((source) => source.id !== deletingWallpaper.id)
-    }))
-    onNotice(`已删除壁纸源「${deletingWallpaper.name}」`)
-    setDeletingWallpaper(null)
-  }
-
-  const wallpaperOk = data.wallpaperSources.filter((s) => s.testStatus === 'ok').length
-  const wallpaperBad = data.wallpaperSources.filter(
-    (s) => !!s.testStatus && s.testStatus !== 'ok'
-  ).length
-  const wallpaperEnabled = data.wallpaperSources.filter((s) => s.enabled).length
-
-  // ---------- 套图源（魅影画廊 / 雪月映画） ----------
-
-  const patchMeitu = (id: string, patch: Partial<MeituSource>) => {
-    update((d) => ({
-      ...d,
-      meituSources: d.meituSources.map((source) =>
-        source.id === id ? { ...source, ...patch } : source
-      )
-    }))
-  }
-
-  const runMeituTest = async (
-    source: MeituSource
-  ): Promise<{ status: 'ok' | 'bad'; msg: string }> => {
-    const latency = probeLatency(source.baseUrl)
-    try {
-      const res = await window.laozheng.meituCategories(toMeituSourceRef(source))
-      const status: 'ok' | 'bad' = res.ok ? 'ok' : 'bad'
-      const msg = withMs(
-        res.ok
-          ? `可用 · ${res.categories?.filter((entry) => entry.id).length ?? 0} 个分类`
-          : res.error ?? '不可用',
-        await latency
-      )
-      patchMeitu(source.id, { testStatus: status, testMsg: msg, testAt: Date.now() })
-      return { status, msg }
-    } catch (err) {
-      const msg = withMs((err as Error).message || '测试失败', await latency)
-      patchMeitu(source.id, { testStatus: 'bad', testMsg: msg, testAt: Date.now() })
-      return { status: 'bad', msg }
-    }
-  }
-
-  const testMeitu = async (source: MeituSource) => {
-    if (testingMeituId) return
-    setTestingMeituId(source.id)
-    const res = await runMeituTest(source)
-    setTestingMeituId(null)
-    onNotice(`「${source.name}」${res.status === 'ok' ? '可用' : `不可用：${res.msg}`}`)
-  }
-
-  const testAllMeitu = async () => {
-    if (testingMeituAll || data.meituSources.length === 0) return
-    setTestingMeituAll(true)
-    let ok = 0
-    let bad = 0
-    for (const entry of data.meituSources) {
-      setTestingMeituId(entry.id)
-      const res = await runMeituTest(entry)
-      if (res.status === 'ok') ok += 1
-      else bad += 1
-    }
-    setTestingMeituId(null)
-    setTestingMeituAll(false)
-    onNotice(`套图源测试完成：可用 ${ok} 个 · 不可用 ${bad} 个`)
-  }
-
-  const saveMeituSource = (input: MeituSourceInput) => {
-    if (!(editingMeitu === 'new' || editingMeitu)) return
-    const baseUrl = normalizeBaseUrl(input.baseUrl)
-    if (!input.name.trim() || !/^https?:\/\//i.test(baseUrl)) {
-      onNotice('套图源名称和站点地址不能为空')
-      return
-    }
-    const name = input.name.trim()
-    if (
-      data.meituSources.some(
-        (source) => source.id !== input.id && source.baseUrl === baseUrl
-      )
-    ) {
-      onNotice('该套图源地址已经存在')
-      return
-    }
-    if (editingMeitu === 'new') {
-      update((d) => {
-        const baseId = `mt_${genSourceId(baseUrl)}`
-        let id = baseId
-        let n = 2
-        while (d.meituSources.some((source) => source.id === id)) {
-          id = `${baseId}_${n++}`
-        }
-        return {
-          ...d,
-          meituSources: [
-            ...d.meituSources,
-            {
-              id,
-              name,
-              baseUrl,
-              template: input.template,
-              enabled: true,
-              testStatus: 'ok',
-              testMsg: '可用',
-              testAt: Date.now()
-            }
-          ]
-        }
-      })
-      onNotice(`已添加套图源「${name}」`)
-    } else {
-      const current = editingMeitu
-      const changed = current.baseUrl !== baseUrl || current.template !== input.template
-      update((d) => ({
-        ...d,
-        meituSources: d.meituSources.map((source) =>
-          source.id === current.id
-            ? {
-                ...source,
-                name,
-                baseUrl,
-                template: input.template,
-                testStatus: changed ? null : source.testStatus,
-                testMsg: changed ? null : source.testMsg,
-                testAt: changed ? 0 : source.testAt
-              }
-            : source
-        )
-      }))
-      onNotice(`已保存套图源「${name}」`)
-    }
-    setEditingMeitu(null)
-  }
-
-  const importMeituSources = (inputs: VodSourceInput[]) => {
-    const urls = new Set(data.meituSources.map((source) => source.baseUrl))
-    const ids = new Set(data.meituSources.map((source) => source.id))
-    const fresh: MeituSource[] = []
-    let skipped = 0
-    for (const input of inputs) {
-      const baseUrl = normalizeBaseUrl(input.baseUrl)
-      if (!/^https?:\/\//i.test(baseUrl) || urls.has(baseUrl)) {
-        skipped += 1
-        continue
-      }
-      const template = inferMeituTemplate(baseUrl)
-      if (!template) {
-        skipped += 1
-        continue
-      }
-      urls.add(baseUrl)
-      const baseId = `mt_${genSourceId(baseUrl)}`
-      let id = baseId
-      let n = 2
-      while (ids.has(id)) id = `${baseId}_${n++}`
-      ids.add(id)
-      fresh.push({
-        id,
-        name: input.name.trim() || vodHost(baseUrl),
-        baseUrl,
-        template,
-        enabled: true,
-        testStatus: 'ok',
-        testMsg: '可用',
-        testAt: Date.now()
-      })
-    }
-    if (!fresh.length) {
-      onNotice('没有可导入的套图源（地址已存在或不是魅影画廊 / 雪月映画站点）')
-      setImportingMeitu(false)
-      return
-    }
-    update((d) => ({ ...d, meituSources: [...d.meituSources, ...fresh] }))
-    onNotice(`已导入 ${fresh.length} 个套图源${skipped ? ` · 跳过 ${skipped} 个` : ''}`)
-    setImportingMeitu(false)
-  }
-
-  const exportMeitu = async (): Promise<void> => {
-    if (!data.meituSources.length) {
-      onNotice('还没有可导出的套图源')
-      return
-    }
-    const res = await window.laozheng.exportMeituSources(
-      data.meituSources.map((source) => ({
-        id: source.id,
-        name: source.name,
-        baseUrl: source.baseUrl,
-        template: source.template,
-        enabled: source.enabled
-      }))
-    )
-    if (res.canceled) return
-    if (res.error) {
-      onNotice(`导出失败：${res.error}`)
-      return
-    }
-    onNotice(`已导出 ${res.count ?? 0} 个套图源到 ${res.path}`)
-  }
-
-  const removeMeituSource = () => {
-    if (!deletingMeitu) return
-    update((d) => ({
-      ...d,
-      meituSources: d.meituSources.filter((source) => source.id !== deletingMeitu.id)
-    }))
-    onNotice(`已删除套图源「${deletingMeitu.name}」`)
-    setDeletingMeitu(null)
-  }
-
-  const meituOk = data.meituSources.filter((s) => s.testStatus === 'ok').length
-  const meituBad = data.meituSources.filter(
-    (s) => !!s.testStatus && s.testStatus !== 'ok'
-  ).length
-  const meituEnabled = data.meituSources.filter((s) => s.enabled).length
-
-  // ---------- 皇片源（肉视频站点） ----------
-
-  const patchShuangkan = (id: string, patch: Partial<ShuangkanSource>) => {
-    update((d) => ({
-      ...d,
-      shuangkanSources: d.shuangkanSources.map((source) =>
-        source.id === id ? { ...source, ...patch } : source
-      )
-    }))
-  }
-
-  const runShuangkanTest = async (
-    source: ShuangkanSource
-  ): Promise<{ status: 'ok' | 'bad'; msg: string }> => {
-    const latency = probeLatency(source.baseUrl)
-    try {
-      const res = await window.laozheng.shuangkanCatalog(
-        toShuangkanSourceRef(source),
-        'video',
-        '',
-        1
-      )
-      const status: 'ok' | 'bad' = res.ok ? 'ok' : 'bad'
-      const msg = withMs(
-        res.ok ? `可用 · 首页 ${res.items.length} 条` : res.error ?? '不可用',
-        await latency
-      )
-      patchShuangkan(source.id, { testStatus: status, testMsg: msg, testAt: Date.now() })
-      return { status, msg }
-    } catch (err) {
-      const msg = withMs((err as Error).message || '测试失败', await latency)
-      patchShuangkan(source.id, { testStatus: 'bad', testMsg: msg, testAt: Date.now() })
-      return { status: 'bad', msg }
-    }
-  }
-
-  const testShuangkan = async (source: ShuangkanSource) => {
-    if (testingShuangkanId) return
-    setTestingShuangkanId(source.id)
-    const res = await runShuangkanTest(source)
-    setTestingShuangkanId(null)
-    onNotice(`「${source.name}」${res.status === 'ok' ? '可用' : `不可用：${res.msg}`}`)
-  }
-
-  const testAllShuangkan = async () => {
-    if (testingShuangkanAll || data.shuangkanSources.length === 0) return
-    setTestingShuangkanAll(true)
-    let ok = 0
-    let bad = 0
-    for (const entry of data.shuangkanSources) {
-      setTestingShuangkanId(entry.id)
-      const res = await runShuangkanTest(entry)
-      if (res.status === 'ok') ok += 1
-      else bad += 1
-    }
-    setTestingShuangkanId(null)
-    setTestingShuangkanAll(false)
-    onNotice(`皇片源测试完成：可用 ${ok} 个 · 不可用 ${bad} 个`)
-  }
-
-  const saveShuangkanSource = (input: {
-    name: string
-    baseUrl: string
-    id?: string
-    adapter?: SkAdapter
-  }) => {
-    if (!(editingShuangkan === 'new' || editingShuangkan)) return
-    const baseUrl = normalizeBaseUrl(input.baseUrl)
-    if (!input.name.trim() || !/^https?:\/\//i.test(baseUrl)) {
-      onNotice('皇片源名称和站点地址不能为空')
-      return
-    }
-    const name = input.name.trim()
-    const adapter = input.adapter ?? inferSkAdapter(baseUrl)
-    if (
-      data.shuangkanSources.some(
-        (source) => source.id !== input.id && source.baseUrl === baseUrl
-      )
-    ) {
-      onNotice('该皇片源地址已经存在')
-      return
-    }
-    if (editingShuangkan === 'new') {
-      update((d) => {
-        const baseId = `sk_${genSourceId(baseUrl)}`
-        let id = baseId
-        let n = 2
-        while (d.shuangkanSources.some((source) => source.id === id)) {
-          id = `${baseId}_${n++}`
-        }
-        return {
-          ...d,
-          shuangkanSources: [
-            ...d.shuangkanSources,
-            {
-              id,
-              name,
-              baseUrl,
-              adapter,
-              enabled: true,
-              testStatus: null,
-              testMsg: null,
-              testAt: 0
-            }
-          ]
-        }
-      })
-      onNotice(`已添加皇片源「${name}」`)
-    } else {
-      const current = editingShuangkan
-      const changed = current.baseUrl !== baseUrl
-      update((d) => ({
-        ...d,
-        shuangkanSources: d.shuangkanSources.map((source) =>
-          source.id === current.id
-            ? {
-                ...source,
-                name,
-                baseUrl,
-                adapter,
-                testStatus: changed ? null : source.testStatus,
-                testMsg: changed ? null : source.testMsg,
-                testAt: changed ? 0 : source.testAt
-              }
-            : source
-        )
-      }))
-      onNotice(`已保存皇片源「${name}」`)
-    }
-    setEditingShuangkan(null)
-  }
-
-  const importShuangkanSources = (inputs: VodSourceInput[]) => {
-    const existing = new Set(data.shuangkanSources.map((source) => source.baseUrl))
-    const fresh = inputs.filter((input) => {
-      const baseUrl = normalizeBaseUrl(input.baseUrl)
-      return /^https?:\/\//i.test(baseUrl) && !existing.has(baseUrl)
-    })
-    if (!fresh.length) {
-      onNotice('这些皇片源已存在')
-      setImportingShuangkan(false)
-      return
-    }
-    update((d) => {
-      const next = [...d.shuangkanSources]
-      const urls = new Set(next.map((source) => source.baseUrl))
-      const added: ShuangkanSource[] = []
-      for (const input of fresh) {
-        const baseUrl = normalizeBaseUrl(input.baseUrl)
-        if (urls.has(baseUrl)) continue
-        urls.add(baseUrl)
-        added.push({
-          id: newShuangkanSourceId(baseUrl, [...next, ...added]),
-          name: input.name || vodHost(baseUrl),
-          baseUrl,
-          enabled: true,
-          testStatus: null,
-          testMsg: null,
-          testAt: 0
-        })
-      }
-      return { ...d, shuangkanSources: [...next, ...added] }
-    })
-    onNotice(`已导入 ${fresh.length} 个皇片源`)
-    setImportingShuangkan(false)
-  }
-
-  const exportShuangkan = async (): Promise<void> => {
-    const rows = data.shuangkanSources.map((source) => ({
-      id: source.id,
-      name: source.name,
-      baseUrl: source.baseUrl,
-      enabled: source.enabled
-    }))
-    if (!rows.length) {
-      onNotice('还没有可导出的皇片源')
-      return
-    }
-    const res = await window.laozheng.exportShuangkanSources(rows)
-    if (res.canceled) return
-    if (res.error) {
-      onNotice(`导出失败：${res.error}`)
-      return
-    }
-    onNotice(`已导出 ${res.count ?? 0} 个皇片源到 ${res.path}`)
-  }
-
-  const removeShuangkanSource = () => {
-    if (!deletingShuangkan) return
-    update((d) => ({
-      ...d,
-      shuangkanSources: d.shuangkanSources.filter(
-        (source) => source.id !== deletingShuangkan.id
-      )
-    }))
-    onNotice(`已删除皇片源「${deletingShuangkan.name}」`)
-    setDeletingShuangkan(null)
-  }
-
-  const shuangkanOk = data.shuangkanSources.filter((s) => s.testStatus === 'ok').length
-  const shuangkanBad = data.shuangkanSources.filter(
-    (s) => !!s.testStatus && s.testStatus !== 'ok'
-  ).length
-  const shuangkanEnabled = data.shuangkanSources.filter((s) => s.enabled).length
-
   const livePlatformOk = data.livePlatformSources.filter((s) => s.testStatus === 'ok').length
   const livePlatformBad = data.livePlatformSources.filter(
     (s) => !!s.testStatus && s.testStatus !== 'ok'
@@ -3295,9 +2521,11 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 <button className="icon-btn" title="编辑" onClick={() => setEditing(s)}>
                   <Pencil size={14} />
                 </button>
-                <button className="icon-btn danger" title="删除" onClick={() => setDeleting(s)}>
-                  <Trash2 size={14} />
-                </button>
+                {!s.builtin && (
+                  <button className="icon-btn danger" title="删除" onClick={() => setDeleting(s)}>
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -3400,13 +2628,15 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 <button className="icon-btn" title="修改" onClick={() => setEditingDrama(source)}>
                   <Pencil size={14} />
                 </button>
-                <button
-                  className="icon-btn danger"
-                  title="删除"
-                  onClick={() => setDeletingDrama(source)}
-                >
-                  <Trash2 size={14} />
-                </button>
+                {!source.builtin && (
+                  <button
+                    className="icon-btn danger"
+                    title="删除"
+                    onClick={() => setDeletingDrama(source)}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -3495,9 +2725,15 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                   <button className="icon-btn" title="修改" onClick={() => setEditingLive(s)}>
                     <Pencil size={14} />
                   </button>
-                  <button className="icon-btn danger" title="删除" onClick={() => setDeletingLive(s)}>
-                    <Trash2 size={14} />
-                  </button>
+                  {!s.builtin && (
+                    <button
+                      className="icon-btn danger"
+                      title="删除"
+                      onClick={() => setDeletingLive(s)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
                 </div>
               )
             })}
@@ -3593,13 +2829,15 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 >
                   <Pencil size={14} />
                 </button>
-                <button
-                  className="icon-btn danger"
-                  title="删除"
-                  onClick={() => setDeletingLivePlatform(source)}
-                >
-                  <Trash2 size={14} />
-                </button>
+                {!source.builtin && (
+                  <button
+                    className="icon-btn danger"
+                    title="删除"
+                    onClick={() => setDeletingLivePlatform(source)}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -3704,13 +2942,15 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 <button className="icon-btn" title="修改" onClick={() => setEditingMusic(source)}>
                   <Pencil size={14} />
                 </button>
-                <button
-                  className="icon-btn danger"
-                  title="删除"
-                  onClick={() => setDeletingMusic(source)}
-                >
-                  <Trash2 size={14} />
-                </button>
+                {!source.builtin && (
+                  <button
+                    className="icon-btn danger"
+                    title="删除"
+                    onClick={() => setDeletingMusic(source)}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -3810,13 +3050,15 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 <button className="icon-btn" title="修改" onClick={() => setEditingComic(source)}>
                   <Pencil size={14} />
                 </button>
-                <button
-                  className="icon-btn danger"
-                  title="删除"
-                  onClick={() => setDeletingComic(source)}
-                >
-                  <Trash2 size={14} />
-                </button>
+                {!source.builtin && (
+                  <button
+                    className="icon-btn danger"
+                    title="删除"
+                    onClick={() => setDeletingComic(source)}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -3912,13 +3154,15 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 <button className="icon-btn" title="修改" onClick={() => setEditingNovel(source)}>
                   <Pencil size={14} />
                 </button>
-                <button
-                  className="icon-btn danger"
-                  title="删除"
-                  onClick={() => setDeletingNovel(source)}
-                >
-                  <Trash2 size={14} />
-                </button>
+                {!source.builtin && (
+                  <button
+                    className="icon-btn danger"
+                    title="删除"
+                    onClick={() => setDeletingNovel(source)}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -4009,13 +3253,15 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 >
                   <Pencil size={14} />
                 </button>
-                <button
-                  className="icon-btn danger"
-                  title="删除"
-                  onClick={() => setDeletingTrainer(source)}
-                >
-                  <Trash2 size={14} />
-                </button>
+                {!source.builtin && (
+                  <button
+                    className="icon-btn danger"
+                    title="删除"
+                    onClick={() => setDeletingTrainer(source)}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -4025,306 +3271,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       {/* 磁力源并入片源管理，不再单独占配置管理入口 */}
       <MagnetSettings key={magnetKey} onNotice={onNotice} />
 
-      <SourceCard
-        title="壁纸源"
-        summary={sourceSummary(
-          data.wallpaperSources.length,
-          wallpaperEnabled,
-          wallpaperOk,
-          wallpaperBad
-        )}
-        open={wallpaperOpen}
-        onToggle={() => setWallpaperOpen((value) => !value)}
-      >
-        <div className="settings-row" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <button className="btn primary" onClick={() => setEditingWallpaper('new')}>
-            <Plus size={15} /> 添加源
-          </button>
-          <button className="btn" onClick={() => setImportingWallpaper(true)}>
-            <Upload size={15} /> 批量导入
-          </button>
-          <button
-            className="btn"
-            disabled={testingWallpaperAll || data.wallpaperSources.length === 0}
-            onClick={() => void testAllWallpaper()}
-          >
-            <RefreshCw size={15} /> {testingWallpaperAll ? '测试中…' : '整体测试'}
-          </button>
-          <PreferredSortButton
-            disabled={data.wallpaperSources.length < 2}
-            onSort={() =>
-              update((d) => ({
-                ...d,
-                wallpaperSources: byPreferredOrder(d.wallpaperSources)
-              }))
-            }
-          />
-          <button
-            className="btn"
-            disabled={data.wallpaperSources.length === 0}
-            onClick={() => void exportWallpaper()}
-          >
-            <Download size={15} /> 导出
-          </button>
-        </div>
-
-        {data.wallpaperSources.length === 0 ? (
-          <EmptyState
-            title="还没有壁纸源"
-            desc="点「添加源」或「批量导入」；壁纸源支持 Wallspic / 壁纸迷 两种站点模板。"
-          />
-        ) : (
-          <div className="rows" style={{ marginTop: 10 }}>
-            {data.wallpaperSources.map((source) => (
-              <div className="row" key={source.id}>
-                <span
-                  className={`status-dot ${
-                    source.enabled
-                      ? source.testStatus === 'ok'
-                        ? 'ok'
-                        : source.testStatus
-                          ? 'warn'
-                          : ''
-                      : 'off'
-                  }`}
-                />
-                <div className="row-main">
-                  <div className="row-title">{source.name}</div>
-                  <div className="row-meta">
-                    {vodHost(source.baseUrl)} · {wallpaperTemplateLabel(source.template)}
-                  </div>
-                  <div className="row-meta">{testMsgText(source.testMsg)}</div>
-                </div>
-                <button
-                  className="btn"
-                  disabled={testingWallpaperId === source.id}
-                  onClick={() => void testWallpaper(source)}
-                >
-                  <RefreshCw size={14} />{' '}
-                  {testingWallpaperId === source.id ? '测试中…' : '测试'}
-                </button>
-                <button
-                  className="btn"
-                  onClick={() => patchWallpaper(source.id, { enabled: !source.enabled })}
-                >
-                  {source.enabled ? '停用' : '启用'}
-                </button>
-                <button
-                  className="icon-btn"
-                  title="修改"
-                  onClick={() => setEditingWallpaper(source)}
-                >
-                  <Pencil size={14} />
-                </button>
-                <button
-                  className="icon-btn danger"
-                  title="删除"
-                  onClick={() => setDeletingWallpaper(source)}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </SourceCard>
-
-      <SourceCard
-        title="套图源"
-        summary={sourceSummary(data.meituSources.length, meituEnabled, meituOk, meituBad)}
-        open={meituOpen}
-        onToggle={() => setMeituOpen((value) => !value)}
-      >
-        <div className="settings-row" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <button className="btn primary" onClick={() => setEditingMeitu('new')}>
-            <Plus size={15} /> 添加源
-          </button>
-          <button className="btn" onClick={() => setImportingMeitu(true)}>
-            <Upload size={15} /> 批量导入
-          </button>
-          <button
-            className="btn"
-            disabled={testingMeituAll || data.meituSources.length === 0}
-            onClick={() => void testAllMeitu()}
-          >
-            <RefreshCw size={15} /> {testingMeituAll ? '测试中…' : '整体测试'}
-          </button>
-          <PreferredSortButton
-            disabled={data.meituSources.length < 2}
-            onSort={() =>
-              update((d) => ({ ...d, meituSources: byPreferredOrder(d.meituSources) }))
-            }
-          />
-          <button
-            className="btn"
-            disabled={data.meituSources.length === 0}
-            onClick={() => void exportMeitu()}
-          >
-            <Download size={15} /> 导出
-          </button>
-        </div>
-
-        {data.meituSources.length === 0 ? (
-          <EmptyState
-            title="还没有套图源"
-            desc="点「添加源」或「批量导入」；套图源支持魅影画廊 / 雪月映画 两种站点模板。"
-          />
-        ) : (
-          <div className="rows" style={{ marginTop: 10 }}>
-            {data.meituSources.map((source) => (
-              <div className="row" key={source.id}>
-                <span
-                  className={`status-dot ${
-                    source.enabled
-                      ? source.testStatus === 'ok'
-                        ? 'ok'
-                        : source.testStatus
-                          ? 'warn'
-                          : ''
-                      : 'off'
-                  }`}
-                />
-                <div className="row-main">
-                  <div className="row-title">{source.name}</div>
-                  <div className="row-meta">
-                    {vodHost(source.baseUrl)} · {meituTemplateLabel(source.template)}
-                  </div>
-                  <div className="row-meta">{testMsgText(source.testMsg)}</div>
-                </div>
-                <button
-                  className="btn"
-                  disabled={testingMeituId === source.id}
-                  onClick={() => void testMeitu(source)}
-                >
-                  <RefreshCw size={14} /> {testingMeituId === source.id ? '测试中…' : '测试'}
-                </button>
-                <button
-                  className="btn"
-                  onClick={() => patchMeitu(source.id, { enabled: !source.enabled })}
-                >
-                  {source.enabled ? '停用' : '启用'}
-                </button>
-                <button
-                  className="icon-btn"
-                  title="修改"
-                  onClick={() => setEditingMeitu(source)}
-                >
-                  <Pencil size={14} />
-                </button>
-                <button
-                  className="icon-btn danger"
-                  title="删除"
-                  onClick={() => setDeletingMeitu(source)}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </SourceCard>
-
-      <SourceCard
-        title="皇片源"
-        summary={sourceSummary(
-          data.shuangkanSources.length,
-          shuangkanEnabled,
-          shuangkanOk,
-          shuangkanBad
-        )}
-        open={shuangkanOpen}
-        onToggle={() => setShuangkanOpen((value) => !value)}
-      >
-        <div className="settings-row" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <button className="btn primary" onClick={() => setEditingShuangkan('new')}>
-            <Plus size={15} /> 添加源
-          </button>
-          <button className="btn" onClick={() => setImportingShuangkan(true)}>
-            <Upload size={15} /> 批量导入
-          </button>
-          <button
-            className="btn"
-            disabled={testingShuangkanAll || data.shuangkanSources.length === 0}
-            onClick={() => void testAllShuangkan()}
-          >
-            <RefreshCw size={15} /> {testingShuangkanAll ? '测试中…' : '整体测试'}
-          </button>
-          <PreferredSortButton
-            disabled={data.shuangkanSources.length < 2}
-            onSort={() =>
-              update((d) => ({
-                ...d,
-                shuangkanSources: byPreferredOrder(d.shuangkanSources)
-              }))
-            }
-          />
-          <button
-            className="btn"
-            disabled={data.shuangkanSources.length === 0}
-            onClick={() => void exportShuangkan()}
-          >
-            <Download size={15} /> 导出
-          </button>
-        </div>
-
-        {data.shuangkanSources.length === 0 ? (
-          <EmptyState
-            title="还没有皇片源"
-            desc="点「添加源」填肉视频站点地址；内置肉视频源删掉后也可以随时加回来。"
-          />
-        ) : (
-          <div className="rows" style={{ marginTop: 10 }}>
-            {data.shuangkanSources.map((source) => (
-              <div className="row" key={source.id}>
-                <span
-                  className={`status-dot ${
-                    source.enabled
-                      ? source.testStatus === 'ok'
-                        ? 'ok'
-                        : source.testStatus
-                          ? 'warn'
-                          : ''
-                      : 'off'
-                  }`}
-                />
-                <div className="row-main">
-                  <div className="row-title">{source.name}</div>
-                  <div className="row-meta">{vodHost(source.baseUrl)}</div>
-                  <div className="row-meta">{testMsgText(source.testMsg)}</div>
-                </div>
-                <button
-                  className="btn"
-                  disabled={testingShuangkanId === source.id}
-                  onClick={() => void testShuangkan(source)}
-                >
-                  <RefreshCw size={14} />{' '}
-                  {testingShuangkanId === source.id ? '测试中…' : '测试'}
-                </button>
-                <button
-                  className="btn"
-                  onClick={() => patchShuangkan(source.id, { enabled: !source.enabled })}
-                >
-                  {source.enabled ? '停用' : '启用'}
-                </button>
-                <button
-                  className="icon-btn"
-                  title="修改"
-                  onClick={() => setEditingShuangkan(source)}
-                >
-                  <Pencil size={14} />
-                </button>
-                <button
-                  className="icon-btn danger"
-                  title="删除"
-                  onClick={() => setDeletingShuangkan(source)}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </SourceCard>
+      <ExtraSourcesSection onNotice={onNotice} />
 
       {editing && (
         <SourceEditModal
@@ -4546,1430 +3493,6 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         />
       )}
 
-      {editingWallpaper && (
-        <WallpaperSourceModal
-          source={editingWallpaper === 'new' ? null : editingWallpaper}
-          onClose={() => setEditingWallpaper(null)}
-          onSave={saveWallpaperSource}
-        />
-      )}
-
-      {importingWallpaper && (
-        <ImportModal
-          title="批量导入壁纸源"
-          hint="支持每行一个「名称|站点地址」，或 JSON 数组。只支持 Wallspic（wallspic.com）和壁纸迷（bizhimi.cn）两种站点模板，其它地址会自动跳过。"
-          onClose={() => setImportingWallpaper(false)}
-          onImport={importWallpaperSources}
-        />
-      )}
-
-      {deletingWallpaper && (
-        <ConfirmDialog
-          title="删除壁纸源"
-          message={`确定删除「${deletingWallpaper.name}」吗？只影响本机壁纸源配置。`}
-          confirmText="删除"
-          danger
-          onConfirm={removeWallpaperSource}
-          onCancel={() => setDeletingWallpaper(null)}
-        />
-      )}
-
-      {editingMeitu && (
-        <MeituSourceModal
-          source={editingMeitu === 'new' ? null : editingMeitu}
-          onClose={() => setEditingMeitu(null)}
-          onSave={saveMeituSource}
-        />
-      )}
-
-      {importingMeitu && (
-        <ImportModal
-          title="批量导入套图源"
-          hint="支持每行一个「名称|站点地址」，或 JSON 数组。只支持魅影画廊（jb9.es）和雪月映画（taoo.xyz）两种站点模板，其它地址会自动跳过。"
-          onClose={() => setImportingMeitu(false)}
-          onImport={importMeituSources}
-        />
-      )}
-
-      {deletingMeitu && (
-        <ConfirmDialog
-          title="删除套图源"
-          message={`确定删除「${deletingMeitu.name}」吗？只影响本机套图源配置。`}
-          confirmText="删除"
-          danger
-          onConfirm={removeMeituSource}
-          onCancel={() => setDeletingMeitu(null)}
-        />
-      )}
-
-      {importingShuangkan && (
-        <ImportModal
-          title="批量导入皇片源"
-          hint="支持每行一个「名称|站点地址」，或导出后的 JSON。站点地址形如 https://rou07.net。"
-          onClose={() => setImportingShuangkan(false)}
-          onImport={importShuangkanSources}
-        />
-      )}
-
-      {editingShuangkan && (
-        <ShuangkanSourceModal
-          source={editingShuangkan === 'new' ? null : editingShuangkan}
-          onClose={() => setEditingShuangkan(null)}
-          onSave={saveShuangkanSource}
-        />
-      )}
-
-      {deletingShuangkan && (
-        <ConfirmDialog
-          title="删除皇片源"
-          message={`确定删除「${deletingShuangkan.name}」吗？只影响本机皇片源配置。`}
-          confirmText="删除"
-          danger
-          onConfirm={removeShuangkanSource}
-          onCancel={() => setDeletingShuangkan(null)}
-        />
-      )}
     </div>
-  )
-}
-
-function WallpaperSourceModal({
-  source,
-  onClose,
-  onSave
-}: {
-  source: WallpaperSource | null
-  onClose: () => void
-  onSave: (input: WallpaperSourceInput) => void
-}) {
-  const [template, setTemplate] = useState<WallpaperSourceTemplate>(
-    source?.template ?? 'wallspic'
-  )
-  const [name, setName] = useState(source?.name ?? WALLPAPER_SOURCE_TEMPLATES[0].name)
-  const [baseUrl, setBaseUrl] = useState(
-    source?.baseUrl ?? WALLPAPER_SOURCE_TEMPLATES[0].homepage
-  )
-  const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
-  const info = WALLPAPER_SOURCE_TEMPLATES.find((entry) => entry.id === template)
-
-  const pickTemplate = (next: WallpaperSourceTemplate) => {
-    const prev = WALLPAPER_SOURCE_TEMPLATES.find((entry) => entry.id === template)
-    const target = WALLPAPER_SOURCE_TEMPLATES.find((entry) => entry.id === next)
-    if (!target) return
-    setTemplate(next)
-    // 没改过默认名称 / 地址时跟着模板走，避免用户选错模板后还留着旧站点
-    if (!name.trim() || (prev && name.trim() === prev.name)) setName(target.name)
-    if (!baseUrl.trim() || (prev && baseUrl.trim() === prev.homepage)) setBaseUrl(target.homepage)
-  }
-
-  return (
-    <Modal
-      title={source ? '修改壁纸源' : '添加壁纸源'}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button
-            className="btn primary"
-            disabled={!valid}
-            onClick={() =>
-              onSave({
-                ...(source ? { id: source.id } : {}),
-                name: name.trim(),
-                baseUrl: baseUrl.trim(),
-                template
-              })
-            }
-          >
-            保存
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <label>
-          名称
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder={info?.name ?? '壁纸源名称'}
-          />
-        </label>
-        <label>
-          站点模板
-          <select
-            value={template}
-            onChange={(e) => pickTemplate(e.target.value as WallpaperSourceTemplate)}
-          >
-            {WALLPAPER_SOURCE_TEMPLATES.map((entry) => (
-              <option key={entry.id} value={entry.id}>
-                {entry.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          站点地址
-          <input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder={info?.homepage ?? 'https://wallspic.com/cn'}
-          />
-        </label>
-      </div>
-      <p className="settings-hint" style={{ marginTop: 10 }}>
-        壁纸源按站点模板解析页面；同一模板可以添加镜像地址，修改地址后建议重新测试一次。
-      </p>
-    </Modal>
-  )
-}
-
-function MeituSourceModal({
-  source,
-  onClose,
-  onSave
-}: {
-  source: MeituSource | null
-  onClose: () => void
-  onSave: (input: MeituSourceInput) => void
-}) {
-  const [template, setTemplate] = useState<MeituSourceTemplate>(source?.template ?? 'jb9')
-  const [name, setName] = useState(source?.name ?? MEITU_SOURCE_TEMPLATES[0].name)
-  const [baseUrl, setBaseUrl] = useState(
-    source?.baseUrl ?? MEITU_SOURCE_TEMPLATES[0].homepage
-  )
-  const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
-  const info = MEITU_SOURCE_TEMPLATES.find((entry) => entry.id === template)
-
-  const pickTemplate = (next: MeituSourceTemplate) => {
-    const prev = MEITU_SOURCE_TEMPLATES.find((entry) => entry.id === template)
-    const target = MEITU_SOURCE_TEMPLATES.find((entry) => entry.id === next)
-    if (!target) return
-    setTemplate(next)
-    // 没改过默认名称 / 地址时跟着模板走
-    if (!name.trim() || (prev && name.trim() === prev.name)) setName(target.name)
-    if (!baseUrl.trim() || (prev && baseUrl.trim() === prev.homepage)) setBaseUrl(target.homepage)
-  }
-
-  return (
-    <Modal
-      title={source ? '修改套图源' : '添加套图源'}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button
-            className="btn primary"
-            disabled={!valid}
-            onClick={() =>
-              onSave({
-                ...(source ? { id: source.id } : {}),
-                name: name.trim(),
-                baseUrl: baseUrl.trim(),
-                template
-              })
-            }
-          >
-            保存
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <label>
-          名称
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder={info?.name ?? '套图源名称'}
-          />
-        </label>
-        <label>
-          站点模板
-          <select
-            value={template}
-            onChange={(e) => pickTemplate(e.target.value as MeituSourceTemplate)}
-          >
-            {MEITU_SOURCE_TEMPLATES.map((entry) => (
-              <option key={entry.id} value={entry.id}>
-                {entry.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          站点地址
-          <input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder={info?.homepage ?? 'https://www.jb9.es'}
-          />
-        </label>
-      </div>
-      <p className="settings-hint" style={{ marginTop: 10 }}>
-        魅影画廊建议填入口地址 https://www.jb9.es（会自动选择可用线路），也可以直接填镜像站；雪月映画填 https://taoo.xyz。修改地址后建议重新测试一次。
-      </p>
-    </Modal>
-  )
-}
-
-function ShuangkanSourceModal({
-  source,
-  onClose,
-  onSave
-}: {
-  source: ShuangkanSource | null
-  onClose: () => void
-  onSave: (input: { id?: string; name: string; baseUrl: string; adapter?: SkAdapter }) => void
-}) {
-  const [name, setName] = useState(source?.name ?? '肉视频')
-  const [baseUrl, setBaseUrl] = useState(source?.baseUrl ?? SK_DEFAULT_BASE)
-  // 优选地址按源类型查询；从下拉里选中镜像时一并保存，避免 x123 / xv123 这类短域名推断错站点
-  const [adapter] = useState<SkAdapter>(
-    source?.adapter ?? inferSkAdapter(source?.baseUrl ?? SK_DEFAULT_BASE)
-  )
-  const [pickedAdapter, setPickedAdapter] = useState<SkAdapter | null>(null)
-  const [mirrors, setMirrors] = useState<SkMirrorOption[] | null>(null)
-  const [mirrorMeasured, setMirrorMeasured] = useState(false)
-  const [mirrorError, setMirrorError] = useState<string | null>(null)
-  const [mirrorLoading, setMirrorLoading] = useState(false)
-  const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
-
-  /** measure=false 优先用上次测速缓存；点刷新按钮才 measure=true 重新测速并写回缓存 */
-  const loadMirrors = useCallback(
-    async (measure = false) => {
-      const cacheKey = `sk:${adapter}`
-      const cached = measure ? null : readMirrorLatency(cacheKey)
-      if (cached) {
-        setMirrors(cached.mirrors)
-        setMirrorMeasured(true)
-        setMirrorError(null)
-        setMirrorLoading(false)
-        return
-      }
-      setMirrorLoading(true)
-      setMirrorError(null)
-      try {
-        const res = await window.laozheng.shuangkanMirrors(adapter, measure)
-        setMirrors(res.mirrors ?? [])
-        setMirrorMeasured(!!res.measured)
-        if (!res.ok) {
-          setMirrorError(res.error ?? '读取导航站优选地址失败')
-        } else if (measure) {
-          writeMirrorLatency(cacheKey, res.mirrors)
-        }
-      } catch (err) {
-        setMirrorError((err as Error).message || '读取导航站优选地址失败')
-        if (!measure) {
-          setMirrors([])
-          setMirrorMeasured(false)
-        }
-      } finally {
-        setMirrorLoading(false)
-      }
-    },
-    [adapter]
-  )
-
-  useEffect(() => {
-    void loadMirrors(false)
-  }, [loadMirrors])
-
-  const current = baseUrl.trim().replace(/\/+$/, '')
-  const selected = (mirrors ?? []).some((entry) => entry.url === current) ? current : ''
-
-  return (
-    <Modal
-      title={source ? '修改皇片源' : '添加皇片源'}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button
-            className="btn primary"
-            disabled={!valid}
-            onClick={() =>
-              onSave({
-                ...(source ? { id: source.id } : {}),
-                name: name.trim(),
-                baseUrl: baseUrl.trim(),
-                ...(pickedAdapter ? { adapter: pickedAdapter } : {})
-              })
-            }
-          >
-            保存
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <label>
-          名称
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="肉视频" />
-        </label>
-        <label>
-          站点地址
-          <input
-            value={baseUrl}
-            onChange={(e) => {
-              setBaseUrl(e.target.value)
-              setPickedAdapter(null)
-            }}
-            placeholder={SK_DEFAULT_BASE}
-          />
-        </label>
-        <label>
-          优选地址（{SK_ADAPTER_LABEL[adapter]} · 延迟）
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <select
-              value={selected}
-              disabled={mirrorLoading || !(mirrors ?? []).length}
-              onChange={(event) => {
-                const url = event.target.value
-                if (!url) return
-                setBaseUrl(url)
-                setPickedAdapter(adapter)
-              }}
-              style={{ flex: 1, minWidth: 0 }}
-            >
-              <option value="">
-                {mirrorLoading
-                  ? '正在读取…'
-                  : (mirrors ?? []).length
-                    ? mirrorMeasured
-                      ? `选择线路（共 ${(mirrors ?? []).length} 条，按延迟排序）`
-                      : `选择线路（共 ${(mirrors ?? []).length} 条，点刷新测速）`
-                    : '暂无线路'}
-              </option>
-              {(mirrors ?? []).map((entry) => (
-                <option key={entry.url} value={entry.url}>
-                  {entry.url.replace(/^https?:\/\//, '').replace(/\/+$/, '')}
-                  {mirrorMeasured
-                    ? ` · ${entry.ms != null ? `${entry.ms}ms` : '超时'}`
-                    : ''}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="icon-btn"
-              title="测速"
-              disabled={mirrorLoading || !(mirrors ?? []).length}
-              onClick={() => void loadMirrors(true)}
-            >
-              <RefreshCw size={14} />
-            </button>
-          </div>
-        </label>
-      </div>
-      <p className="settings-hint" style={{ marginTop: 10 }}>
-        {mirrorError ? `优选地址读取失败：${mirrorError}。` : ''}
-        选择线路时不会自动测速，点右侧刷新按钮才逐个测延迟；地址失效时仍会自动到导航站换址。
-      </p>
-    </Modal>
-  )
-}
-
-function SourceEditModal({
-  source,
-  onClose,
-  onSave
-}: {
-  source: VodSource | null
-  onClose: () => void
-  onSave: (input: VodSourceInput) => void
-}) {
-  const [name, setName] = useState(source?.name ?? '')
-  const [baseUrl, setBaseUrl] = useState(source?.baseUrl ?? '')
-  const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
-
-  return (
-    <Modal
-      title={source ? '编辑源' : '添加源'}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button
-            className="btn primary"
-            disabled={!valid}
-            onClick={() =>
-              onSave({
-                id: source?.id ?? genSourceId(baseUrl.trim()),
-                name: name.trim(),
-                baseUrl: baseUrl.trim()
-              })
-            }
-          >
-            保存
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <label>
-          名称
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：非凡资源" />
-        </label>
-        <label>
-          接口地址
-          <input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://example.com/api.php/provide/vod"
-          />
-        </label>
-      </div>
-    </Modal>
-  )
-}
-
-function DramaSourceModal({
-  source,
-  onClose,
-  onSave
-}: {
-  source: DramaSource | null
-  onClose: () => void
-  onSave: (input: VodSourceInput) => void
-}) {
-  const rou07 = source?.id === ROU07_DRAMA_SOURCE_ID
-  const [name, setName] = useState(source?.name ?? '')
-  const [baseUrl, setBaseUrl] = useState(
-    source?.baseUrl ??
-      (source?.builtin ? (rou07 ? ROU07_DRAMA_BASE_URL : XIFAN_DRAMA_BASE_URL) : '')
-  )
-  // 肉视频短剧与皇片里的肉视频是同一个站点：复用导航站优选地址（按延迟选线路）
-  const [mirrors, setMirrors] = useState<SkMirrorOption[] | null>(null)
-  const [mirrorMeasured, setMirrorMeasured] = useState(false)
-  const [mirrorError, setMirrorError] = useState<string | null>(null)
-  const [mirrorLoading, setMirrorLoading] = useState(false)
-  const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
-
-  /** measure=false 优先用上次测速缓存；点刷新按钮才 measure=true 重新测速并写回缓存 */
-  const loadMirrors = useCallback(
-    async (measure = false) => {
-      if (!rou07) return
-      const cacheKey = `sk:${ROU07_DRAMA_SOURCE_ID}`
-      const cached = measure ? null : readMirrorLatency(cacheKey)
-      if (cached) {
-        setMirrors(cached.mirrors)
-        setMirrorMeasured(true)
-        setMirrorError(null)
-        setMirrorLoading(false)
-        return
-      }
-      setMirrorLoading(true)
-      setMirrorError(null)
-      try {
-        const res = await window.laozheng.shuangkanMirrors(ROU07_DRAMA_SOURCE_ID, measure)
-        setMirrors(res.mirrors ?? [])
-        setMirrorMeasured(!!res.measured)
-        if (!res.ok) {
-          setMirrorError(res.error ?? '读取导航站优选地址失败')
-        } else if (measure) {
-          writeMirrorLatency(cacheKey, res.mirrors)
-        }
-      } catch (err) {
-        setMirrorError((err as Error).message || '读取导航站优选地址失败')
-        if (!measure) {
-          setMirrors([])
-          setMirrorMeasured(false)
-        }
-      } finally {
-        setMirrorLoading(false)
-      }
-    },
-    [rou07]
-  )
-
-  useEffect(() => {
-    void loadMirrors(false)
-  }, [loadMirrors])
-
-  const current = baseUrl.trim().replace(/\/+$/, '')
-  const selected = (mirrors ?? []).some((entry) => entry.url === current) ? current : ''
-
-  return (
-    <Modal
-      title={source ? '编辑短剧源' : '添加短剧源'}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button
-            className="btn primary"
-            disabled={!valid}
-            onClick={() =>
-              onSave({
-                id: source?.id ?? '',
-                name: name.trim(),
-                baseUrl: baseUrl.trim()
-              })
-            }
-          >
-            保存
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <label>
-          名称
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：某短剧采集站" />
-        </label>
-        <label>
-          接口地址
-          <input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://example.com/api.php/provide/vod"
-          />
-        </label>
-        {rou07 ? (
-          <label>
-            优选地址（肉视频 · 延迟）
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <select
-                value={selected}
-                disabled={mirrorLoading || !(mirrors ?? []).length}
-                onChange={(event) => {
-                  const url = event.target.value
-                  if (url) setBaseUrl(url)
-                }}
-                style={{ flex: 1, minWidth: 0 }}
-              >
-                <option value="">
-                  {mirrorLoading
-                    ? '正在读取…'
-                    : (mirrors ?? []).length
-                      ? mirrorMeasured
-                        ? `选择线路（共 ${(mirrors ?? []).length} 条，按延迟排序）`
-                        : `选择线路（共 ${(mirrors ?? []).length} 条，点刷新测速）`
-                      : '暂无线路'}
-                </option>
-                {(mirrors ?? []).map((entry) => (
-                  <option key={entry.url} value={entry.url}>
-                    {entry.url.replace(/^https?:\/\//, '').replace(/\/+$/, '')}
-                    {mirrorMeasured
-                      ? ` · ${entry.ms != null ? `${entry.ms}ms` : '超时'}`
-                      : ''}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="icon-btn"
-                title="测速"
-                disabled={mirrorLoading || !(mirrors ?? []).length}
-                onClick={() => void loadMirrors(true)}
-              >
-                <RefreshCw size={14} />
-              </button>
-            </div>
-          </label>
-        ) : null}
-      </div>
-      <p className="settings-hint" style={{ marginTop: 10 }}>
-        {rou07
-          ? `${mirrorError ? `优选地址读取失败：${mirrorError}。` : ''}肉视频短剧与皇片里的肉视频是同一个站点；选线路时不会自动测速，点右侧刷新按钮才逐个测延迟。`
-          : source?.builtin
-            ? '西饭短剧默认使用官方接口地址，也可以改成镜像地址。'
-            : '短剧源使用苹果CMS V10 接口；西饭短剧不需要在这里添加。'}
-      </p>
-    </Modal>
-  )
-}
-
-function NovelSourceModal({
-  source,
-  onClose,
-  onSave
-}: {
-  source: NovelSource | null
-  onClose: () => void
-  onSave: (input: NovelSourceInput) => void
-}) {
-  const [name, setName] = useState(source?.name ?? '蚂蚁文学镜像')
-  const [baseUrl, setBaseUrl] = useState(source?.baseUrl ?? '')
-  const [template, setTemplate] = useState<NovelSourceTemplate>(source?.template ?? 'mayi')
-  // 哔咔小说与漫画里的哔咔漫画是同一个站点：复用漫画源的 /go-home 优选地址
-  const [mirrors, setMirrors] = useState<ComicMirrorOption[] | null>(null)
-  const [mirrorMeasured, setMirrorMeasured] = useState(false)
-  const [mirrorError, setMirrorError] = useState<string | null>(null)
-  const [mirrorLoading, setMirrorLoading] = useState(false)
-  const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
-
-  /** measure=false 优先用上次测速缓存；点刷新按钮才 measure=true 重新测速并写回缓存 */
-  const loadMirrors = useCallback(
-    async (measure = false) => {
-      if (template !== 'bikahub') return
-      const cacheKey = 'comic:bikahub'
-      const cached = measure ? null : readMirrorLatency(cacheKey)
-      if (cached) {
-        setMirrors(cached.mirrors)
-        setMirrorMeasured(true)
-        setMirrorError(null)
-        setMirrorLoading(false)
-        return
-      }
-      setMirrorLoading(true)
-      setMirrorError(null)
-      try {
-        const res = await window.laozheng.comicMirrors('bikahub', measure)
-        setMirrors(res.mirrors ?? [])
-        setMirrorMeasured(!!res.measured)
-        if (!res.ok) {
-          setMirrorError(res.error ?? '读取镜像地址失败')
-        } else if (measure) {
-          writeMirrorLatency(cacheKey, res.mirrors)
-        }
-      } catch (err) {
-        setMirrorError((err as Error).message || '读取镜像地址失败')
-        if (!measure) {
-          setMirrors([])
-          setMirrorMeasured(false)
-        }
-      } finally {
-        setMirrorLoading(false)
-      }
-    },
-    [template]
-  )
-
-  useEffect(() => {
-    void loadMirrors(false)
-  }, [loadMirrors])
-
-  const current = baseUrl.trim().replace(/\/+$/, '')
-  const selected = (mirrors ?? []).some((entry) => entry.url === current) ? current : ''
-
-  return (
-    <Modal
-      title={source ? '编辑小说源' : '添加小说源'}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button
-            className="btn primary"
-            disabled={!valid}
-            onClick={() =>
-              onSave({
-                id: source?.id ?? '',
-                name: name.trim(),
-                baseUrl: baseUrl.trim(),
-                template
-              })
-            }
-          >
-            保存
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <label>
-          名称
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="例如：笔趣阁镜像"
-          />
-        </label>
-        <label>
-          站点地址
-          <input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://www.example.com"
-          />
-        </label>
-        <label>
-          解析模板
-          <select
-            value={template}
-            onChange={(e) => setTemplate(e.target.value as NovelSourceTemplate)}
-          >
-            {NOVEL_SOURCE_TEMPLATE_OPTIONS.map((key) => (
-              <option key={key} value={key}>
-                {NOVEL_SOURCE_TEMPLATE_LABEL[key]}
-              </option>
-            ))}
-          </select>
-        </label>
-        {template === 'bikahub' ? (
-          <label>
-            优选地址（哔咔小说 · 延迟）
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <select
-                value={selected}
-                disabled={mirrorLoading || !(mirrors ?? []).length}
-                onChange={(event) => {
-                  const url = event.target.value
-                  if (url) setBaseUrl(url)
-                }}
-                style={{ flex: 1, minWidth: 0 }}
-              >
-                <option value="">
-                  {mirrorLoading
-                    ? '正在读取…'
-                    : (mirrors ?? []).length
-                      ? mirrorMeasured
-                        ? `选择线路（共 ${(mirrors ?? []).length} 条，按延迟排序）`
-                        : `选择线路（共 ${(mirrors ?? []).length} 条，点刷新测速）`
-                      : '暂无线路'}
-                </option>
-                {(mirrors ?? []).map((entry) => (
-                  <option key={entry.url} value={entry.url}>
-                    {entry.url.replace(/^https?:\/\//, '').replace(/\/+$/, '')}
-                    {mirrorMeasured
-                      ? ` · ${entry.ms != null ? `${entry.ms}ms` : '超时'}`
-                      : ''}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="icon-btn"
-                title="测速"
-                disabled={mirrorLoading || !(mirrors ?? []).length}
-                onClick={() => void loadMirrors(true)}
-              >
-                <RefreshCw size={14} />
-              </button>
-            </div>
-          </label>
-        ) : null}
-      </div>
-      <p className="settings-hint" style={{ marginTop: 10 }}>
-        {template === 'bikahub'
-          ? `${mirrorError ? `优选地址读取失败：${mirrorError}。` : ''}哔咔小说与漫画里的哔咔漫画是同一个站点；选线路时不会自动测速，点右侧刷新按钮才逐个测延迟。`
-          : '小说源需要与所选模板使用同一套建站系统；填站点根地址即可。添加后可点「测试」确认能否解析推荐列表。'}
-      </p>
-    </Modal>
-  )
-}
-
-type ComicMirrorTemplate = 'jmcomic' | 'tptoon' | 'bikahub'
-
-const COMIC_MIRROR_LABEL: Record<ComicMirrorTemplate, string> = {
-  jmcomic: '禁漫天堂',
-  tptoon: '头牌漫画',
-  bikahub: '哔咔漫画'
-}
-
-function hasComicMirrors(template: ComicSourceTemplate): template is ComicMirrorTemplate {
-  return template === 'jmcomic' || template === 'tptoon' || template === 'bikahub'
-}
-
-function ComicSourceModal({
-  source,
-  onClose,
-  onSave
-}: {
-  source: ComicSource | null
-  onClose: () => void
-  onSave: (input: ComicSourceInput) => void
-}) {
-  const [name, setName] = useState(source?.name ?? '漫画客镜像')
-  const [baseUrl, setBaseUrl] = useState(source?.baseUrl ?? '')
-  const [template, setTemplate] = useState<ComicSourceTemplate>(source?.template ?? 'yumanhua')
-  const [mirrors, setMirrors] = useState<ComicMirrorOption[] | null>(null)
-  const [mirrorMeasured, setMirrorMeasured] = useState(false)
-  const [mirrorLoading, setMirrorLoading] = useState(false)
-  const [mirrorError, setMirrorError] = useState<string | null>(null)
-  const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
-
-  /** measure=false 优先用上次测速缓存；点刷新按钮才 measure=true 重新测速并写回缓存 */
-  const loadMirrors = useCallback(
-    async (measure = false) => {
-      if (!hasComicMirrors(template)) {
-        setMirrors([])
-        setMirrorMeasured(false)
-        setMirrorError(null)
-        return
-      }
-      const cacheKey = `comic:${template}`
-      const cached = measure ? null : readMirrorLatency(cacheKey)
-      if (cached) {
-        setMirrors(cached.mirrors)
-        setMirrorMeasured(true)
-        setMirrorError(null)
-        setMirrorLoading(false)
-        return
-      }
-      setMirrorLoading(true)
-      setMirrorError(null)
-      try {
-        const res = await window.laozheng.comicMirrors(template, measure)
-        setMirrors(res.mirrors ?? [])
-        setMirrorMeasured(!!res.measured)
-        if (!res.ok) {
-          setMirrorError(res.error ?? '读取镜像地址失败')
-        } else if (measure) {
-          writeMirrorLatency(cacheKey, res.mirrors)
-        }
-      } catch (err) {
-        setMirrorError((err as Error).message || '读取镜像地址失败')
-        if (!measure) {
-          setMirrors([])
-          setMirrorMeasured(false)
-        }
-      } finally {
-        setMirrorLoading(false)
-      }
-    },
-    [template]
-  )
-
-  useEffect(() => {
-    void loadMirrors(false)
-  }, [loadMirrors])
-
-  const current = baseUrl.trim().replace(/\/+$/, '')
-  const selected = (mirrors ?? []).some((entry) => entry.url === current) ? current : ''
-
-  return (
-    <Modal
-      title={source ? '编辑漫画源' : '添加漫画源'}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button
-            className="btn primary"
-            disabled={!valid}
-            onClick={() =>
-              onSave({
-                id: source?.id ?? '',
-                name: name.trim(),
-                baseUrl: baseUrl.trim(),
-                template
-              })
-            }
-          >
-            保存
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <label>
-          名称
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="例如：漫画客镜像"
-          />
-        </label>
-        <label>
-          站点地址
-          <input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="http://www.yumanhua.com"
-          />
-        </label>
-        <label>
-          解析模板
-          <select
-            value={template}
-            onChange={(e) => setTemplate(e.target.value as ComicSourceTemplate)}
-          >
-            <option value="yumanhua">漫画客</option>
-            <option value="komiic">Komiic</option>
-            <option value="bikahub">哔咔漫画</option>
-            <option value="tptoon">头牌漫画</option>
-            <option value="jmcomic">禁漫天堂</option>
-          </select>
-        </label>
-        {hasComicMirrors(template) ? (
-          <label>
-            优选地址（{COMIC_MIRROR_LABEL[template]} · 延迟）
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <select
-                value={selected}
-                disabled={mirrorLoading || !(mirrors ?? []).length}
-                onChange={(event) => {
-                  const url = event.target.value
-                  if (url) setBaseUrl(url)
-                }}
-                style={{ flex: 1, minWidth: 0 }}
-              >
-                <option value="">
-                  {mirrorLoading
-                    ? '正在读取…'
-                    : (mirrors ?? []).length
-                      ? mirrorMeasured
-                        ? `选择线路（共 ${(mirrors ?? []).length} 条，按延迟排序）`
-                        : `选择线路（共 ${(mirrors ?? []).length} 条，点刷新测速）`
-                      : '暂无线路'}
-                </option>
-                {(mirrors ?? []).map((entry) => (
-                  <option key={entry.url} value={entry.url}>
-                    {entry.url.replace(/^https?:\/\//, '').replace(/\/+$/, '')}
-                    {mirrorMeasured
-                      ? ` · ${entry.ms != null ? `${entry.ms}ms` : '超时'}`
-                      : ''}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="icon-btn"
-                title="测速"
-                disabled={mirrorLoading || !(mirrors ?? []).length}
-                onClick={() => void loadMirrors(true)}
-              >
-                <RefreshCw size={14} />
-              </button>
-            </div>
-          </label>
-        ) : null}
-      </div>
-      <p className="settings-hint" style={{ marginTop: 10 }}>
-        {mirrorError ? `镜像地址读取失败：${mirrorError}。` : ''}
-        漫画客 / 哔咔镜像填站点根地址；Komiic 使用官方接口，地址保留默认即可。头牌、禁漫天堂、哔咔
-        的镜像来自各自的地址发布页，打开弹窗只拉列表，点右侧刷新按钮才逐个测延迟。
-      </p>
-    </Modal>
-  )
-}
-
-function TrainerSourceModal({
-  source,
-  onClose,
-  onSave
-}: {
-  source: TrainerSource | null
-  onClose: () => void
-  onSave: (input: { name: string; baseUrl: string; type: TrainerSourceType }) => void
-}) {
-  const [name, setName] = useState(source?.name ?? '风灵月影')
-  const [baseUrl, setBaseUrl] = useState(source?.baseUrl ?? 'https://flingtrainer.com')
-  const [type, setType] = useState<TrainerSourceType>(
-    source?.type && source.type !== 'megagames' ? source.type : 'fling'
-  )
-  const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
-
-  return (
-    <Modal
-      title={source ? '编辑补丁源' : '添加补丁源'}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button
-            className="btn primary"
-            disabled={!valid}
-            onClick={() => onSave({ name: name.trim(), baseUrl: baseUrl.trim(), type })}
-          >
-            保存
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <label>
-          名称
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="例如：3DM 修改器"
-          />
-        </label>
-        <label>
-          站点类型
-          <select
-            value={type}
-            onChange={(e) => setType(e.target.value as TrainerSourceType)}
-          >
-            <option value="fling">{TRAINER_SOURCE_TYPE_LABEL.fling}</option>
-            <option value="3dm">{TRAINER_SOURCE_TYPE_LABEL['3dm']}</option>
-            <option value="gamersky">{TRAINER_SOURCE_TYPE_LABEL.gamersky}</option>
-            <option value="ali213">{TRAINER_SOURCE_TYPE_LABEL.ali213}</option>
-          </select>
-        </label>
-        <label>
-          列表页地址
-          <input
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder="https://flingtrainer.com"
-          />
-        </label>
-      </div>
-      <p className="settings-hint" style={{ marginTop: 10 }}>
-        风灵月影填站点根地址；3DM / 游民星空 / 游侠网 填对应分区的列表页地址（修改器或存档）。
-        风灵月影和三部分区支持直接下载，网盘地址会交给浏览器打开。
-      </p>
-    </Modal>
-  )
-}
-
-function sameMusicUrl(a?: string | null, b?: string | null): boolean {
-  const norm = (value?: string | null) => (value ?? '').trim().replace(/\/+$/, '').toLowerCase()
-  return !!norm(a) && norm(a) === norm(b)
-}
-
-interface MusicLineStatus {
-  testStatus: 'ok' | 'bad' | null
-  testMsg: string | null
-  testAt: number
-}
-
-function backupFromLine(line: MusicSourceLine, status?: MusicLineStatus): MusicSourceBackup {
-  return {
-    id: line.id,
-    name: line.name,
-    baseUrl: line.baseUrl,
-    enabled: true,
-    testStatus: status?.testStatus ?? null,
-    testMsg: status?.testMsg ?? null,
-    testAt: status?.testAt ?? 0
-  }
-}
-
-function MusicSourceModal({
-  source,
-  onClose,
-  onSave
-}: {
-  source: MusicSource | null
-  onClose: () => void
-  onSave: (input: {
-    name: string
-    baseUrl: string
-    backup: MusicSourceBackup | null
-    primaryStatus?: MusicLineStatus
-  }) => void
-}) {
-  const initialBase = source?.baseUrl ?? MUSIC_SOURCE_LINES[0].baseUrl
-  const [name, setName] = useState(source?.name ?? '无名闪闪音乐')
-  const [baseUrl, setBaseUrl] = useState(initialBase)
-  const [backup, setBackup] = useState<MusicSourceBackup | null>(() => {
-    if (source?.backup) return { ...source.backup }
-    const other = MUSIC_SOURCE_LINES.find((line) => !sameMusicUrl(line.baseUrl, initialBase))
-    return other ? backupFromLine(other) : null
-  })
-  const [lineStatus, setLineStatus] = useState<Record<string, MusicLineStatus>>(() => {
-    const out: Record<string, MusicLineStatus> = {}
-    if (source) {
-      out[source.baseUrl] = {
-        testStatus: source.testStatus,
-        testMsg: source.testMsg,
-        testAt: source.testAt
-      }
-      if (source.backup) {
-        out[source.backup.baseUrl] = {
-          testStatus: source.backup.testStatus,
-          testMsg: source.backup.testMsg,
-          testAt: source.backup.testAt
-        }
-      }
-    }
-    return out
-  })
-  const [testing, setTesting] = useState(false)
-  const valid = name.trim() && /^https?:\/\//i.test(baseUrl.trim())
-
-  /** 备用线路下拉固定列出无名音乐 / 闪闪音乐两条；自定义备用地址也保留 */
-  const backupOptions = useMemo(() => {
-    const lines: MusicSourceLine[] = [...MUSIC_SOURCE_LINES]
-    const extra = [source?.backup, backup].filter(Boolean) as MusicSourceBackup[]
-    for (const line of extra) {
-      if (!lines.some((item) => sameMusicUrl(item.baseUrl, line.baseUrl))) {
-        lines.push({ id: line.id, name: line.name, baseUrl: line.baseUrl })
-      }
-    }
-    return lines
-  }, [source?.backup, backup])
-
-  const statusOf = (url: string): MusicLineStatus =>
-    lineStatus[url] ?? { testStatus: null, testMsg: null, testAt: 0 }
-
-  const changeBaseUrl = (value: string) => {
-    setBaseUrl(value)
-    // 主线路改成与备用线路相同的地址时，自动把另一条线路设为备用
-    if (backup && sameMusicUrl(backup.baseUrl, value)) {
-      const other = MUSIC_SOURCE_LINES.find((line) => !sameMusicUrl(line.baseUrl, value))
-      if (other) setBackup(backupFromLine(other, statusOf(other.baseUrl)))
-    }
-  }
-
-  const pickBackup = (value: string) => {
-    const line = backupOptions.find((item) => sameMusicUrl(item.baseUrl, value))
-    if (!line) return
-    if (sameMusicUrl(line.baseUrl, baseUrl)) {
-      // 选中的是当前线路：两条线路互换，选中项作为备用
-      const nextPrimary =
-        backup?.baseUrl ||
-        MUSIC_SOURCE_LINES.find((item) => !sameMusicUrl(item.baseUrl, line.baseUrl))?.baseUrl
-      if (nextPrimary && !sameMusicUrl(nextPrimary, line.baseUrl)) {
-        setBaseUrl(nextPrimary)
-        setBackup(backupFromLine(line, statusOf(line.baseUrl)))
-      }
-      return
-    }
-    if (backup && sameMusicUrl(backup.baseUrl, line.baseUrl)) return
-    setBackup(backupFromLine(line, statusOf(line.baseUrl)))
-  }
-
-  /** 一次测完下拉里的线路（无名音乐 + 闪闪音乐），延迟写回选项 */
-  const testLines = async () => {
-    if (testing) return
-    setTesting(true)
-    const results = await Promise.all(
-      backupOptions.map(async (line) => {
-        const latency = probeLatency(line.baseUrl)
-        try {
-          const res = await window.laozheng.testMusicSource({
-            id: line.id,
-            name: line.name,
-            baseUrl: line.baseUrl
-          })
-          const ms = await latency
-          return [
-            line.baseUrl,
-            {
-              testStatus: res.ok ? 'ok' : 'bad',
-              testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', ms),
-              testAt: Date.now()
-            }
-          ] as [string, MusicLineStatus]
-        } catch (err) {
-          const ms = await latency
-          return [
-            line.baseUrl,
-            {
-              testStatus: 'bad',
-              testMsg: withMs((err as Error).message, ms),
-              testAt: Date.now()
-            }
-          ] as [string, MusicLineStatus]
-        }
-      })
-    )
-    const map = Object.fromEntries(results) as Record<string, MusicLineStatus>
-    setLineStatus((prev) => ({ ...prev, ...map }))
-    setBackup((current) =>
-      current && map[current.baseUrl] ? { ...current, ...map[current.baseUrl] } : current
-    )
-    setTesting(false)
-  }
-
-  const submit = () => {
-    if (!valid) return
-    const primaryStatus = lineStatus[baseUrl.trim().replace(/\/+$/, '')]
-    onSave({
-      name: name.trim(),
-      baseUrl: baseUrl.trim(),
-      backup: backup ? { ...backup } : null,
-      ...(primaryStatus ? { primaryStatus } : {})
-    })
-  }
-
-  return (
-    <Modal
-      title={source ? '编辑音乐源' : '添加音乐源'}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button className="btn primary" disabled={!valid} onClick={submit}>
-            保存
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <label>
-          名称
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="例如：无名闪闪音乐"
-          />
-        </label>
-        <label>
-          站点地址
-          <input
-            value={baseUrl}
-            onChange={(e) => changeBaseUrl(e.target.value)}
-            placeholder="http://www.mvmp3.com"
-          />
-        </label>
-        <label>
-          备用线路（{backup ? backup.name : '请选择'} · 延迟）
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <select
-              value={backup?.baseUrl ?? ''}
-              disabled={testing}
-              onChange={(event) => pickBackup(event.target.value)}
-              style={{ flex: 1, minWidth: 0 }}
-            >
-              <option value="" disabled>
-                请选择备用线路
-              </option>
-              {backupOptions.map((line) => {
-                const status = statusOf(line.baseUrl)
-                return (
-                  <option key={line.baseUrl} value={line.baseUrl}>
-                    {line.name} · {line.baseUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '')}{' '}
-                    · {testMsgText(status.testMsg)}
-                  </option>
-                )
-              })}
-            </select>
-            <button
-              type="button"
-              className="icon-btn"
-              title="测试无名音乐 / 闪闪音乐两条线路延迟"
-              disabled={testing}
-              onClick={() => void testLines()}
-            >
-              <RefreshCw size={14} className={testing ? 'spin' : ''} />
-            </button>
-          </div>
-        </label>
-      </div>
-      <p className="settings-hint" style={{ marginTop: 10 }}>
-        {backup
-          ? `当前：${musicLineName(baseUrl) || '自定义线路'}；备用：${backup.name}。优先用当前线路，失败或空结果时自动切到备用线路。`
-          : '请选择一条备用线路。'}
-        两条线路都来自同一套建站系统（搜索 /so.php、直链 /style/js/play.php），
-        点右侧刷新按钮可分别测试延迟。
-      </p>
-    </Modal>
-  )
-}
-
-function ImportModal({
-  title = '批量导入片源',
-  hint,
-  onClose,
-  onImport,
-  onBuiltin
-}: {
-  title?: string
-  hint?: string
-  onClose: () => void
-  onImport: (inputs: VodSourceImport[]) => void
-  onBuiltin?: () => void
-}) {
-  const [text, setText] = useState('')
-  const [error, setError] = useState<string | null>(null)
-
-  const doImport = () => {
-    const res = parseSourceImport(text)
-    if (res.error) {
-      setError(res.error)
-      return
-    }
-    onImport(res.sources)
-  }
-
-  return (
-    <Modal
-      title={title}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          {onBuiltin ? (
-            <button className="btn" onClick={onBuiltin}>
-              导入内置片源
-            </button>
-          ) : null}
-          <button className="btn primary" disabled={!text.trim()} onClick={doImport}>
-            导入
-          </button>
-        </>
-      }
-    >
-      <p>
-        {hint ??
-          '支持 KVideo 订阅 JSON（数组或单对象），或每行一个「名称|接口地址」。接口地址形如 https://example.com/api.php/provide/vod。'}
-      </p>
-      <textarea
-        className="textarea"
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value)
-          setError(null)
-        }}
-        placeholder={'非凡资源|https://example.com/api.php/provide/vod\nhttps://another.com/api.php/provide/vod'}
-      />
-      {error ? <div className="result-hint">{error}</div> : null}
-    </Modal>
-  )
-}
-
-function LiveSourceModal({
-  title = '添加源',
-  initial,
-  onClose,
-  onSave
-}: {
-  title?: string
-  initial?: LiveSource
-  onClose: () => void
-  onSave: (name: string, url: string) => void
-}) {
-  const [name, setName] = useState(initial?.name ?? '')
-  const [url, setUrl] = useState(initial?.url ?? '')
-  const valid = /^https?:\/\//i.test(url.trim()) || url.trim().startsWith('local://')
-
-  return (
-    <Modal
-      title={title}
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>
-            取消
-          </button>
-          <button className="btn primary" disabled={!valid} onClick={() => onSave(name, url)}>
-            保存
-          </button>
-        </>
-      }
-    >
-      <div className="form-grid">
-        <label>
-          名称
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：IPv4 直播源" />
-        </label>
-        <label>
-          M3U 地址
-          <input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://example.com/playlist.m3u"
-          />
-        </label>
-      </div>
-    </Modal>
   )
 }

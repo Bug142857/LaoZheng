@@ -46,12 +46,16 @@ export interface DownloadTask {
   url: string
   sourceName: string
   coverUrl: string
-  /** paused = 用户暂停，保留已下载内容，可继续 */
-  state: 'running' | 'paused' | 'failed'
+  /** queued = 达到全局并发上限，等待前面的任务结束 */
+  state: 'queued' | 'running' | 'paused' | 'failed'
   /** 0..1；-1 表示总量未知 */
   progress: number
   bytes: number
   totalBytes: number
+  /** 平滑后的实时速度（字节/秒） */
+  speed?: number
+  /** 预计剩余秒数 */
+  eta?: number
   error?: string
 }
 
@@ -133,4 +137,21 @@ export function formatBytes(bytes: number): string {
     unit += 1
   }
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
+}
+
+/** 下载速度展示（B/s → KB/s / MB/s） */
+export function formatSpeed(bytesPerSecond: number | undefined): string {
+  if (!bytesPerSecond || !Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return ''
+  return `${formatBytes(bytesPerSecond)}/s`
+}
+
+/** 预计剩余时间展示（秒 → mm:ss / h:mm:ss） */
+export function formatEta(seconds: number | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return ''
+  const total = Math.min(359999, Math.floor(seconds))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  const p = (n: number) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${p(m)}:${p(s)}` : `${m}:${p(s)}`
 }

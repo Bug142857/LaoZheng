@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { ChevronDown, ChevronUp, Download, Pause, Play, X } from 'lucide-react'
 import { ConfirmDialog } from './ui'
 import { DOWNLOAD_REQUEST_EVENT } from '../utils/download'
-import { formatBytes, type DownloadAddInput, type DownloadTask } from '../shared/downloads'
+import { formatBytes, formatEta, formatSpeed, type DownloadAddInput, type DownloadTask } from '../shared/downloads'
 
 /**
  * 下载中心：所有模块的下载都先经过这里确认，并在左下角用悬浮窗展示进度。
@@ -75,6 +75,19 @@ export function DownloadCenter({
   }
 
   const running = tasks.filter((t) => t.state === 'running').length
+  const queued = tasks.filter((t) => t.state === 'queued').length
+
+  const metaText = (task: DownloadTask): string => {
+    if (task.state === 'failed') return `失败：${task.error ?? '未知错误'}`
+    if (task.state === 'paused') {
+      return `已暂停${task.progress >= 0 ? ` · ${Math.round(task.progress * 100)}%` : ''}`
+    }
+    if (task.state === 'queued') return '排队中'
+    const percent = task.progress >= 0 ? `${Math.round(task.progress * 100)}%` : formatBytes(task.bytes)
+    const speed = formatSpeed(task.speed)
+    const eta = formatEta(task.eta)
+    return [percent, speed, eta ? `剩余 ${eta}` : ''].filter(Boolean).join(' · ')
+  }
 
   return (
     <>
@@ -102,7 +115,11 @@ export function DownloadCenter({
           <div className="download-float-head">
             <Download size={14} />
             <span>
-              {running > 0 ? `正在下载 ${running} 项` : `下载任务 ${tasks.length} 项`}
+              {running > 0
+                ? `正在下载 ${running} 项${queued ? ` · 排队 ${queued} 项` : ''}`
+                : queued
+                  ? `排队 ${queued} 项`
+                  : `下载任务 ${tasks.length} 项`}
             </span>
             <button className="icon-btn" title="查看下载管理" onClick={onOpenDownloads}>
               查看
@@ -122,15 +139,7 @@ export function DownloadCenter({
                   <div className="download-float-title" title={task.title}>
                     {task.title}
                   </div>
-                  <div className="download-float-meta">
-                    {task.state === 'failed'
-                      ? `失败：${task.error ?? '未知错误'}`
-                      : task.state === 'paused'
-                        ? `已暂停${task.progress >= 0 ? ` · ${Math.round(task.progress * 100)}%` : ''}`
-                        : task.progress >= 0
-                          ? `${Math.round(task.progress * 100)}%`
-                          : formatBytes(task.bytes)}
-                  </div>
+                  <div className="download-float-meta">{metaText(task)}</div>
                   {task.state !== 'failed' ? (
                     <div className="progress">
                       <span
@@ -141,7 +150,7 @@ export function DownloadCenter({
                       />
                     </div>
                   ) : null}
-                  {task.state === 'running' ? (
+                  {task.state === 'running' || task.state === 'queued' ? (
                     <button className="icon-btn" title="暂停下载" onClick={() => void pause(task)}>
                       <Pause size={13} />
                     </button>

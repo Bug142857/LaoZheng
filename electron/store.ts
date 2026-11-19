@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile, writeFile, rename, mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AppData, EMPTY_DATA, normalizeData, stripNullFields } from '../src/shared/types'
@@ -13,10 +13,18 @@ function cloneEmpty(): AppData {
   return JSON.parse(JSON.stringify(EMPTY_DATA)) as AppData
 }
 
+/** 启动阶段 seed + data:load 会各读一次 data.json：按文件内容缓存，避免重复解析 1.2MB */
+let cachedDataText: string | null = null
+let cachedData: AppData | null = null
+
 export async function loadData(): Promise<AppData> {
   try {
     const text = await readFile(dataFilePath(), 'utf8')
-    return normalizeData(JSON.parse(text))
+    if (cachedData && cachedDataText === text) return cachedData
+    const data = normalizeData(JSON.parse(text))
+    cachedDataText = text
+    cachedData = data
+    return data
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
     if (code !== 'ENOENT') {
@@ -44,20 +52,65 @@ function tempPath(target: string): string {
 let saveSeq = 0
 let lastWrittenSeq = 0
 
+const RENAME_ATTEMPTS = 3
+const RENAME_WAIT_MS = 25
+
+/** 退出前的同步保存不能 await，用极短的同步等待做重试 */
+function waitSync(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  } catch {
+    // 环境不支持时直接进入下一次重试
+  }
+}
+
+/** Windows 上杀软 / 网盘可能短暂占用 data.json，rename 失败时快速重试 */
+function renameSyncRetry(from: string, to: string): void {
+  let lastError: unknown = null
+  for (let attempt = 1; attempt <= RENAME_ATTEMPTS; attempt += 1) {
+    try {
+      renameSync(from, to)
+      return
+    } catch (err) {
+      lastError = err
+      if (attempt < RENAME_ATTEMPTS) waitSync(RENAME_WAIT_MS)
+    }
+  }
+  throw lastError ?? new Error('保存失败')
+}
+
+/** 数据文件体积上限（字符数）：超过通常是渲染层写出了异常数据，宁可拒绝也不写坏文件 */
+const MAX_DATA_CHARS = 200 * 1024 * 1024
+
 /** 写临时文件再替换，避免写入中断把 data.json 写坏 */
 export async function saveData(data: AppData): Promise<void> {
   const seq = ++saveSeq
   const target = dataFilePath()
+  const text = JSON.stringify(data, null, 2)
+  if (text.length > MAX_DATA_CHARS) throw new Error('数据体积异常，已拒绝写入')
   await mkdir(app.getPath('userData'), { recursive: true })
   const tmp = tempPath(target)
-  await writeFile(tmp, JSON.stringify(data, null, 2), 'utf8')
-  // 写盘期间已有更晚的保存落地：这次旧数据直接丢弃
-  if (lastWrittenSeq > seq) {
+  try {
+    await writeFile(tmp, text, 'utf8')
+  } catch (err) {
     await rm(tmp, { force: true }).catch(() => undefined)
-    return
+    throw err
   }
-  await rename(tmp, target)
-  lastWrittenSeq = seq
+  try {
+    // 检查序号与 rename 必须在同一个同步临界区：否则退出前的 saveDataSync
+    // 可能插在两者之间，随后这次的旧数据会把刚写入的最新数据覆盖掉
+    if (lastWrittenSeq > seq) {
+      rmSync(tmp, { force: true })
+      return
+    }
+    renameSyncRetry(tmp, target)
+    lastWrittenSeq = seq
+    cachedDataText = text
+    cachedData = data
+  } catch (err) {
+    rmSync(tmp, { force: true })
+    throw err
+  }
 }
 
 /** 退出前同步落盘：防止防抖队列里的最后一次修改随窗口关闭一起丢掉 */
@@ -66,9 +119,29 @@ export function saveDataSync(data: AppData): void {
   const target = dataFilePath()
   mkdirSync(app.getPath('userData'), { recursive: true })
   const tmp = tempPath(target)
-  writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
-  renameSync(tmp, target)
-  lastWrittenSeq = seq
+  const text = JSON.stringify(data, null, 2)
+  writeFileSync(tmp, text, 'utf8')
+  try {
+    renameSyncRetry(tmp, target)
+    lastWrittenSeq = seq
+    cachedDataText = text
+    cachedData = data
+  } catch (err) {
+    rmSync(tmp, { force: true })
+    throw err
+  }
+}
+
+/** 通用 JSON 原子写入：先写临时文件再替换，失败时清掉残留 */
+export async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
+  const tmp = tempPath(file)
+  try {
+    await writeFile(tmp, JSON.stringify(value, null, 2), 'utf8')
+    await rename(tmp, file)
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => undefined)
+    throw err
+  }
 }
 
 /** 从手机端导出的 JSON 读取（格式 version 1，必须有 items / lists / listItems） */
@@ -91,10 +164,7 @@ export async function exportToFile(file: string, data: AppData): Promise<void> {
     version: 1,
     exportAt: formatNow()
   })
-  // 先写临时文件再替换，避免覆盖旧备份时中途失败留下半个文件
-  const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
-  await writeFile(tmp, JSON.stringify(out, null, 2), 'utf8')
-  await rename(tmp, file)
+  await writeJsonAtomic(file, out)
 }
 
 function formatNow(): string {

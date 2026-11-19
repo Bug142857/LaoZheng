@@ -7,6 +7,8 @@ export interface UpdateCheckResult {
   url?: string
   /** 安装包直链（清单里给出时支持应用内静默下载安装） */
   downloadUrl?: string
+  /** 安装包 SHA256（GitHub Release digest 或更新清单 sha256，用于下载后校验） */
+  sha256?: string
   notes?: string
   error?: string
   /** 本次实际走通的线路名（直连 / gh-proxy / ghproxy） */

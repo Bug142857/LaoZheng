@@ -220,21 +220,6 @@ button:disabled {
   font-weight: 600;
 }
 
-/* 导航项支持按住拖动调整顺序 */
-.nav-item[draggable='true'] {
-  cursor: grab;
-}
-
-.nav-item.dragging {
-  opacity: 0.45;
-}
-
-.nav-item.dragging,
-.nav-item.dragging:hover {
-  background: var(--brand-soft);
-  color: var(--brand);
-}
-
 /* 导航项后面的「外网」小字说明 */
 .nav-suffix {
   margin-left: auto;
@@ -261,7 +246,6 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 12px;
-  max-width: 1180px;
 }
 
 .sysinfo-card {
@@ -658,6 +642,20 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* 搜索结果条目上的清晰度标签（探测到的档位） */
+.row-qualities {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  overflow: visible;
+}
+
+.row-quality-wait {
+  color: var(--text-faint);
+  opacity: 0.75;
+}
+
 .badge {
   font-size: 10.5px;
   padding: 2px 8px;
@@ -817,14 +815,12 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-width: 780px;
 }
 
 .settings-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-width: 780px;
 }
 
 .settings-entry {
@@ -1054,25 +1050,28 @@ button:disabled {
 
 .player-stage {
   position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: calc(100vh - 280px);
   background: #000;
   border-radius: var(--radius);
   overflow: hidden;
   border: 1px solid var(--border);
 }
 
-.player-video {
-  display: block;
-  width: 100%;
-  max-height: calc(100vh - 280px);
-  aspect-ratio: 16 / 9;
-  background: #000;
+/* ArtPlayer 挂载区：铺满舞台，播放器自带底部控制条 */
+.art-mount {
+  position: absolute;
+  inset: 0;
 }
+
 
 .player-error {
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
+  z-index: 60;
   padding: 10px 16px;
   border-radius: 10px;
   background: rgba(20, 19, 24, 0.85);
@@ -1370,6 +1369,42 @@ button:disabled {
   text-align: left;
 }
 
+/* 长网格：屏幕外的卡片跳过渲染，滚动到附近再绘制，减少大量封面同时挂载 */
+.media-card,
+.comic-card {
+  content-visibility: auto;
+  contain-intrinsic-size: 220px 280px;
+}
+
+/* 虚拟滚动时每个 .row 都是独立容器的唯一子元素，需要补回行分隔线 */
+.virtual-row .row {
+  border-bottom: 1px solid var(--border);
+}
+
+.virtual-row:last-child .row {
+  border-bottom: none;
+}
+
+/* 虚拟瀑布流：绝对定位卡片，容器高度由估算布局撑开 */
+.virtual-masonry {
+  position: relative;
+  width: 100%;
+}
+
+.virtual-masonry-item {
+  position: absolute;
+}
+
+.virtual-masonry-item .wallpaper-card,
+.virtual-masonry-item .comic-card {
+  margin: 0;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
 .media-card:hover {
   border-color: var(--border-strong);
   transform: translateY(-2px);
@@ -1434,6 +1469,127 @@ button:disabled {
 
 .media-meta {
   padding: 0 10px 10px;
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 主页收藏总览 ---------- */
+.home-fav-more {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+/* 分类标题右侧的「隐藏 / 查看全部」按钮组，紧跟数字 */
+.home-fav-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.home-fav-row {
+  display: flex;
+  gap: 12px;
+  overflow: hidden;
+  padding: 2px 2px 8px;
+}
+
+/* 资讯收藏默认一行横向排列，点查看全部后才铺成网格 */
+.home-news-row {
+  display: flex;
+  gap: 14px;
+  overflow: hidden;
+  padding: 2px 2px 8px;
+}
+
+.home-news-row .news-card {
+  flex: 0 0 340px;
+  width: 340px;
+}
+
+.home-fav-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(188px, 1fr));
+  gap: 12px;
+}
+
+.home-fav-card {
+  flex: 0 0 188px;
+  width: 188px;
+  cursor: pointer;
+}
+
+.home-fav-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--text-faint);
+  background: var(--bg-input);
+}
+
+/* 主页播放器：进度条左侧的播放列表按钮与上拉列表 */
+.music-bar-playlist-btn.active {
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.music-playlist-panel {
+  max-height: 38vh;
+}
+
+.music-playlist-search {
+  margin-top: 8px;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  height: 32px;
+  flex: 0 0 auto;
+}
+
+.music-playlist-body {
+  margin-top: 8px;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
+/* 设置 → 清单管理 → 演唱管理：改名视频列表 */
+.singing-manage-list {
+  margin-top: 10px;
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.singing-manage-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.singing-manage-row:last-child {
+  border-bottom: none;
+}
+
+.singing-manage-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.singing-manage-meta {
+  flex: 0 0 auto;
+  max-width: 38%;
   font-size: 11px;
   color: var(--text-faint);
   overflow: hidden;
@@ -1608,6 +1764,25 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 14px;
+}
+
+/* 列表刷新失败但已有缓存内容时的提示条 */
+.cache-tip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.cache-tip button {
+  flex: 0 0 auto;
 }
 
 .comic-card {
@@ -3152,40 +3327,31 @@ button:disabled {
   font-size: 14px;
 }
 
-.player-hint {
-  position: absolute;
-  left: 14px;
-  top: 14px;
-  z-index: 2;
-  padding: 5px 10px;
-  border-radius: 8px;
-  background: rgba(8, 7, 12, 0.72);
-  color: #fff;
-  font-size: 12px;
-}
-
 /* 清晰度选择：盖在播放器右上角，默认已选最高档 */
 .player-quality {
   position: absolute;
   right: 14px;
   top: 14px;
-  z-index: 2;
-  padding: 4px 8px;
+  z-index: 4;
+  min-width: 74px;
+  height: 28px;
+  padding: 0 26px 0 10px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(8, 7, 12, 0.72);
+  background-color: rgba(8, 7, 12, 0.78);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
   color: #fff;
   font-size: 12px;
   cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
 }
 
 .player-quality option {
   color: var(--text);
   background: var(--bg-elev);
-}
-
-.player-stage {
-  position: relative;
 }
 
 /* 音乐下载窗口：音质选择 + 歌词勾选 */
@@ -3900,12 +4066,12 @@ svg.lucide-heart {
   display: none;
 }
 
-/* 演唱播放器右上角工具条：音量 + 清晰度（DASH 视频轨无声音，原生音量条不可用） */
+/* 演唱播放器右上角工具条：弹幕开关 + 清晰度 */
 .bili-player-tools {
   position: absolute;
   top: 14px;
   right: 14px;
-  z-index: 2;
+  z-index: 50;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3915,38 +4081,7 @@ svg.lucide-heart {
   position: static;
 }
 
-.bili-volume {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 8px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(8, 7, 12, 0.72);
-  color: #fff;
-}
-
-.bili-volume-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-}
-
-.bili-volume input[type='range'] {
-  width: 76px;
-  height: 14px;
-  margin: 0;
-  cursor: pointer;
-  accent-color: #fff;
-}
-
-/* 弹幕层：盖在画面上方，底部留出原生控制条的位置 */
+/* 弹幕层：盖在画面上方，底部留出 ArtPlayer 控制条的位置 */
 .bili-danmaku-layer {
   position: absolute;
   left: 0;
@@ -3955,54 +4090,7 @@ svg.lucide-heart {
   bottom: 56px;
   overflow: hidden;
   pointer-events: none;
-  z-index: 1;
-}
-
-.bili-dm-item {
-  position: absolute;
-  left: 100%;
-  white-space: nowrap;
-  color: #fff;
-  font-weight: 600;
-  font-size: 18px;
-  line-height: 1.25;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 0 4px rgba(0, 0, 0, 0.6);
-  will-change: transform;
-}
-
-.bili-dm-item.top {
-  left: 50%;
-  top: 8px;
-  transform: translateX(-50%);
-}
-
-.bili-dm-item.bottom {
-  left: 50%;
-  bottom: 8px;
-  transform: translateX(-50%);
-}
-
-.bili-danmaku-layer.paused .bili-dm-item {
-  animation-play-state: paused;
-}
-
-@keyframes bili-dm-move {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(calc(-100% - var(--dm-distance, 900px)));
-  }
-}
-
-@keyframes bili-dm-static {
-  0%,
-  80% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
-  }
+  z-index: 40;
 }
 
 .bili-danmaku-btn {
@@ -4027,42 +4115,19 @@ svg.lucide-heart {
   cursor: default;
 }
 
-.bili-fullscreen-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  background: rgba(8, 7, 12, 0.72);
-  color: #fff;
-  cursor: pointer;
-}
-
-/* 整个播放器容器全屏：弹幕层 / 工具条跟着一起进全屏 */
+/* 整个播放器容器全屏：清晰度 / 弹幕层 / 线路按钮跟着一起进全屏 */
 .player-stage:fullscreen {
   width: 100vw;
   height: 100vh;
+  max-height: none;
+  aspect-ratio: auto;
   border: 0;
   border-radius: 0;
 }
 
-.player-stage:fullscreen .player-video {
-  width: 100%;
-  height: 100%;
-  max-height: none;
-  aspect-ratio: auto;
-  object-fit: contain;
-}
-
-/* 演唱会 DASH 视频轨没有声音，原生音量按钮点了没反应：
-   隐藏原生音量 / 静音控件，只保留右上角的可用音量控件，避免出现两个音量按钮 */
-.bili-video::-webkit-media-controls-mute-button,
-.bili-video::-webkit-media-controls-volume-slider,
-.bili-video::-webkit-media-controls-fullscreen-button {
-  display: none !important;
+.player-stage:fullscreen .art-mount {
+  position: absolute;
+  inset: 0;
 }
 
 .singing-hint {
@@ -4119,11 +4184,8 @@ svg.lucide-heart {
   gap: 10px;
 }
 
-.live-player video {
-  width: 100%;
+.live-player .player-stage {
   max-height: 62vh;
-  border-radius: 12px;
-  background: #000;
 }
 
 .live-lines,
@@ -4502,7 +4564,6 @@ svg.lucide-heart {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-width: 1180px;
   margin-top: 18px;
 }
 
@@ -4534,7 +4595,6 @@ svg.lucide-heart {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 12px;
-  max-width: 1180px;
 }
 
 .tool-card {
@@ -4622,7 +4682,6 @@ svg.lucide-heart {
 }
 
 .tool-detail {
-  max-width: 900px;
   margin-top: 4px;
   padding: 18px 20px;
   border-radius: var(--radius);
@@ -4672,7 +4731,6 @@ svg.lucide-heart {
 }
 
 .tool-note {
-  max-width: 900px;
   margin-top: 16px;
 }
 
@@ -4887,6 +4945,7 @@ svg.lucide-heart {
 }
 
 .news-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 220px;
@@ -4894,6 +4953,15 @@ svg.lucide-heart {
   border: 1px solid var(--border);
   background: var(--bg-elev);
   overflow: hidden;
+}
+
+.news-card.select-mode {
+  cursor: pointer;
+}
+
+.news-card.selected {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 1px var(--brand);
 }
 
 .news-card-head {
@@ -5084,3 +5152,151 @@ svg.lucide-heart {
 }
 
 
+
+/* ---------- v0.209：错误边界 / 窗口化列表 / 播放器工具条 / 音乐音量 / 小说排版 / 本地快照 ---------- */
+.error-boundary {
+  display: flex;
+  justify-content: center;
+  padding: 28px 18px;
+}
+
+.error-boundary.full {
+  min-height: 100vh;
+  align-items: center;
+  background: var(--bg);
+}
+
+.error-boundary-card {
+  width: min(520px, 100%);
+  padding: 22px 24px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow);
+}
+
+.error-boundary-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.error-boundary-message {
+  margin-top: 10px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-dim);
+  word-break: break-word;
+}
+
+.error-boundary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* 窗口化列表：固定行高由组件内联设置，这里只保证内容不撑破 */
+.virtual-row {
+  overflow: hidden;
+}
+
+.virtual-row > .row {
+  height: 100%;
+  box-sizing: border-box;
+}
+
+/* 音乐播放器音量 */
+.music-bar-volume {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.music-bar-volume input[type='range'] {
+  width: 72px;
+  accent-color: var(--brand);
+}
+
+/* 小说阅读器排版 */
+.reader-settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 20px;
+  margin: 12px 0 18px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.reader-settings label,
+.reader-theme-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.reader-settings input[type='range'] {
+  width: 110px;
+  accent-color: var(--brand);
+}
+
+.reader-settings span {
+  min-width: 42px;
+  color: var(--text);
+}
+
+.novel-content.reader-paper {
+  padding: 26px 34px;
+  border-radius: 12px;
+  background: #f6efe1;
+  color: #2c2620;
+}
+
+.novel-content.reader-green {
+  padding: 26px 34px;
+  border-radius: 12px;
+  background: #cfe3cd;
+  color: #1f2b20;
+}
+
+/* 本地快照列表 */
+.snapshot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.snapshot-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+}
+
+.snapshot-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.snapshot-title {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.snapshot-meta {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  word-break: break-all;
+}

@@ -39,6 +39,14 @@ export interface VodSearchResponse {
   error?: string
 }
 
+/** 搜索结果条目清晰度探测（只探第一条 3u8 线路的 master playlist） */
+export interface VodQualityProbeResponse {
+  ok: boolean
+  /** 解析到的清晰度标签，如 ['4K', '1080P', '720P']，空数组表示未识别到 */
+  qualities: string[]
+  error?: string
+}
+
 /** 苹果CMS 分类（?ac=videolist 全库列表返回 class 字段） */
 export interface VodCategory {
   type_id: number

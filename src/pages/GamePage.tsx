@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, Copy, Download, Heart } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { EmptyState, LoadingBlock, Modal, ModuleShortcuts, Pagination } from '../components/ui'
+import { CacheTip, EmptyState, LoadingBlock, Modal, ModuleShortcuts, Pagination } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import type { GameCategory, GameDetail, GameItem } from '../shared/wygamer'
 
 interface ListCache {
@@ -107,6 +108,7 @@ export function GamePage({
   const [loading, setLoading] = useState(!cache.loaded)
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<DetailState | null>(null)
+  useDetailScrollRestore(!!detail, 'game')
   const [netdisk, setNetdisk] = useState<{ label: string; url: string } | null>(null)
   const [showAllShots, setShowAllShots] = useState(false)
   /** 点了分类但列表还没回来：先高亮分类并显示「请稍等」 */
@@ -495,7 +497,7 @@ export function GamePage({
 
       {loading && items.length === 0 ? (
         <EmptyState title="正在加载游戏列表…" />
-      ) : error ? (
+      ) : error && items.length === 0 ? (
         <EmptyState
           title="加载失败"
           desc={error}
@@ -509,6 +511,12 @@ export function GamePage({
         <EmptyState title="没有找到游戏" desc="换个关键词或分类再试。" />
       ) : (
         <>
+          {error ? (
+            <CacheTip
+              message={`刷新失败：${error}，当前显示上次缓存。`}
+              onRetry={() => void load(mode, categoryUrl, query, page)}
+            />
+          ) : null}
           <div className="media-grid">
             {items.map((item) => (
               <button

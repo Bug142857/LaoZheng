@@ -1,8 +1,11 @@
 import {
+  lazy,
+  Suspense,
   useEffect,
   useRef,
   useState,
-  type DragEvent as ReactDragEvent,
+  type ComponentType,
+  type ElementType,
   type MouseEvent as ReactMouseEvent
 } from 'react'
 import {
@@ -32,33 +35,15 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import { DataProvider, useData } from './state/DataContext'
-import { WatchPage, type WatchFocus } from './pages/WatchPage'
-import { DramaPage, type DramaFocus } from './pages/DramaPage'
-import { LivePage } from './pages/LivePage'
-import { LiveRoomsPage } from './pages/LiveRoomsPage'
-import { SingingPage } from './pages/SingingPage'
-import { MusicPage } from './pages/MusicPage'
-import { DownloadsPage, type DownloadSection } from './pages/DownloadsPage'
-import { ComicPage } from './pages/ComicPage'
-import { NovelPage, type NovelFocus } from './pages/NovelPage'
-import { GamePage } from './pages/GamePage'
-import { EmuPage } from './pages/EmuPage'
-import { BookPage } from './pages/BookPage'
-import { MelonPage } from './pages/MelonPage'
-import { NewsPage } from './pages/NewsPage'
-import { ShuangkanPage } from './pages/ShuangkanPage'
-import type { SkContent, ShuangkanFocus } from './shared/shuangkan'
-import { MagnetPage } from './pages/MagnetPage'
-import { ListsPage } from './pages/ListsPage'
-import { ListDetailPage } from './pages/ListDetailPage'
-import { FavoritesPage } from './pages/FavoritesPage'
-import { SettingsPage } from './pages/SettingsPage'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { HomePage } from './pages/HomePage'
-import { SysInfoPage } from './pages/SysInfoPage'
-import { WallpaperPage } from './pages/WallpaperPage'
-import { MeituPage } from './pages/MeituPage'
-import { GameCheatPage, type GameCheatFocus } from './pages/GameCheatPage'
-import { ToolsPage } from './pages/ToolsPage'
+import type { WatchFocus } from './pages/WatchPage'
+import type { DramaFocus } from './pages/DramaPage'
+import type { DownloadSection } from './pages/DownloadsPage'
+import type { NovelFocus } from './pages/NovelPage'
+import type { ShuangkanFocus } from './shared/shuangkan'
+import type { GameCheatFocus } from './pages/GameCheatPage'
+import type { SkContent } from './shared/shuangkan'
 import { EmptyState } from './components/ui'
 import { ImageViewer } from './components/ImageViewer'
 import { DownloadCenter } from './components/DownloadCenter'
@@ -82,13 +67,134 @@ import {
 } from './shared/wallpaper'
 import { parseMeituFavId, parseMeituFavPayload, type MeituFocus } from './shared/meitu'
 
+/**
+ * 按页代码分割：首屏只加载主页与框架，其余模块访问时才拉对应 chunk。
+ * 每个模块外套 ErrorBoundary + Suspense：渲染异常只影响该模块，懒加载时有占位提示。
+ */
+function pageBoundary<P extends object>(
+  label: string,
+  Comp: ElementType<P>
+): ComponentType<P> {
+  const Page = Comp as ComponentType<P>
+  return function BoundedPage(props: P) {
+    return (
+      <ErrorBoundary label={label}>
+        <Suspense fallback={<EmptyState title={`正在加载${label}…`} />}>
+          <Page {...props} />
+        </Suspense>
+      </ErrorBoundary>
+    )
+  }
+}
+
+const WatchPage = pageBoundary(
+  '影视',
+  lazy(() => import('./pages/WatchPage').then((m) => ({ default: m.WatchPage })))
+)
+const DramaPage = pageBoundary(
+  '短剧',
+  lazy(() => import('./pages/DramaPage').then((m) => ({ default: m.DramaPage })))
+)
+const LivePage = pageBoundary(
+  '电视',
+  lazy(() => import('./pages/LivePage').then((m) => ({ default: m.LivePage })))
+)
+const LiveRoomsPage = pageBoundary(
+  '直播',
+  lazy(() => import('./pages/LiveRoomsPage').then((m) => ({ default: m.LiveRoomsPage })))
+)
+const SingingPage = pageBoundary(
+  '演唱',
+  lazy(() => import('./pages/SingingPage').then((m) => ({ default: m.SingingPage })))
+)
+const MusicPage = pageBoundary(
+  '音乐',
+  lazy(() => import('./pages/MusicPage').then((m) => ({ default: m.MusicPage })))
+)
+const DownloadsPage = pageBoundary(
+  '下载',
+  lazy(() => import('./pages/DownloadsPage').then((m) => ({ default: m.DownloadsPage })))
+)
+const ComicPage = pageBoundary(
+  '漫画',
+  lazy(() => import('./pages/ComicPage').then((m) => ({ default: m.ComicPage })))
+)
+const NovelPage = pageBoundary(
+  '小说',
+  lazy(() => import('./pages/NovelPage').then((m) => ({ default: m.NovelPage })))
+)
+const GamePage = pageBoundary(
+  '游戏',
+  lazy(() => import('./pages/GamePage').then((m) => ({ default: m.GamePage })))
+)
+const EmuPage = pageBoundary(
+  '模拟',
+  lazy(() => import('./pages/EmuPage').then((m) => ({ default: m.EmuPage })))
+)
+const BookPage = pageBoundary(
+  '图书',
+  lazy(() => import('./pages/BookPage').then((m) => ({ default: m.BookPage })))
+)
+const MelonPage = pageBoundary(
+  '吃瓜',
+  lazy(() => import('./pages/MelonPage').then((m) => ({ default: m.MelonPage })))
+)
+const NewsPage = pageBoundary(
+  '资讯',
+  lazy(() => import('./pages/NewsPage').then((m) => ({ default: m.NewsPage })))
+)
+const ShuangkanPage = pageBoundary(
+  '皇片',
+  lazy(() => import('./pages/ShuangkanPage').then((m) => ({ default: m.ShuangkanPage })))
+)
+const MagnetPage = pageBoundary(
+  '磁力',
+  lazy(() => import('./pages/MagnetPage').then((m) => ({ default: m.MagnetPage })))
+)
+const ListsPage = pageBoundary(
+  '清单',
+  lazy(() => import('./pages/ListsPage').then((m) => ({ default: m.ListsPage })))
+)
+const ListDetailPage = pageBoundary(
+  '清单详情',
+  lazy(() => import('./pages/ListDetailPage').then((m) => ({ default: m.ListDetailPage })))
+)
+const FavoritesPage = pageBoundary(
+  '收藏',
+  lazy(() => import('./pages/FavoritesPage').then((m) => ({ default: m.FavoritesPage })))
+)
+const SettingsPage = pageBoundary(
+  '设置',
+  lazy(() => import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })))
+)
+const SysInfoPage = pageBoundary(
+  '硬件',
+  lazy(() => import('./pages/SysInfoPage').then((m) => ({ default: m.SysInfoPage })))
+)
+const WallpaperPage = pageBoundary(
+  '壁纸',
+  lazy(() => import('./pages/WallpaperPage').then((m) => ({ default: m.WallpaperPage })))
+)
+const MeituPage = pageBoundary(
+  '套图',
+  lazy(() => import('./pages/MeituPage').then((m) => ({ default: m.MeituPage })))
+)
+const GameCheatPage = pageBoundary(
+  '补丁',
+  lazy(() => import('./pages/GameCheatPage').then((m) => ({ default: m.GameCheatPage })))
+)
+const ToolsPage = pageBoundary(
+  '软件',
+  lazy(() => import('./pages/ToolsPage').then((m) => ({ default: m.ToolsPage })))
+)
+
 type Route =
   | { name: 'home' }
   | { name: 'watch'; focus?: WatchFocus; searchTitle?: string }
   | { name: 'drama'; focus?: DramaFocus }
   | { name: 'live'; focusUrl?: string }
   | { name: 'liveRooms'; focus?: LiveRoomFocus }
-  | { name: 'singing' }
+  | { name: 'singing'; focusId?: string }
   | { name: 'music'; focus?: FavFocus }
   | { name: 'comic'; focusId?: string }
   | { name: 'novel'; focus?: NovelFocus }
@@ -180,34 +286,12 @@ const NAV_ITEMS: NavItem[] = [
 /** 设置固定在导航底部 */
 const SETTINGS_NAV_ITEM: NavItem = { key: 'settings', label: '设置', icon: Settings, ready: true }
 
-/**
- * 按保存的顺序排列导航项。
- * 新版本新增的模块不在旧顺序里时，插到默认顺序里它前一个模块的后面
- * （否则新模块会被排到最底部，例如「小说」应固定在「磁力」下面）。
- */
-function orderedNavItems(items: NavItem[], order?: string[]): NavItem[] {
-  if (!order?.length) return items
-  const known = new Set<string>(items.map((item) => item.key))
-  const keys = order.filter((key) => known.has(key))
-  const seen = new Set(keys)
-  for (const item of items) {
-    if (seen.has(item.key)) continue
-    const defaultIndex = items.findIndex((entry) => entry.key === item.key)
-    let insertAt = 0
-    for (let i = defaultIndex - 1; i >= 0; i -= 1) {
-      const index = keys.indexOf(items[i].key)
-      if (index >= 0) {
-        insertAt = index + 1
-        break
-      }
-    }
-    keys.splice(insertAt, 0, item.key)
-    seen.add(item.key)
-  }
-  return keys
-    .map((key) => items.find((item) => item.key === key))
-    .filter((item): item is NavItem => !!item)
-}
+/** 常驻挂载的模块 key（与下方 slot 一一对应）；清单详情 / 收藏 / 下载不在其中 */
+const KEEP_ALIVE_KEYS = new Set<string>([
+  'home',
+  ...NAV_ITEMS.map((item) => item.key),
+  'settings'
+])
 
 function leafRoute(key: NavItem['key']): Route {
   switch (key) {
@@ -280,6 +364,7 @@ const MODULE_SHORTCUTS: Record<string, ShortcutConfig> = {
   shuangkan: { fav: 'shuangkan', download: 'video' },
   live: { fav: 'tv' },
   liveRooms: { fav: 'live' },
+  singing: { fav: 'singing' },
   music: { fav: 'music', download: 'music' },
   emu: { fav: 'emu' },
   game: { fav: 'game' },
@@ -476,11 +561,12 @@ function Shell() {
   const [refreshEpoch, setRefreshEpoch] = useState<Record<string, number>>({})
   /** 导入备份 / 云恢复后递增：常驻挂载的模块页需要整页重挂载，避免继续用旧源数据 */
   const [dataEpoch, setDataEpoch] = useState(0)
-  /** 导航项拖动排序（存进本机设置，随备份 / 云同步走） */
-  const [navOrder, setNavOrder] = useState<Record<string, string[]>>({})
-  const navOrderRef = useRef<Record<string, string[]>>({})
-  const [draggingNav, setDraggingNav] = useState<string | null>(null)
+  /** 开发者模式：本次客户端运行期间有效，解锁演唱管理与软件经验编辑 */
+  const [developerMode, setDeveloperMode] = useState(false)
   const contentRef = useRef<HTMLElement | null>(null)
+  /** 返回上一页时恢复各页面离开前的滚动位置 */
+  const scrollMemoryRef = useRef<Record<string, number>>({})
+  const restoreScrollRef = useRef(false)
   const route = stack[stack.length - 1]
 
   const activeNav =
@@ -490,9 +576,14 @@ function Shell() {
         ? ''
         : route.name
 
+  const activeKey = routeKey(route)
+
   /** 统一的「上一页」：永远回到进入当前页面前的页面，不越级 */
   const pushRoute = (next: Route) =>
     setStack((prev) => {
+      restoreScrollRef.current = false
+      const el = contentRef.current
+      if (el) scrollMemoryRef.current[activeKey] = el.scrollTop
       const top = prev[prev.length - 1]
       // 同一张壁纸的详情不重复入栈（双击收藏卡片时只算一次进入）
       if (
@@ -505,42 +596,19 @@ function Shell() {
       }
       return [...prev, next]
     })
-  const backRoute = () => setStack((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev))
+  const backRoute = () => {
+    if (stack.length <= 1) return
+    const el = contentRef.current
+    if (el) scrollMemoryRef.current[activeKey] = el.scrollTop
+    restoreScrollRef.current = true
+    setStack((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev))
+  }
 
-  const activeKey = routeKey(route)
   /** 当前路由的页面必须立刻出现，不能等 effect 补 visited（否则会闪一帧空白） */
   const shownKeys = visited.includes(activeKey) ? visited : [...visited, activeKey]
 
   useEffect(() => {
     void syncUiSettings()
-  }, [])
-
-  /** 读取上次拖好的导航顺序；读不到就用代码里的默认顺序 */
-  useEffect(() => {
-    let alive = true
-    window.laozheng
-      .getNavOrder()
-      .then((order) => {
-        if (!alive) return
-        navOrderRef.current = order
-        setNavOrder(order)
-      })
-      .catch(() => {})
-    return () => {
-      alive = false
-    }
-  }, [])
-
-  /** 导入备份 / 云恢复后，主进程写回了新的导航顺序：立即刷新侧栏，不必等重启 */
-  useEffect(() => {
-    const onNavOrder = (event: Event): void => {
-      const order = (event as CustomEvent<Record<string, string[]>>).detail
-      if (!order || typeof order !== 'object') return
-      navOrderRef.current = order
-      setNavOrder(order)
-    }
-    window.addEventListener('laozheng:nav-order', onNavOrder)
-    return () => window.removeEventListener('laozheng:nav-order', onNavOrder)
   }, [])
 
   // 导入 / 云恢复替换了数据：所有常驻挂载的模块页重新挂载，重新按新源加载
@@ -550,14 +618,48 @@ function Shell() {
     return () => window.removeEventListener('laozheng:data-replaced', onDataReplaced)
   }, [])
 
+  // 数据落盘失败（磁盘满 / 文件被杀软或网盘占用）时明确提示，避免修改静默丢失
   useEffect(() => {
-    if (!visited.includes(activeKey)) setVisited((prev) => [...prev, activeKey])
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const onSaveError = (event: Event): void => {
+      const detail = (event as CustomEvent<string>).detail
+      setNotice(detail || '数据保存失败，请检查磁盘空间或杀毒软件是否占用数据文件')
+    }
+    window.addEventListener('laozheng:save-error', onSaveError)
+    return () => window.removeEventListener('laozheng:save-error', onSaveError)
+  }, [])
+
+  useEffect(() => {
+    // 有限 KeepAlive：最多保留最近 6 个模块页，避免浏览越多 DOM / 内存越涨；
+    // 列表状态由各模块已有缓存恢复，滚动位置保存在 scrollMemoryRef。
+    // 清单详情 / 收藏 / 下载是路由页（不常驻挂载），不占 KeepAlive 名额。
+    if (!KEEP_ALIVE_KEYS.has(activeKey)) return
+    setVisited((prev) => {
+      const withoutActive = prev.filter((key) => key !== activeKey)
+      const next = [...withoutActive, activeKey]
+      if (next.length <= 6) return next
+      // 主页固定保留一个名额：其余模块按最近访问轮换，避免浏览几个模块后主页被卸载
+      const rest = next.filter((key) => key !== 'home')
+      return ['home', ...rest.slice(rest.length - 5)]
+    })
   }, [activeKey])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      contentRef.current?.scrollTo({ top: 0 })
+      const el = contentRef.current
+      if (!el) return
+      if (restoreScrollRef.current) {
+        restoreScrollRef.current = false
+        el.scrollTop = scrollMemoryRef.current[activeKey] ?? 0
+      } else {
+        el.scrollTop = 0
+      }
+      // 通知页面滚动已恢复：模块内的详情返回记忆需要以这个最终位置为准，
+      // 浏览器有时不会为程序化滚动派发 scroll 事件
+      window.dispatchEvent(
+        new CustomEvent('laozheng:page-scroll-restored', {
+          detail: { key: activeKey, top: el.scrollTop }
+        })
+      )
     }, 0)
     return () => window.clearTimeout(timer)
   }, [activeKey])
@@ -656,6 +758,9 @@ function Shell() {
       }
       case 'game':
         pushRoute({ name: 'game', focusId: fav.id })
+        return
+      case 'singing':
+        pushRoute({ name: 'singing', focusId: fav.id })
         return
       case 'emu':
         pushRoute({ name: 'emu', focusId: fav.id })
@@ -886,26 +991,9 @@ function Shell() {
       return
     }
     // 点侧栏进入模块时直接回到该模块首页，不保留上次的详情 / 播放页
+    restoreScrollRef.current = false
     setStack([leafRoute(item.key)])
     setNavEpoch((prev) => ({ ...prev, [item.key]: (prev[item.key] ?? 0) + 1 }))
-  }
-
-  /** 拖动导航项即时换位；松手时才写回本机设置 */
-  const moveNavItem = (fromKey: string, toKey: string) => {
-    if (!fromKey || fromKey === toKey) return
-    const keys = orderedNavItems(NAV_ITEMS, navOrderRef.current.share).map((item) => item.key)
-    const from = keys.indexOf(fromKey as NavItem['key'])
-    const to = keys.indexOf(toKey as NavItem['key'])
-    if (from < 0 || to < 0) return
-    keys.splice(to, 0, keys.splice(from, 1)[0])
-    const next = { ...navOrderRef.current, share: keys }
-    navOrderRef.current = next
-    setNavOrder(next)
-  }
-
-  const persistNavOrder = () => {
-    setDraggingNav(null)
-    void window.laozheng.setNavOrder(navOrderRef.current).catch(() => {})
   }
 
   /** 点页面标题 = 刷新当前页：模块页回到模块首页并重新挂载（清空搜索 / 结果等初始态） */
@@ -961,45 +1049,15 @@ function Shell() {
       : undefined
   })
 
-  const navButton = (item: NavItem, draggable = false) => {
+  const navButton = (item: NavItem) => {
     const Icon = item.icon
     const active = activeNav === item.key
-    const dragProps = draggable
-      ? {
-          draggable: true,
-          onDragStart: (event: ReactDragEvent<HTMLButtonElement>) => {
-            setDraggingNav(item.key)
-            event.dataTransfer.effectAllowed = 'move'
-            event.dataTransfer.setData('text/plain', item.key)
-          },
-          onDragOver: (event: ReactDragEvent<HTMLButtonElement>) => {
-            if (!draggingNav) return
-            event.preventDefault()
-            event.dataTransfer.dropEffect = 'move'
-            // 只有越过目标项中点才换位，避免元素互换后指针仍在原位置来回抖动
-            const fromIndex = orderedItems.findIndex((entry) => entry.key === draggingNav)
-            const toIndex = orderedItems.findIndex((entry) => entry.key === item.key)
-            if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return
-            const rect = event.currentTarget.getBoundingClientRect()
-            const belowMiddle = event.clientY > rect.top + rect.height / 2
-            if (fromIndex < toIndex && !belowMiddle) return
-            if (fromIndex > toIndex && belowMiddle) return
-            moveNavItem(draggingNav, item.key)
-          },
-          onDrop: (event: ReactDragEvent<HTMLButtonElement>) => {
-            event.preventDefault()
-          },
-          onDragEnd: persistNavOrder
-        }
-      : {}
     return (
       <button
         key={item.key}
-        className={`nav-item ${active ? 'active' : ''} ${
-          draggingNav === item.key ? 'dragging' : ''
-        }`}
+        className={`nav-item ${active ? 'active' : ''}`}
+        aria-current={active ? 'page' : undefined}
         onClick={() => openNav(item)}
-        {...dragProps}
       >
         <Icon size={17} strokeWidth={1.9} />
         {item.label}
@@ -1007,7 +1065,7 @@ function Shell() {
     )
   }
 
-  const orderedItems = orderedNavItems(NAV_ITEMS, navOrder.share)
+  const orderedItems = NAV_ITEMS
 
   return (
     <div className="app">
@@ -1022,7 +1080,7 @@ function Shell() {
           <span className="brand-title">老郑分享</span>
         </button>
 
-        <nav className="nav">{orderedItems.map((item) => navButton(item, true))}</nav>
+        <nav className="nav">{orderedItems.map((item) => navButton(item))}</nav>
 
         <div className="sidebar-divider" />
         {navButton(SETTINGS_NAV_ITEM)}
@@ -1031,7 +1089,12 @@ function Shell() {
       <main className="content" ref={contentRef} onClick={onContentClick}>
         {shownKeys.includes('home') ? (
           <div {...slot('home')}>
-            <HomePage />
+            <HomePage
+              onOpenFav={openFav}
+              onOpenFavorites={() => pushRoute({ name: 'favorites' })}
+              onOpenList={(id) => pushRoute({ name: 'list', id })}
+              onNotice={setNotice}
+            />
           </div>
         ) : null}
 
@@ -1113,8 +1176,11 @@ function Shell() {
           <div {...slot('singing')}>
             <SingingPage
               onNotice={setNotice}
+              focusId={route.name === 'singing' ? route.focusId : undefined}
               resetSignal={navEpoch.singing}
               active={activeKey === 'singing'}
+              onExit={backRoute}
+              {...shortcuts('singing')}
             />
           </div>
         ) : null}
@@ -1270,7 +1336,11 @@ function Shell() {
 
         {shownKeys.includes('tools') ? (
           <div {...slot('tools')}>
-            <ToolsPage onNotice={setNotice} resetSignal={navEpoch.tools} />
+            <ToolsPage
+              onNotice={setNotice}
+              resetSignal={navEpoch.tools}
+              developerMode={developerMode}
+            />
           </div>
         ) : null}
 
@@ -1279,6 +1349,8 @@ function Shell() {
             <SettingsPage
               onNotice={setNotice}
               resetSignal={navEpoch.settings}
+              developerMode={developerMode}
+              onEnterDeveloperMode={() => setDeveloperMode(true)}
               onOpenPage={(page, moduleKey) => {
                 if (page === 'favorites') {
                   pushRoute({ name: 'favorites', moduleKey })
@@ -1324,7 +1396,8 @@ function Shell() {
         ) : null}
       </main>
 
-      <MusicPlayerBar />
+      {/* 主页底部自带播放器，避免和全局播放条重复 */}
+      {activeKey !== 'home' ? <MusicPlayerBar /> : null}
       <DownloadCenter
         onNotice={setNotice}
         onOpenDownloads={() => {
@@ -1393,10 +1466,12 @@ function Shell() {
 
 export default function App() {
   return (
-    <DataProvider>
-      <MusicPlayerProvider>
-        <Shell />
-      </MusicPlayerProvider>
-    </DataProvider>
+    <ErrorBoundary label="应用" fullPage>
+      <DataProvider>
+        <MusicPlayerProvider>
+          <Shell />
+        </MusicPlayerProvider>
+      </DataProvider>
+    </ErrorBoundary>
   )
 }

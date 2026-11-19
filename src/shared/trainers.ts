@@ -19,6 +19,8 @@ export interface TrainerSource {
   name: string
   type: TrainerSourceType
   baseUrl: string
+  /** 内置默认源：不可删除，只能停用；自定义源可删 */
+  builtin?: boolean
   enabled: boolean
   testStatus: 'ok' | 'bad' | null
   testMsg: string | null
@@ -135,7 +137,9 @@ function normalizeBaseUrl(raw: string): string {
  * - MegaGames 暂时停用，历史数据里的 megagames 源直接丢弃。
  */
 export function normalizeTrainerSources(raw: unknown): TrainerSource[] {
-  if (!Array.isArray(raw)) return DEFAULT_TRAINER_SOURCES.map((source) => ({ ...source }))
+  if (!Array.isArray(raw)) {
+    return DEFAULT_TRAINER_SOURCES.map((source) => ({ ...source, builtin: true }))
+  }
   const out: TrainerSource[] = []
   for (const entry of raw) {
     if (!entry || typeof entry !== 'object') continue
@@ -162,6 +166,14 @@ export function normalizeTrainerSources(raw: unknown): TrainerSource[] {
           : TRAINER_SOURCE_TYPE_LABEL[source.type].split('（')[0],
       type: source.type,
       baseUrl: normalizeBaseUrl(source.baseUrl),
+      // 内置默认源不可删除，只能停用；显式 builtin:false 的是自定义源
+      builtin:
+        source.builtin === false
+          ? false
+          : DEFAULT_TRAINER_SOURCES.some(
+              (preset) =>
+                preset.id === source.id || preset.baseUrl === normalizeBaseUrl(source.baseUrl ?? '')
+            ),
       enabled: source.enabled !== false,
       testStatus:
         source.testStatus === 'ok' || source.testStatus === 'bad' ? source.testStatus : null,
@@ -178,7 +190,7 @@ export function normalizeTrainerSources(raw: unknown): TrainerSource[] {
     for (const def of DEFAULT_TRAINER_SOURCES) {
       if (def.type === 'megagames' || def.type === 'fling') continue
       if (out.some((source) => source.id === def.id || source.baseUrl === def.baseUrl)) continue
-      out.push({ ...def })
+      out.push({ ...def, builtin: true })
     }
   }
   return out

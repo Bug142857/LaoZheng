@@ -254,7 +254,7 @@ export function MagnetSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const removeSource = async (): Promise<void> => {
-    if (!deleting) return
+    if (!deleting || deleting.builtin) return
     await persistSources(sourcesRef.current.filter((source) => source.id !== deleting.id))
     onNotice(`已删除「${deleting.name}」`)
     setDeleting(null)
@@ -367,13 +367,15 @@ export function MagnetSettings({ onNotice }: { onNotice: (text: string) => void 
                     <button className="icon-btn" title="修改" onClick={() => setEditing(source)}>
                       <Pencil size={14} />
                     </button>
-                    <button
-                      className="icon-btn danger"
-                      title="删除"
-                      onClick={() => setDeleting(source)}
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    {!source.builtin && (
+                      <button
+                        className="icon-btn danger"
+                        title="删除"
+                        onClick={() => setDeleting(source)}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>

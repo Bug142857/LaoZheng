@@ -71,7 +71,9 @@ const LEGACY_NAMES: Record<string, string[]> = {
  *   用户改过名字、地址或测试结果的保持原样。
  */
 export function normalizeH1Sources(raw: unknown): H1Source[] {
-  if (!Array.isArray(raw)) return DEFAULT_H1_SOURCES.map((source) => ({ ...source }))
+  if (!Array.isArray(raw)) {
+    return DEFAULT_H1_SOURCES.map((source) => ({ ...source, builtin: true }))
+  }
   const out: H1Source[] = []
   for (const entry of raw) {
     if (!entry || typeof entry !== 'object') continue
@@ -97,6 +99,11 @@ export function normalizeH1Sources(raw: unknown): H1Source[] {
       id: source.id,
       name,
       baseUrl,
+      // 默认四源不可删除，只能停用；显式 builtin:false 的是自定义源
+      builtin:
+        source.builtin === false
+          ? false
+          : DEFAULT_H1_SOURCES.some((preset) => preset.id === source.id),
       enabled: source.enabled !== false,
       region: 'proxy',
       regionManual: true,

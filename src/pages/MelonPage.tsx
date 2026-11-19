@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, Download, Heart, Play, X } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { EmptyState, ModuleShortcuts, Pagination } from '../components/ui'
+import { CacheTip, EmptyState, LoadingBlock, ModuleShortcuts, Pagination } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { MelonImage } from '../components/MelonImage'
 import { VideoPlayer } from '../components/VideoPlayer'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import { requestDownload } from '../utils/download'
 import {
   MELON_CATEGORIES,
@@ -86,6 +87,7 @@ export function MelonPage({
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [playing, setPlaying] = useState<InlineVideo | null>(null)
+  useDetailScrollRestore(!!detail || !!playing, 'melon')
   const [pendingPath, setPendingPath] = useState<string | null>(null)
   /** 正文视频时长：站点不返回，播放前用隐藏 video 读元数据补上 */
   const [durations, setDurations] = useState<Record<number, string>>({})
@@ -444,9 +446,13 @@ export function MelonPage({
         ))}
       </div>
 
-      {loading ? (
+      {loading && page && page.items.length > 0 ? (
+        <LoadingBlock text="正在切换，请稍等…" />
+      ) : null}
+
+      {loading && (!page || page.items.length === 0) ? (
         <EmptyState title="正在加载…" desc="镜像线路响应稍慢，请稍候。" />
-      ) : error ? (
+      ) : error && (!page || page.items.length === 0) ? (
         <EmptyState
           title="加载失败"
           desc={error}
@@ -460,6 +466,12 @@ export function MelonPage({
         <EmptyState title={keyword ? '没有搜到内容' : '这个分类暂时没有内容'} desc="换一个分类或关键词再试。" />
       ) : (
         <>
+          {error ? (
+            <CacheTip
+              message={`刷新失败：${error}，当前显示上次缓存。`}
+              onRetry={() => void load(path)}
+            />
+          ) : null}
           <div className="media-grid">
             {page.items.map((post) => (
               <button key={post.id} className="media-card" onClick={() => void openDetail(post)}>

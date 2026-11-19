@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { ChevronLeft, ChevronRight, Download, Heart } from 'lucide-react'
 import { tileGradient } from '../utils/data'
+import { isOwnerPassword } from '../shared/owner'
 
 export function EmptyState({
   title,
@@ -16,6 +17,24 @@ export function EmptyState({
       <div className="empty-title">{title}</div>
       {desc ? <div className="empty-desc">{desc}</div> : null}
       {action}
+    </div>
+  )
+}
+
+/** 列表刷新失败但已有缓存内容时的提示条：保留列表，只提示并给重试入口 */
+export function CacheTip({
+  message,
+  onRetry
+}: {
+  message: string
+  onRetry: () => void
+}) {
+  return (
+    <div className="cache-tip">
+      <span>{message}</span>
+      <button className="btn ghost" onClick={onRetry}>
+        重试
+      </button>
     </div>
   )
 }
@@ -62,12 +81,22 @@ export function ModuleShortcuts({
   return (
     <>
       {onOpenFavorites ? (
-        <button className="icon-btn header-shortcut" title="打开对应收藏" onClick={onOpenFavorites}>
+        <button
+          className="icon-btn header-shortcut"
+          title="打开对应收藏"
+          aria-label="打开对应收藏"
+          onClick={onOpenFavorites}
+        >
           <Heart size={17} />
         </button>
       ) : null}
       {onOpenDownloads ? (
-        <button className="icon-btn header-shortcut" title="打开对应下载" onClick={onOpenDownloads}>
+        <button
+          className="icon-btn header-shortcut"
+          title="打开对应下载"
+          aria-label="打开对应下载"
+          onClick={onOpenDownloads}
+        >
           <Download size={17} />
         </button>
       ) : null}
@@ -238,7 +267,13 @@ export function Modal({
 }) {
   return (
     <div className="modal-mask" onClick={onClose}>
-      <div className={`modal${className ? ` ${className}` : ''}`} onClick={(e) => e.stopPropagation()}>
+      <div
+        className={`modal${className ? ` ${className}` : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(e) => e.stopPropagation()}
+      >
         <h3>{title}</h3>
         {children}
         <div className="modal-actions">{footer}</div>
@@ -327,6 +362,64 @@ export function PromptDialog({
           if (e.key === 'Escape') onCancel()
         }}
       />
+    </Modal>
+  )
+}
+
+/** 老郑本人专用操作的密码确认（软件默认经验 / 演唱默认视频） */
+export function PasswordDialog({
+  title = '需要密码',
+  hint,
+  confirmText = '确认',
+  onConfirm,
+  onCancel
+}: {
+  title?: string
+  hint?: string
+  confirmText?: string
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  const [value, setValue] = useState('')
+  const [error, setError] = useState('')
+  const submit = () => {
+    if (isOwnerPassword(value)) {
+      onConfirm()
+      return
+    }
+    setError('密码错误')
+  }
+  return (
+    <Modal
+      title={title}
+      onClose={onCancel}
+      footer={
+        <>
+          <button className="btn ghost" onClick={onCancel}>
+            取消
+          </button>
+          <button className="btn primary" disabled={!value} onClick={submit}>
+            {confirmText}
+          </button>
+        </>
+      }
+    >
+      <input
+        type="password"
+        autoFocus
+        value={value}
+        placeholder="请输入密码"
+        onChange={(event) => {
+          setValue(event.target.value)
+          setError('')
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') submit()
+          if (event.key === 'Escape') onCancel()
+        }}
+      />
+      {hint ? <p className="singing-hint">{hint}</p> : null}
+      {error ? <p className="singing-hint danger">{error}</p> : null}
     </Modal>
   )
 }

@@ -195,6 +195,8 @@ export interface NovelSource {
   name: string
   baseUrl: string
   template: NovelSourceTemplate
+  /** 内置书源：不可删除，只能停用；自定义源可删 */
+  builtin?: boolean
   enabled: boolean
   testStatus: 'ok' | 'bad' | null
   testMsg: string | null
@@ -358,7 +360,9 @@ function hostOfUrl(value: string): string {
  * - 老数据里自动带进来的笔趣阁系内置源（bqg70 / bqg52 / biqugeco）与新御宅屋（xyuzhaiwu）移除。
  */
 export function normalizeNovelSources(raw: unknown): NovelSource[] {
-  if (!Array.isArray(raw)) return DEFAULT_NOVEL_SOURCES.map((source) => ({ ...source }))
+  if (!Array.isArray(raw)) {
+    return DEFAULT_NOVEL_SOURCES.map((source) => ({ ...source, builtin: true }))
+  }
   const out: NovelSource[] = []
   for (const entry of raw) {
     if (!entry || typeof entry !== 'object') continue
@@ -391,6 +395,13 @@ export function normalizeNovelSources(raw: unknown): NovelSource[] {
       name: source.name?.trim() || baseUrl,
       baseUrl,
       template: source.template,
+      // 内置书源（含后续补进的默认源）不可删除，只能停用；显式 builtin:false 的是自定义源
+      builtin:
+        source.builtin === false
+          ? false
+          : DEFAULT_NOVEL_SOURCES.some(
+              (preset) => preset.id === source.id || preset.baseUrl === baseUrl
+            ),
       enabled: source.enabled !== false,
       testStatus: migrated
         ? null

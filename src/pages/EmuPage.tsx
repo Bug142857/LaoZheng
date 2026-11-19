@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react'
 import { Heart } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { EmptyState, LoadingBlock, ModuleShortcuts, Pagination } from '../components/ui'
+import { CacheTip, EmptyState, LoadingBlock, ModuleShortcuts, Pagination } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { loadCache, saveCache } from '../utils/cache'
 import {
@@ -336,7 +336,7 @@ export function EmuPage({
 
       {loading && items.length === 0 ? (
         <EmptyState title={mode === 'search' ? '正在搜索…' : '正在加载模拟游戏…'} />
-      ) : error ? (
+      ) : error && items.length === 0 ? (
         <EmptyState
           title="加载失败"
           desc={error}
@@ -363,6 +363,15 @@ export function EmuPage({
         />
       ) : (
         <>
+          {error ? (
+            <CacheTip
+              message={`刷新失败：${error}，当前显示上次缓存。`}
+              onRetry={() => {
+                if (mode === 'search' && query) void search(query)
+                else void load(platform, tag, page)
+              }}
+            />
+          ) : null}
           <div className="media-grid">
             {items.map((item) => (
               <button

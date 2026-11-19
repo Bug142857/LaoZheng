@@ -1,7 +1,9 @@
+import Artplayer from 'artplayer'
+import Danmaku from 'danmaku'
 import { useEffect, useRef, useState } from 'react'
-import { Maximize, Minimize, Volume1, Volume2, VolumeX } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import type { SingingDanmakuItem, SingingQuality } from '../shared/singing'
+import { addStageFullscreen, artBase } from './artCore'
 
 function progressKeyOf(raw: string): string {
   let hash = 0
@@ -19,9 +21,10 @@ function formatClock(sec: number): string {
 }
 
 /**
- * B站视频播放器：DASH 是视频 / 音轨分离的 fMP4，
- * 用 <video> 播画面 + 隐藏 <audio> 播声音，并实时对齐进度 / 音量。
+ * B站视频播放器（ArtPlayer 内核）：DASH 是视频 / 音轨分离的 fMP4，
+ * 用画面 <video> 播视频 + 隐藏 <audio> 播声音，并实时对齐进度 / 音量 / 倍速。
  * 没有音轨地址（durl 回退）时就是普通 mp4 播放器。
+ * 底部控制条由 ArtPlayer 提供，右上角保留弹幕开关与清晰度下拉。
  */
 export function BiliPlayer({
   src,
@@ -48,18 +51,14 @@ export function BiliPlayer({
   onFail?: (message: string) => void
   onEnded?: () => void
 }) {
-  const { data, update } = useData()
+  const { updateProgress, getProgressSnapshot } = useData()
   const stageRef = useRef<HTMLDivElement>(null)
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const mountRef = useRef<HTMLDivElement>(null)
+  const artRef = useRef<Artplayer | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const danmakuLayerRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
-  const [hint, setHint] = useState('')
   const [danmakuOn, setDanmakuOn] = useState(true)
-  const [fullscreen, setFullscreen] = useState(false)
-  /** DASH 视频轨没有声音，原生音量条是灰的：用自建音量控件控制隐藏音轨 */
-  const [volume, setVolume] = useState(1)
-  const [muted, setMuted] = useState(false)
   const volumeRef = useRef({ volume: 1, muted: false })
   const lastTimeRef = useRef(0)
   const savedSecRef = useRef(-1)
@@ -70,54 +69,22 @@ export function BiliPlayer({
 
   const storeKey = resumeKey ? progressKeyOf(resumeKey) : ''
 
-  const applyVolume = (nextVolume: number, nextMuted: boolean): void => {
-    const value = Math.min(1, Math.max(0, nextVolume))
-    setVolume(value)
-    setMuted(nextMuted)
-    volumeRef.current = { volume: value, muted: nextMuted }
-    const video = videoRef.current
-    const audio = audioRef.current
-    if (video) {
-      video.volume = value
-      video.muted = nextMuted
-    }
-    if (audio && audioSrc) {
-      audio.volume = value
-      audio.muted = nextMuted
-    }
-  }
-
-  /** 原生全屏只把 <video> 放大，弹幕层不在里面；改为整个播放器容器全屏 */
   useEffect(() => {
-    const onChange = (): void => setFullscreen(document.fullscreenElement === stageRef.current)
-    document.addEventListener('fullscreenchange', onChange)
-    return () => document.removeEventListener('fullscreenchange', onChange)
-  }, [])
-
-  const toggleFullscreen = (): void => {
     const stage = stageRef.current
-    if (!stage) return
-    if (document.fullscreenElement === stage) {
-      void document.exitFullscreen().catch(() => undefined)
-    } else {
-      void stage.requestFullscreen().catch(() => undefined)
-    }
-  }
-
-  useEffect(() => {
-    const video = videoRef.current
+    const mount = mountRef.current
     const audio = audioRef.current
-    if (!video || !src) return
+    if (!stage || !mount || !src) return
 
     setError(null)
-    setHint('')
     savedSecRef.current = -1
     let disposed = false
     let videoTriedBackup = false
     let audioTriedBackup = false
-    let hintTimer = 0
 
-    const savedSec = storeKey ? Number.parseInt(data.readProgress[storeKey] ?? '', 10) : NaN
+    // 只读一次进度作为续播起点；进度后续变化不需要让播放器重渲染
+    const savedSec = storeKey
+      ? Number.parseInt(getProgressSnapshot()[storeKey] ?? '', 10)
+      : NaN
     const resumeAt = Number.isFinite(savedSec) && savedSec > 5 ? savedSec : 0
     let startAt = lastTimeRef.current > 1 ? lastTimeRef.current : resumeAt
 
@@ -126,7 +93,8 @@ export function BiliPlayer({
     }
 
     const syncAudio = (force = false): void => {
-      if (!audio || !audioSrc || disposed) return
+      const video = artRef.current?.video
+      if (!audio || !audioSrc || !video || disposed) return
       const drift = Math.abs(audio.currentTime - video.currentTime)
       if (force || drift > 0.4) {
         try {
@@ -137,9 +105,18 @@ export function BiliPlayer({
       }
     }
 
+    const art = new Artplayer({
+      ...artBase(mount, src),
+      // DASH 双轨的声音在隐藏音轨上，画中画会把声音留在外面
+      pip: false,
+      autoMini: false
+    })
+    artRef.current = art
+    addStageFullscreen(art, stage)
+
     const startPlayback = (attempt = 0): void => {
       if (disposed) return
-      const request = video.play()
+      const request = art.video.play()
       if (request) {
         request.catch(() => {
           if (attempt < 5) window.setTimeout(() => startPlayback(attempt + 1), 700)
@@ -147,20 +124,23 @@ export function BiliPlayer({
       }
     }
 
+    const flushProgress = (): void => {
+      void window.laozheng.flushReadProgress().catch(() => undefined)
+    }
+
     const onLoadedMetadata = (): void => {
       if (disposed) return
       if (startAt > 0) {
-        const duration = Number.isFinite(video.duration) ? video.duration : 0
+        const duration = Number.isFinite(art.video.duration) ? art.video.duration : 0
         if (!duration || startAt < duration - 8) {
           try {
-            video.currentTime = startAt
+            art.currentTime = startAt
             if (audio && audioSrc) audio.currentTime = startAt
           } catch {
             // 部分流不允许 seek
           }
           if (startAt === resumeAt && resumeAt > 5) {
-            setHint(`已跳到上次播放 ${formatClock(resumeAt)}`)
-            hintTimer = window.setTimeout(() => setHint(''), 3200)
+            art.notice.show = `已跳到上次播放 ${formatClock(resumeAt)}`
           }
         }
       }
@@ -171,8 +151,12 @@ export function BiliPlayer({
       syncAudio(true)
       if (audio && audioSrc) audio.play().catch(() => undefined)
     }
-    const onPause = (): void => pauseAudio()
+    const onPause = (): void => {
+      pauseAudio()
+      flushProgress()
+    }
     const onSeeking = (): void => {
+      const video = art.video
       if (audio && audioSrc) {
         try {
           audio.currentTime = video.currentTime
@@ -183,17 +167,15 @@ export function BiliPlayer({
     }
     const onSeeked = (): void => {
       syncAudio(true)
-      if (audio && audioSrc && !video.paused) audio.play().catch(() => undefined)
+      if (audio && audioSrc && !art.video.paused) audio.play().catch(() => undefined)
     }
     const onRateChange = (): void => {
-      if (audio) audio.playbackRate = video.playbackRate
+      if (audio) audio.playbackRate = art.video.playbackRate
     }
     const onVolumeChange = (): void => {
-      const next = { volume: video.volume, muted: video.muted }
+      const next = { volume: art.video.volume, muted: art.video.muted }
       volumeRef.current = next
-      setVolume(next.volume)
-      setMuted(next.muted)
-      // DASH 的声音在隐藏音轨上，原生音量条可用时也要同步过去
+      // DASH 的声音在隐藏音轨上，ArtPlayer 的音量条作用在画面上，需要同步过去
       if (audio && audioSrc) {
         audio.volume = next.volume
         audio.muted = next.muted
@@ -201,12 +183,13 @@ export function BiliPlayer({
     }
     const onWaiting = (): void => pauseAudio()
     const onPlaying = (): void => {
-      if (audio && audioSrc && !video.paused && audio.paused) {
+      if (audio && audioSrc && !art.video.paused && audio.paused) {
         syncAudio(true)
         audio.play().catch(() => undefined)
       }
     }
     const onTimeUpdate = (): void => {
+      const video = art.video
       if (!Number.isFinite(video.currentTime)) return
       if (audio && audioSrc && !video.paused) {
         if (Math.abs(audio.currentTime - video.currentTime) > 0.45) syncAudio(true)
@@ -215,13 +198,11 @@ export function BiliPlayer({
       const sec = Math.floor(video.currentTime)
       if (sec < 5 || Math.abs(sec - savedSecRef.current) < 8) return
       savedSecRef.current = sec
-      update((current) => ({
-        ...current,
-        readProgress: { ...current.readProgress, [storeKey]: String(sec) }
-      }))
+      updateProgress(storeKey, sec)
     }
     const onEnded = (): void => {
       pauseAudio()
+      flushProgress()
       onEndedRef.current?.()
     }
     const onVideoError = (): void => {
@@ -230,13 +211,11 @@ export function BiliPlayer({
         // 切备用线路后 loadedmetadata 还会按 startAt 续播：用当前进度覆盖，
         // 否则播到一半断流会跳回进入播放器时的位置
         pauseAudio()
-        if (Number.isFinite(video.currentTime) && video.currentTime > 1) {
-          startAt = video.currentTime
+        if (Number.isFinite(art.video.currentTime) && art.video.currentTime > 1) {
+          startAt = art.video.currentTime
         }
-        setHint('主线路失败，正在切换备用线路…')
-        video.src = backupSrc
-        video.load()
-        startPlayback()
+        art.notice.show = '主线路失败，正在切换备用线路…'
+        void art.switchUrl(backupSrc).then(() => startPlayback()).catch(() => undefined)
         return
       }
       setError('播放失败，可能是线路失效或需要外网环境')
@@ -247,40 +226,38 @@ export function BiliPlayer({
         audioTriedBackup = true
         audio.src = audioBackupSrc
         audio.load()
-        if (!video.paused) audio.play().catch(() => undefined)
+        if (!art.video.paused) audio.play().catch(() => undefined)
         return
       }
-      setHint('音轨加载失败，画面仍可播放')
+      art.notice.show = '音轨加载失败，画面仍可播放'
     }
-    const onAudioMetadata = (): void => {
-      if (!disposed) syncAudio(true)
-    }
+    const onAudioMetadata = (): void => syncAudio(true)
 
-    video.addEventListener('loadedmetadata', onLoadedMetadata)
-    video.addEventListener('play', onPlay)
-    video.addEventListener('pause', onPause)
-    video.addEventListener('seeking', onSeeking)
-    video.addEventListener('seeked', onSeeked)
-    video.addEventListener('ratechange', onRateChange)
-    video.addEventListener('volumechange', onVolumeChange)
-    video.addEventListener('waiting', onWaiting)
-    video.addEventListener('playing', onPlaying)
-    video.addEventListener('timeupdate', onTimeUpdate)
-    video.addEventListener('ended', onEnded)
-    video.addEventListener('error', onVideoError)
+    art.on('video:loadedmetadata', onLoadedMetadata)
+    art.on('video:play', onPlay)
+    art.on('video:pause', onPause)
+    art.on('video:seeking', onSeeking)
+    art.on('video:seeked', onSeeked)
+    art.on('video:ratechange', onRateChange)
+    art.on('video:volumechange', onVolumeChange)
+    art.on('video:waiting', onWaiting)
+    art.on('video:playing', onPlaying)
+    art.on('video:timeupdate', onTimeUpdate)
+    art.on('video:ended', onEnded)
+    art.on('video:error', onVideoError)
     audio?.addEventListener('error', onAudioError)
     audio?.addEventListener('loadedmetadata', onAudioMetadata)
 
-    video.src = src
-    video.volume = volumeRef.current.volume
-    video.muted = volumeRef.current.muted
-    video.load()
+    art.video.volume = volumeRef.current.volume
+    art.video.muted = volumeRef.current.muted
     if (audio) {
       if (audioSrc) {
         audio.src = audioSrc
         audio.load()
         audio.volume = volumeRef.current.volume
         audio.muted = volumeRef.current.muted
+        // ArtPlayer 的 autoplay 可能在事件监听绑定前就启动，这里补一次音轨播放
+        if (!art.video.paused) audio.play().catch(() => undefined)
       } else {
         audio.removeAttribute('src')
         audio.load()
@@ -289,120 +266,98 @@ export function BiliPlayer({
 
     return () => {
       disposed = true
-      window.clearTimeout(hintTimer)
-      lastTimeRef.current = video.currentTime
-      video.pause()
-      pauseAudio()
-      video.removeEventListener('loadedmetadata', onLoadedMetadata)
-      video.removeEventListener('play', onPlay)
-      video.removeEventListener('pause', onPause)
-      video.removeEventListener('seeking', onSeeking)
-      video.removeEventListener('seeked', onSeeked)
-      video.removeEventListener('ratechange', onRateChange)
-      video.removeEventListener('volumechange', onVolumeChange)
-      video.removeEventListener('waiting', onWaiting)
-      video.removeEventListener('playing', onPlaying)
-      video.removeEventListener('timeupdate', onTimeUpdate)
-      video.removeEventListener('ended', onEnded)
-      video.removeEventListener('error', onVideoError)
+      lastTimeRef.current = art.video.currentTime
+      flushProgress()
       audio?.removeEventListener('error', onAudioError)
       audio?.removeEventListener('loadedmetadata', onAudioMetadata)
-      video.removeAttribute('src')
-      video.load()
+      pauseAudio()
       if (audio) {
         audio.removeAttribute('src')
         audio.load()
       }
+      art.destroy()
+      if (artRef.current === art) artRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [src, audioSrc, backupSrc, audioBackupSrc, storeKey])
 
-  /** 弹幕：按视频时间逐条生成，滚动 / 顶部 / 底部三种模式；开关关闭时清空 */
+  /**
+   * 弹幕：用 Danmaku 引擎渲染。轨道分配按每条弹幕的实际宽度做碰撞检测
+   * （同轨不重叠、不追尾，顶部 / 底部按停留时间占位），即 B 站弹幕的排版算法；
+   * 播放 / 暂停 / 拖动进度由引擎跟随视频自动同步。
+   * 字号随播放器宽度放大（全屏约 1.8 倍），滚动速度按宽度换算，横穿屏幕约 8 秒。
+   */
   useEffect(() => {
-    const video = videoRef.current
+    const video = artRef.current?.video
     const layer = danmakuLayerRef.current
     if (!video || !layer || !danmakuOn || !danmaku?.length) return
 
-    const items = [...danmaku].sort((a, b) => a.time - b.time)
-    const lanes = new Map<number, number>()
-    const laneCount = 10
-    let index = 0
-    let last = video.currentTime
-    let raf = 0
+    /** 900px 宽以内保持原字号，更宽的窗口 / 全屏按比例放大，上限 1.8 倍 */
+    const fontScaleOf = (): number =>
+      Math.round(Math.min(1.8, Math.max(1, layer.clientWidth / 900)) * 10) / 10
 
-    const clear = (): void => {
-      layer.textContent = ''
-    }
-    const reset = (): void => {
-      clear()
-      index = 0
-      while (index < items.length && items[index].time < video.currentTime) index += 1
-      last = video.currentTime
-    }
-    reset()
-
-    const spawn = (item: SingingDanmakuItem): void => {
-      if (layer.childElementCount >= 90) layer.firstElementChild?.remove()
-      const el = document.createElement('span')
-      el.className = 'bili-dm-item'
-      el.textContent = item.text
-      const color = item.color & 0xffffff
-      if (color !== 0xffffff) el.style.color = `#${color.toString(16).padStart(6, '0')}`
-      if (item.size >= 30) el.style.fontSize = '22px'
-      if (item.mode === 5) {
-        el.classList.add('top')
-        el.style.animation = 'bili-dm-static 4s linear forwards'
-      } else if (item.mode === 4) {
-        el.classList.add('bottom')
-        el.style.animation = 'bili-dm-static 4s linear forwards'
-      } else {
-        let lane = 0
-        let oldest = Number.POSITIVE_INFINITY
-        for (let i = 0; i < laneCount; i += 1) {
-          const at = lanes.get(i) ?? Number.NEGATIVE_INFINITY
-          if (at < oldest) {
-            oldest = at
-            lane = i
+    const build = (scale: number): Danmaku =>
+      new Danmaku({
+        container: layer,
+        media: video,
+        // 横穿屏幕约 8 秒，宽屏时物理速度同步放大
+        speed: Math.max(80, layer.clientWidth / 8),
+        comments: danmaku.map((item) => {
+          const color = item.color & 0xffffff
+          return {
+            text: item.text,
+            time: item.time,
+            mode: (item.mode === 5 ? 'top' : item.mode === 4 ? 'bottom' : 'rtl') as
+              | 'top'
+              | 'bottom'
+              | 'rtl',
+            style: {
+              color: color !== 0xffffff ? `#${color.toString(16).padStart(6, '0')}` : '#ffffff',
+              fontSize: `${Math.round((item.size >= 30 ? 22 : 18) * scale)}px`,
+              lineHeight: '1.2',
+              fontWeight: '600',
+              textShadow: '0 1px 2px rgba(0, 0, 0, 0.9), 0 0 4px rgba(0, 0, 0, 0.6)'
+            }
           }
-        }
-        lanes.set(lane, video.currentTime)
-        el.style.top = `${8 + lane * 28}px`
-        el.style.setProperty('--dm-distance', `${layer.clientWidth}px`)
-        el.style.animation = `bili-dm-move ${8 + Math.min(5, item.text.length / 8)}s linear forwards`
-      }
-      el.addEventListener('animationend', () => el.remove())
-      layer.appendChild(el)
-    }
+        })
+      })
 
-    const tick = (): void => {
-      if (!video.paused) {
-        const now = video.currentTime
-        if (now < last - 0.5 || now > last + 2) {
-          reset()
-        } else {
-          while (index < items.length && items[index].time <= now) {
-            if (items[index].time >= last - 0.25) spawn(items[index])
-            index += 1
-          }
-          last = now
+    let scale = fontScaleOf()
+    let engine = build(scale)
+    let timer = 0
+
+    // 窗口缩放 / 进出全屏：字号档位变了就重建（碰撞检测用的是创建时测量的弹幕宽度），
+    // 否则只重新分配轨道并更新滚动速度
+    const resize = (): void => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        if (!layer.clientWidth) return
+        const next = fontScaleOf()
+        if (next !== scale) {
+          engine.destroy()
+          engine = build(next)
+          scale = next
+          return
         }
-      } else {
-        last = video.currentTime
-      }
-      layer.classList.toggle('paused', video.paused)
-      raf = requestAnimationFrame(tick)
+        engine.resize()
+        engine.speed = Math.max(80, layer.clientWidth / 8)
+      }, 220)
     }
-    raf = requestAnimationFrame(tick)
+    const observer = new ResizeObserver(resize)
+    observer.observe(layer)
+    document.addEventListener('fullscreenchange', resize)
 
     return () => {
-      cancelAnimationFrame(raf)
-      clear()
+      window.clearTimeout(timer)
+      observer.disconnect()
+      document.removeEventListener('fullscreenchange', resize)
+      engine.destroy()
     }
   }, [danmaku, danmakuOn, src])
 
   return (
     <div ref={stageRef} className="player-stage">
-      <video ref={videoRef} className="player-video bili-video" controls autoPlay playsInline />
+      <div className="art-mount" ref={mountRef} />
       <audio ref={audioRef} className="bili-audio" preload="auto" />
       {danmakuOn ? <div ref={danmakuLayerRef} className="bili-danmaku-layer" /> : null}
       <div className="bili-player-tools">
@@ -423,37 +378,6 @@ export function BiliPlayer({
         >
           弹幕
         </button>
-        <div className="bili-volume" title="音量">
-          <button
-            type="button"
-            className="bili-volume-btn"
-            title={muted || volume === 0 ? '取消静音' : '静音'}
-            onClick={() => {
-              const silent = muted || volume === 0
-              applyVolume(silent ? (volume > 0 ? volume : 0.8) : volume, !silent)
-            }}
-          >
-            {muted || volume === 0 ? (
-              <VolumeX size={16} />
-            ) : volume < 0.5 ? (
-              <Volume1 size={16} />
-            ) : (
-              <Volume2 size={16} />
-            )}
-          </button>
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.01}
-            value={muted ? 0 : volume}
-            title="音量"
-            onChange={(event) => {
-              const next = Number(event.target.value)
-              applyVolume(next, next === 0)
-            }}
-          />
-        </div>
         {qualities.length > 1 ? (
           <select
             className="player-quality"
@@ -468,16 +392,7 @@ export function BiliPlayer({
             ))}
           </select>
         ) : null}
-        <button
-          type="button"
-          className="bili-fullscreen-btn"
-          title={fullscreen ? '退出全屏' : '全屏'}
-          onClick={toggleFullscreen}
-        >
-          {fullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
-        </button>
       </div>
-      {hint ? <div className="player-hint">{hint}</div> : null}
       {error ? <div className="player-error">{error}</div> : null}
     </div>
   )

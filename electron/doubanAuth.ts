@@ -1,8 +1,9 @@
-import { app, BrowserWindow, safeStorage, session, shell } from 'electron'
+import { app, BrowserWindow, session, shell } from 'electron'
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { DoubanAuthStatus } from '../src/shared/douban'
+import { decryptSecret, encryptSecret } from './secureStorage'
 
 /**
  * 豆瓣登录：弹出独立窗口（persist:douban 分区）让用户完成登录，
@@ -27,35 +28,14 @@ function authPath(): string {
   return join(app.getPath('userData'), 'douban-auth.json')
 }
 
-function encryptValue(value: string): string {
-  if (!value) return ''
-  if (safeStorage.isEncryptionAvailable()) {
-    return `enc:${safeStorage.encryptString(value).toString('base64')}`
-  }
-  return `raw:${Buffer.from(value, 'utf8').toString('base64')}`
-}
-
-function decryptValue(value: string | undefined): string {
-  if (!value) return ''
-  try {
-    if (value.startsWith('enc:')) {
-      return safeStorage.decryptString(Buffer.from(value.slice(4), 'base64'))
-    }
-    if (value.startsWith('raw:')) return Buffer.from(value.slice(4), 'base64').toString('utf8')
-  } catch (err) {
-    console.error('[douban] 解密登录 Cookie 失败', err)
-  }
-  return ''
-}
-
-export function initDoubanAuth(): void {
+export async function initDoubanAuth(): Promise<void> {
   if (loaded) return
   loaded = true
   const file = authPath()
   if (!existsSync(file)) return
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<StoredAuth>
-    cookieString = decryptValue(typeof raw.cookie === 'string' ? raw.cookie : '')
+    cookieString = await decryptSecret(typeof raw.cookie === 'string' ? raw.cookie : '')
     updatedAt = typeof raw.updatedAt === 'number' ? raw.updatedAt : 0
   } catch (err) {
     console.error('[douban] 读取登录 Cookie 失败', err)
@@ -67,7 +47,7 @@ async function persist(): Promise<void> {
     await mkdir(app.getPath('userData'), { recursive: true })
     const target = authPath()
     const tmp = `${target}.tmp`
-    const payload: StoredAuth = { cookie: encryptValue(cookieString), updatedAt }
+    const payload: StoredAuth = { cookie: await encryptSecret(cookieString), updatedAt }
     await writeFile(tmp, JSON.stringify(payload, null, 2), 'utf8')
     await rename(tmp, target)
   } catch (err) {

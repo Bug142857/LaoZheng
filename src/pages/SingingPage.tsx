@@ -2,16 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronLeft,
   ExternalLink,
-  LogIn,
-  Pencil,
-  Plus,
-  Trash2
+  Heart,
+  LogIn
 } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { ConfirmDialog, EmptyState, Modal } from '../components/ui'
+import { ConfirmDialog, EmptyState, Modal, ModuleShortcuts } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { BiliPlayer } from '../components/BiliPlayer'
 import { tileGradient } from '../utils/data'
+import { useDetailScrollRestore } from '../utils/scroll'
 import {
   LIVE_LOGIN_EVENT,
   notifyLiveLoginChanged,
@@ -19,7 +18,6 @@ import {
   type LiveQrStart
 } from '../shared/livePlatform'
 import {
-  SINGING_MANUAL_CATEGORY,
   singingCategoryPath,
   singingCategoryTree,
   type SingingDanmakuItem,
@@ -41,15 +39,22 @@ function videoLink(video: SingingVideo): string {
 }
 
 /**
- * 演唱：B站视频（早期收藏夹视频已一次性导入，之后只能手动填链接添加）。
+ * 演唱：B站视频（早期收藏夹视频已一次性导入，之后由老郑在设置里统一添加）。
  * 登录态与「直播」模块共用同一份 B站账号（主进程 live-accounts.json），登录只影响播放清晰度。
  */
 export function SingingPage({
   onNotice,
+  onOpenFavorites,
+  onExit,
+  focusId,
   resetSignal,
   active = true
 }: {
   onNotice: (text: string) => void
+  onOpenFavorites?: () => void
+  onExit?: () => void
+  /** 从收藏进入时直接打开对应视频 */
+  focusId?: string
   resetSignal?: number
   active?: boolean
 }) {
@@ -68,20 +73,13 @@ export function SingingPage({
   const [refreshing, setRefreshing] = useState(false)
   const [playing, setPlaying] = useState<SingingVideo | null>(null)
   const [playback, setPlayback] = useState<SingingPlayback | null>(null)
+  useDetailScrollRestore(!!playing || !!playback, 'singing')
   const [danmaku, setDanmaku] = useState<SingingDanmakuItem[]>([])
   const [playLoading, setPlayLoading] = useState(false)
   const [playError, setPlayError] = useState('')
   const [qualityId, setQualityId] = useState('')
-  const [addOpen, setAddOpen] = useState(false)
-  const [addLink, setAddLink] = useState('')
-  const [addTitle, setAddTitle] = useState('')
-  const [addCategory, setAddCategory] = useState('')
-  const [addBusy, setAddBusy] = useState(false)
-  const [addError, setAddError] = useState('')
-  const [renameTarget, setRenameTarget] = useState<SingingVideo | null>(null)
-  const [renameTitle, setRenameTitle] = useState('')
-  const [removeTarget, setRemoveTarget] = useState<SingingVideo | null>(null)
   const lastReset = useRef(resetSignal)
+  const lastFocus = useRef<string | undefined>(undefined)
   const playRequestRef = useRef(0)
   /** 切清晰度的请求序号：打开 / 关闭视频后让在途的旧清晰度请求失效 */
   const qualityRequestRef = useRef(0)
@@ -89,10 +87,6 @@ export function SingingPage({
   const categoryTree = useMemo(() => singingCategoryTree(videos), [videos])
   const level1Node = categoryTree.find((node) => node.name === level1)
   const level2Node = level1Node?.children.find((node) => node.name === level2)
-  const categoryOptions = useMemo(
-    () => [...new Set(videos.map((video) => video.category))],
-    [videos]
-  )
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase()
     return videos
@@ -111,7 +105,8 @@ export function SingingPage({
           video.category.toLowerCase().includes(keyword)
         )
       })
-      .sort((a, b) => b.addedAt - a.addedAt)
+      // 按 B站收藏夹添加时间从新到旧；手动添加的条目没有 favAt，退回本地添加时间
+      .sort((a, b) => (b.favAt || b.addedAt) - (a.favAt || a.addedAt))
   }, [videos, level1, level2, level3, query])
 
   const refreshStatus = async (): Promise<void> => {
@@ -167,7 +162,6 @@ export function SingingPage({
     setLevel3('')
     setInput('')
     setQuery('')
-    setAddOpen(false)
   }, [resetSignal])
 
   // 切到其它模块时停止演唱播放，避免画面隐藏后声音继续
@@ -290,84 +284,62 @@ export function SingingPage({
     }
   }
 
-  const submitAdd = async (): Promise<void> => {
-    if (addBusy) return
-    const link = addLink.trim()
-    if (!link) {
-      setAddError('请粘贴 B站视频链接、BV 号或 av 号')
+  /** 从收藏进入：路由带着 bvid 时直接打开对应视频 */
+  useEffect(() => {
+    if (!focusId) {
+      lastFocus.current = undefined
       return
     }
-    setAddBusy(true)
-    setAddError('')
-    try {
-      const info = await window.laozheng.singingVideoInfo(link)
-      if (info.error) {
-        setAddError(info.error)
-        return
+    if (lastFocus.current === focusId) return
+    const video = videos.find((entry) => entry.bvid === focusId)
+    if (!video) {
+      // 列表还没加载到这条视频时保持等待，等 videos 更新后再试
+      if (videos.length) {
+        lastFocus.current = focusId
+        onNotice('这条收藏不在演唱列表中')
       }
-      update((d) => {
-        const existing = d.singingVideos.find((video) => video.bvid === info.bvid)
-        const title = addTitle.trim() || info.title
-        const next: SingingVideo = {
-          bvid: info.bvid,
-          page: info.page,
-          title,
-          originalTitle: info.title,
-          cover: info.cover,
-          durationSec: info.durationSec,
-          category: addCategory.trim() || SINGING_MANUAL_CATEGORY,
-          owner: info.owner,
-          addedAt: existing?.addedAt ?? Date.now()
-        }
+      return
+    }
+    lastFocus.current = focusId
+    void openVideo(video)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId, videos])
+
+  const favOf = (bvid: string): boolean =>
+    data.innerFavs.some((fav) => fav.module === 'singing' && fav.id === bvid)
+
+  const toggleFav = (video: SingingVideo): void => {
+    const exists = favOf(video.bvid)
+    update((d) => {
+      if (exists) {
         return {
           ...d,
-          singingVideos: existing
-            ? d.singingVideos.map((video) => (video.bvid === info.bvid ? next : video))
-            : [...d.singingVideos, next]
+          innerFavs: d.innerFavs.filter(
+            (fav) => !(fav.module === 'singing' && fav.id === video.bvid)
+          )
         }
-      })
-      setAddOpen(false)
-      setAddLink('')
-      setAddTitle('')
-      setAddCategory('')
-      onNotice('已添加视频')
-    } catch (err) {
-      setAddError(err instanceof Error ? err.message : '添加失败')
-    } finally {
-      setAddBusy(false)
-    }
-  }
-
-  const submitRename = (): void => {
-    if (!renameTarget) return
-    const title = renameTitle.trim() || renameTarget.originalTitle
-    update((d) => ({
-      ...d,
-      singingVideos: d.singingVideos.map((video) =>
-        video.bvid === renameTarget.bvid ? { ...video, title } : video
-      )
-    }))
-    if (playing?.bvid === renameTarget.bvid) setPlaying({ ...playing, title })
-    setRenameTarget(null)
-    setRenameTitle('')
-    onNotice('标题已修改')
-  }
-
-  const confirmRemove = (): void => {
-    if (!removeTarget) return
-    const target = removeTarget
-    update((d) => ({
-      ...d,
-      singingVideos: d.singingVideos.filter((video) => video.bvid !== target.bvid)
-    }))
-    if (playing?.bvid === target.bvid) {
-      playRequestRef.current += 1
-      qualityRequestRef.current += 1
-      setPlaying(null)
-      setPlayback(null)
-    }
-    setRemoveTarget(null)
-    onNotice('已移除')
+      }
+      return {
+        ...d,
+        innerFavs: [
+          ...d.innerFavs,
+          {
+            module: 'singing',
+            id: video.bvid,
+            title: video.title,
+            subtitle: [video.category, video.owner].filter(Boolean).join(' · '),
+            cover: video.cover || null,
+            savedAt: Date.now(),
+            videoUrl: null,
+            mediaId: 0,
+            durationSec: video.durationSec,
+            tweetUrl: null,
+            payload: JSON.stringify({ bvid: video.bvid, page: video.page })
+          }
+        ]
+      }
+    })
+    onNotice(exists ? '已取消收藏' : '已收藏')
   }
 
   const loggedIn = !!status?.loggedIn
@@ -387,6 +359,8 @@ export function SingingPage({
               setPlaying(null)
               setPlayback(null)
               setPlayError('')
+              // 从主页 / 收藏进来时直接回到上一页，不停在演唱列表
+              if (focusId && onExit) onExit()
             }}
           >
             <ChevronLeft size={15} /> 返回
@@ -395,17 +369,9 @@ export function SingingPage({
             {playing.title}
           </h1>
           <div className="page-actions">
-            <button
-              className="btn"
-              onClick={() => {
-                setRenameTarget(playing)
-                setRenameTitle(playing.title)
-              }}
-            >
-              <Pencil size={15} /> 改名
-            </button>
-            <button className="btn" onClick={() => setRemoveTarget(playing)}>
-              <Trash2 size={15} /> 移除
+            <button className="btn" onClick={() => toggleFav(playing)}>
+              <Heart size={15} fill={favOf(playing.bvid) ? 'currentColor' : 'none'} />
+              {favOf(playing.bvid) ? '已收藏' : '收藏'}
             </button>
             <button
               className="icon-btn header-shortcut"
@@ -455,42 +421,6 @@ export function SingingPage({
             </div>
           </>
         ) : null}
-
-        {renameTarget ? (
-          <Modal
-            title="修改标题"
-            onClose={() => setRenameTarget(null)}
-            footer={
-              <>
-                <button className="btn ghost" onClick={() => setRenameTarget(null)}>
-                  取消
-                </button>
-                <button className="btn primary" onClick={submitRename}>
-                  保存
-                </button>
-              </>
-            }
-          >
-            <input
-              value={renameTitle}
-              onChange={(event) => setRenameTitle(event.target.value)}
-              placeholder={renameTarget.originalTitle}
-              autoFocus
-            />
-            <p className="singing-hint">留空会恢复 B站原标题。</p>
-          </Modal>
-        ) : null}
-
-        {removeTarget ? (
-          <ConfirmDialog
-            title="从演唱模块移除？"
-            message={`「${removeTarget.title}」会从演唱列表里删除。`}
-            confirmText="移除"
-            danger
-            onConfirm={confirmRemove}
-            onCancel={() => setRemoveTarget(null)}
-          />
-        ) : null}
       </>
     )
   }
@@ -499,10 +429,8 @@ export function SingingPage({
     <>
       <header className="page-header">
         <h1 className="page-title">演唱</h1>
+        <span className="page-desc">请尽量戴上耳机调高音量 感受置身于现场的震撼</span>
         <div className="page-actions">
-          <button className="btn" onClick={() => setAddOpen(true)}>
-            <Plus size={15} /> 添加视频
-          </button>
           <button
             className="btn"
             onClick={() => {
@@ -518,6 +446,7 @@ export function SingingPage({
             <LogIn size={15} />
             {statusText}
           </button>
+          <ModuleShortcuts onOpenFavorites={onOpenFavorites} />
         </div>
       </header>
 
@@ -595,7 +524,7 @@ export function SingingPage({
       {!videos.length ? (
         <EmptyState
           title="还没有视频"
-          desc="点右上角「添加视频」，粘贴 B站链接即可加入；登录只用于提高播放画质。"
+          desc="默认视频随版本更新；需要添加时请在「设置 → 清单管理 → 演唱管理」里操作。登录只用于提高播放画质。"
         />
       ) : filtered.length === 0 ? (
         <EmptyState title="没有匹配的视频" desc="换个关键词或分类再试。" />
@@ -629,6 +558,17 @@ export function SingingPage({
                     }}
                   />
                 ) : null}
+                <button
+                  className={`fav-heart${favOf(video.bvid) ? ' on' : ''}`}
+                  title={favOf(video.bvid) ? '取消收藏' : '收藏'}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    toggleFav(video)
+                  }}
+                  onKeyDown={(event) => event.stopPropagation()}
+                >
+                  <Heart size={15} fill={favOf(video.bvid) ? 'currentColor' : 'none'} />
+                </button>
                 {video.durationSec ? (
                   <span className="live-room-badge singing-duration">
                     {formatDuration(video.durationSec)}
@@ -697,57 +637,6 @@ export function SingingPage({
               登录与「直播」模块共通，只用于提高播放清晰度；Cookie 加密保存在本机，不进备份与云同步。
             </p>
           </div>
-        </Modal>
-      ) : null}
-
-      {addOpen ? (
-        <Modal
-          title="通过 B站链接添加"
-          onClose={() => {
-            setAddOpen(false)
-            setAddError('')
-          }}
-          footer={
-            <>
-              <button
-                className="btn ghost"
-                onClick={() => {
-                  setAddOpen(false)
-                  setAddError('')
-                }}
-              >
-                取消
-              </button>
-              <button className="btn primary" onClick={() => void submitAdd()} disabled={addBusy}>
-                {addBusy ? '解析中…' : '添加'}
-              </button>
-            </>
-          }
-        >
-          <input
-            value={addLink}
-            onChange={(event) => setAddLink(event.target.value)}
-            placeholder="粘贴 B站视频链接 / BV 号 / av 号，支持 b23.tv 短链"
-            autoFocus
-          />
-          <input
-            value={addTitle}
-            onChange={(event) => setAddTitle(event.target.value)}
-            placeholder="自定义标题（留空使用 B站标题）"
-          />
-          <input
-            value={addCategory}
-            onChange={(event) => setAddCategory(event.target.value)}
-            placeholder={SINGING_MANUAL_CATEGORY}
-            list="singing-category-options"
-          />
-          <datalist id="singing-category-options">
-            {categoryOptions.map((name) => (
-              <option key={name} value={name} />
-            ))}
-          </datalist>
-          {addError ? <p className="singing-hint danger">{addError}</p> : null}
-          <p className="singing-hint">分类留空会放进「{SINGING_MANUAL_CATEGORY}」。</p>
         </Modal>
       ) : null}
     </>

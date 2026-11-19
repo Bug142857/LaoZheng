@@ -15,32 +15,27 @@ import {
   Play,
   Repeat,
   Repeat1,
+  Search,
   Shuffle,
   SkipBack,
   SkipForward,
+  Volume2,
+  VolumeX,
   X
 } from 'lucide-react'
 import type { InnerFav } from '../shared/types'
-import type { MusicQuality } from '../shared/music'
+import type { MusicQueueItem } from '../shared/music'
+import type { MusicPlayMode } from '../shared/settings'
 
-export type PlayMode = 'single' | 'order' | 'shuffle'
+export type PlayMode = MusicPlayMode
 
-export interface PlayerSong {
-  /** 唯一键：platform|id 或直链 */
-  key: string
-  id: string
-  platform?: string
-  /** 音源站点地址（自定义 / 镜像音乐源需要） */
-  baseUrl?: string
-  /** 无损音乐站点的实际平台（kuwo / wyy），用于下载窗口提示 */
-  origin?: string
-  /** 下载时可选的音质 */
-  qualities?: MusicQuality[]
-  title: string
-  artists: string
-  cover: string | null
-  /** 已解析直链（本地音乐 / 下载音乐） */
-  url?: string
+export type PlayerSong = MusicQueueItem
+
+/** 恢复队列时把越界下标收回到合法范围 */
+function restoreIndex(value: unknown, length: number): number {
+  if (!length) return -1
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0
+  return Math.min(length - 1, Math.max(0, Math.floor(value)))
 }
 
 interface LyricLine {
@@ -59,6 +54,9 @@ interface PlayerValue {
   current: PlayerSong | null
   currentTime: number
   duration: number
+  /** 音量（0~1）与静音状态，记住上次值并随备份 / 云同步走 */
+  volume: number
+  muted: boolean
   lyrics: LyricLine[]
   playQueue: (songs: PlayerSong[], startIndex?: number) => void
   playFavs: (favs: InnerFav[], startIndex?: number) => void
@@ -67,6 +65,8 @@ interface PlayerValue {
   prev: () => void
   cycleMode: () => void
   setPanelOpen: (open: boolean) => void
+  setVolume: (volume: number) => void
+  toggleMuted: () => void
   seek: (time: number) => void
   stop: () => void
 }
@@ -181,6 +181,19 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
   const [lyrics, setLyrics] = useState<LyricLine[]>([])
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
+  /** 音量 / 静音：持久化到 settings.json（作为 PC 扩展字段随备份 / 云同步） */
+  const [volume, setVolumeState] = useState(0.8)
+  const [muted, setMutedState] = useState(false)
+  const volumeRef = useRef(0.8)
+  const mutedRef = useRef(false)
+  const volumeSaveTimer = useRef<number | null>(null)
+  /** 队列是否已从 settings 恢复：恢复前不要把空队列写回去 */
+  const queueLoadedRef = useRef(false)
+  const queueSaveTimer = useRef<number | null>(null)
+  /** 恢复队列后等音频元数据加载完再跳回上次进度 */
+  const pendingSeekRef = useRef(0)
+  /** 播放中每 10 秒把进度写一次 settings，避免直接关窗口丢进度 */
+  const lastQueueSaveRef = useRef(0)
 
   const current = index >= 0 ? queue[index] ?? null : null
 
@@ -188,10 +201,128 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
     if (!audioRef.current) {
       const audio = new Audio()
       audio.preload = 'auto'
+      audio.volume = volumeRef.current
+      audio.muted = mutedRef.current
       audioRef.current = audio
     }
     return audioRef.current
   }, [])
+
+  const applyVolume = useCallback(
+    (nextVolume: number, nextMuted: boolean) => {
+      volumeRef.current = nextVolume
+      mutedRef.current = nextMuted
+      const audio = ensureAudio()
+      audio.volume = nextVolume
+      audio.muted = nextMuted
+    },
+    [ensureAudio]
+  )
+
+  const persistVolume = useCallback((nextVolume: number, nextMuted: boolean) => {
+    if (volumeSaveTimer.current != null) window.clearTimeout(volumeSaveTimer.current)
+    volumeSaveTimer.current = window.setTimeout(() => {
+      volumeSaveTimer.current = null
+      void window.laozheng
+        .setUiSettings({ musicVolume: nextVolume, musicMuted: nextMuted })
+        .catch(() => undefined)
+    }, 400)
+  }, [])
+
+  /** 队列 / 当前条目 / 播放模式 / 进度一起写入 settings，重启和云恢复后继续播放 */
+  const persistQueue = useCallback(() => {
+    if (!queueLoadedRef.current) return
+    if (queueSaveTimer.current != null) window.clearTimeout(queueSaveTimer.current)
+    queueSaveTimer.current = window.setTimeout(() => {
+      queueSaveTimer.current = null
+      const songs = queueRef.current
+      const at = indexRef.current
+      // 恢复队列但还没解析音频时，currentTime 是 0，用待恢复进度补上，避免把续播位置覆盖掉
+      const played = audioRef.current?.currentTime ?? 0
+      const time = played > 0 ? played : pendingSeekRef.current
+      void window.laozheng
+        .setUiSettings({
+          musicQueue: songs,
+          musicQueueIndex: songs.length ? at : -1,
+          musicMode: modeRef.current,
+          musicQueueTime: time
+        })
+        .catch(() => undefined)
+    }, 500)
+  }, [])
+
+  const setVolume = useCallback(
+    (nextVolume: number) => {
+      const value = Math.min(1, Math.max(0, nextVolume))
+      const nextMuted = value <= 0 ? mutedRef.current : false
+      setVolumeState(value)
+      setMutedState(nextMuted)
+      applyVolume(value, nextMuted)
+      persistVolume(value, nextMuted)
+    },
+    [applyVolume, persistVolume]
+  )
+
+  const toggleMuted = useCallback(() => {
+    const nextMuted = !mutedRef.current
+    setMutedState(nextMuted)
+    applyVolume(volumeRef.current, nextMuted)
+    persistVolume(volumeRef.current, nextMuted)
+  }, [applyVolume, persistVolume])
+
+  // 启动时读取上次音量与播放队列；读取失败保持默认值
+  useEffect(() => {
+    let alive = true
+    window.laozheng
+      .getUiSettings()
+      .then((settings) => {
+        if (!alive) return
+        const value =
+          typeof settings.musicVolume === 'number'
+            ? Math.min(1, Math.max(0, settings.musicVolume))
+            : 0.8
+        setVolumeState(value)
+        setMutedState(!!settings.musicMuted)
+        applyVolume(value, !!settings.musicMuted)
+
+        const restored = Array.isArray(settings.musicQueue) ? settings.musicQueue : []
+        if (restored.length) {
+          const at = restoreIndex(settings.musicQueueIndex, restored.length)
+          queueRef.current = restored
+          indexRef.current = at
+          setQueue(restored)
+          setIndex(at)
+          const restoredMode = settings.musicMode
+          if (
+            restoredMode === 'single' ||
+            restoredMode === 'order' ||
+            restoredMode === 'shuffle'
+          ) {
+            modeRef.current = restoredMode
+            setMode(restoredMode)
+          }
+          const time =
+            typeof settings.musicQueueTime === 'number' &&
+            Number.isFinite(settings.musicQueueTime) &&
+            settings.musicQueueTime > 0
+              ? settings.musicQueueTime
+              : 0
+          pendingSeekRef.current = time
+        }
+        queueLoadedRef.current = true
+      })
+      .catch(() => {
+        queueLoadedRef.current = true
+      })
+    return () => {
+      alive = false
+    }
+  }, [applyVolume])
+
+  // 队列 / 当前条目 / 播放模式变化时写入 settings（500ms 防抖）
+  useEffect(() => {
+    persistQueue()
+  }, [queue, index, mode, persistQueue])
 
   const loadAndPlay = useCallback(
     async (target: number) => {
@@ -303,8 +434,13 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
   )
 
   const toggle = useCallback(() => {
+    if (!current || resolvingRef.current) return
     const audio = audioRef.current
-    if (!audio || !current || resolvingRef.current) return
+    // 重启后恢复的队列还没解析直链：第一次点播放时再解析
+    if (!audio || !audio.src) {
+      void loadAndPlay(indexRef.current)
+      return
+    }
     if (audio.paused) {
       void audio.play().then(() => setPlaying(true)).catch(() => {
         setError('播放失败，可能是直链已失效')
@@ -313,7 +449,7 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
       audio.pause()
       setPlaying(false)
     }
-  }, [current])
+  }, [current, loadAndPlay])
 
   const cycleMode = useCallback(() => {
     setMode((prevMode) => {
@@ -348,21 +484,43 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
     setLyrics([])
     setCurrentTime(0)
     setDuration(0)
+    pendingSeekRef.current = 0
     setError(null)
     setPanelOpen(false)
   }, [])
 
   useEffect(() => {
     const audio = ensureAudio()
-    const onTime = (): void => setCurrentTime(audio.currentTime)
-    const onMeta = (): void => setDuration(Number.isFinite(audio.duration) ? audio.duration : 0)
+    const onTime = (): void => {
+      setCurrentTime(audio.currentTime)
+      const now = Date.now()
+      if (now - lastQueueSaveRef.current >= 10_000) {
+        lastQueueSaveRef.current = now
+        persistQueue()
+      }
+    }
+    const onMeta = (): void => {
+      const total = Number.isFinite(audio.duration) ? audio.duration : 0
+      setDuration(total)
+      const pending = pendingSeekRef.current
+      if (pending > 0) {
+        pendingSeekRef.current = 0
+        const target = total > 0 ? Math.min(pending, Math.max(0, total - 0.5)) : pending
+        audio.currentTime = target
+        setCurrentTime(target)
+      }
+    }
     const onEnded = (): void => advance(true)
     const onError = (): void => {
       if (audio.src) setError('播放失败，可能是直链失效或需要外网')
       setPlaying(false)
     }
     const onPlay = (): void => setPlaying(true)
-    const onPause = (): void => setPlaying(false)
+    const onPause = (): void => {
+      setPlaying(false)
+      // 切歌时会先暂停旧音源，这时 index 已经指向新歌，不要把旧进度写成新歌的
+      if (!resolvingRef.current) persistQueue()
+    }
     audio.addEventListener('timeupdate', onTime)
     audio.addEventListener('loadedmetadata', onMeta)
     audio.addEventListener('ended', onEnded)
@@ -378,7 +536,7 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
       audio.removeEventListener('pause', onPause)
       audio.pause()
     }
-  }, [advance, ensureAudio])
+  }, [advance, ensureAudio, persistQueue])
 
   const value = useMemo<PlayerValue>(
     () => ({
@@ -392,6 +550,8 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
       current,
       currentTime,
       duration,
+      volume,
+      muted,
       lyrics,
       playQueue,
       playFavs,
@@ -400,6 +560,8 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
       prev,
       cycleMode,
       setPanelOpen,
+      setVolume,
+      toggleMuted,
       seek,
       stop
     }),
@@ -414,6 +576,8 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
       current,
       currentTime,
       duration,
+      volume,
+      muted,
       lyrics,
       playQueue,
       playFavs,
@@ -421,6 +585,8 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
       next,
       prev,
       cycleMode,
+      setVolume,
+      toggleMuted,
       seek,
       stop
     ]
@@ -441,8 +607,22 @@ function formatTime(sec: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
-export function MusicPlayerBar() {
+export function MusicPlayerBar({
+  alwaysVisible = false,
+  homeMode = false,
+  playlist,
+  onPlayPlaylist
+}: {
+  alwaysVisible?: boolean
+  /** 主页播放器多一个播放列表按钮，其余样式与全局播放器一致 */
+  homeMode?: boolean
+  /** 主页播放列表（音乐收藏），不传时用当前播放队列 */
+  playlist?: PlayerSong[]
+  onPlayPlaylist?: (index: number) => void
+}) {
   const player = useMusicPlayer()
+  const [playlistOpen, setPlaylistOpen] = useState(false)
+  const [playlistQuery, setPlaylistQuery] = useState('')
   const lyricRef = useRef<HTMLDivElement | null>(null)
   const activeLine = useMemo(() => {
     if (!player.lyrics.length) return -1
@@ -461,8 +641,6 @@ export function MusicPlayerBar() {
     target?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [player.panelOpen, activeLine])
 
-  if (!player.current) return null
-
   const ModeIcon =
     player.mode === 'single'
       ? Repeat1
@@ -472,8 +650,144 @@ export function MusicPlayerBar() {
           ? Shuffle
           : ListMusic
 
+  const playlistSongs = playlist ?? player.queue
+  const playlistKeyword = playlistQuery.trim().toLowerCase()
+  const playlistEntries = playlistSongs
+    .map((song, index) => ({ song, index }))
+    .filter(
+      ({ song }) =>
+        !playlistKeyword ||
+        song.title.toLowerCase().includes(playlistKeyword) ||
+        (song.artists || '').toLowerCase().includes(playlistKeyword)
+    )
+  const playPlaylistItem = (index: number): void => {
+    if (onPlayPlaylist) onPlayPlaylist(index)
+    else player.playQueue(playlistSongs, index)
+  }
+  const playlistButton = homeMode ? (
+    <button
+      className={`icon-btn music-bar-playlist-btn${playlistOpen ? ' active' : ''}`}
+      title="播放列表"
+      onClick={() => {
+        player.setPanelOpen(false)
+        setPlaylistOpen((value) => !value)
+      }}
+    >
+      <ListMusic size={17} />
+    </button>
+  ) : null
+  const playlistPanel =
+    homeMode && playlistOpen ? (
+      <div className="music-panel music-playlist-panel">
+        <div className="music-panel-head">
+          <span className="music-panel-title">播放列表</span>
+          <span className="page-desc">{playlistSongs.length} 首</span>
+          <button
+            className="icon-btn"
+            title="收起播放列表"
+            onClick={() => setPlaylistOpen(false)}
+          >
+            <X size={15} />
+          </button>
+        </div>
+        <label className="search music-playlist-search">
+          <Search size={14} />
+          <input
+            value={playlistQuery}
+            onChange={(event) => setPlaylistQuery(event.target.value)}
+            placeholder="搜索音乐列表"
+          />
+        </label>
+        <div className="music-playlist-body rows compact">
+          {playlistEntries.length ? (
+            playlistEntries.map(({ song, index }) => (
+              <div
+                key={song.key}
+                className="row clickable"
+                role="button"
+                tabIndex={0}
+                title="播放这首"
+                onClick={() => playPlaylistItem(index)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') playPlaylistItem(index)
+                }}
+              >
+                <div className="row-cover">
+                  {song.cover ? (
+                    <img src={song.cover} alt="" loading="lazy" />
+                  ) : (
+                    <MusicIcon size={16} />
+                  )}
+                </div>
+                <div className="row-main">
+                  <div className="row-title">{song.title}</div>
+                  <div className="row-meta">{song.artists || '未知歌手'}</div>
+                </div>
+                {player.current?.key === song.key ? (
+                  <span className="badge brand">播放中</span>
+                ) : (
+                  <Play size={15} className="row-arrow" />
+                )}
+              </div>
+            ))
+          ) : (
+            <div className="settings-hint">
+              {playlistSongs.length ? '没有匹配的音乐。' : '还没有音乐收藏。'}
+            </div>
+          )}
+        </div>
+      </div>
+    ) : null
+
+  if (!player.current) {
+    if (!alwaysVisible) return null
+    return (
+      <>
+        {playlistPanel}
+        <div className="music-bar">
+          <div className="music-bar-cover">
+            <MusicIcon size={18} />
+          </div>
+          <div className="music-bar-main">
+            <div className="music-bar-title">主页播放器</div>
+            <div className="music-bar-sub">
+              {playlistSongs.length ? '从播放列表里选一首开始播放' : '还没有音乐收藏'}
+            </div>
+          </div>
+          {playlistButton}
+          <div className="music-bar-progress">
+            <span>0:00</span>
+            <input type="range" min={0} max={1} step={0.5} value={0} disabled />
+            <span>0:00</span>
+          </div>
+          <div className="music-bar-actions">
+            <button className="icon-btn" title={PLAY_MODE_LABEL[player.mode]} disabled>
+              <ModeIcon size={16} />
+            </button>
+            <button className="icon-btn" title="上一曲" disabled>
+              <SkipBack size={17} />
+            </button>
+            <button className="icon-btn primary" title="播放" disabled>
+              <Play size={17} />
+            </button>
+            <button className="icon-btn" title="下一曲" disabled>
+              <SkipForward size={17} />
+            </button>
+            <button className="icon-btn" title="歌词" disabled>
+              <ListMusic size={16} />
+            </button>
+            <button className="icon-btn danger" title="关闭播放器" disabled>
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      </>
+    )
+  }
+
   return (
     <>
+      {playlistPanel}
       {player.panelOpen ? (
         <div className="music-panel">
           <div className="music-panel-head">
@@ -525,6 +839,7 @@ export function MusicPlayerBar() {
                 : player.current.artists || '未知歌手'}
           </div>
         </div>
+        {playlistButton}
         <div className="music-bar-progress">
           <span>{formatTime(player.currentTime)}</span>
           <input
@@ -532,41 +847,80 @@ export function MusicPlayerBar() {
             min={0}
             max={Math.max(1, player.duration)}
             step={0.5}
+            aria-label="播放进度"
             value={Math.min(player.currentTime, player.duration || 0)}
             onChange={(e) => player.seek(Number(e.target.value))}
           />
           <span>{formatTime(player.duration)}</span>
         </div>
+        <div className="music-bar-volume">
+          <button
+            className="icon-btn"
+            title={player.muted ? '取消静音' : '静音'}
+            aria-label={player.muted ? '取消静音' : '静音'}
+            onClick={player.toggleMuted}
+          >
+            {player.muted || player.volume <= 0 ? (
+              <VolumeX size={15} />
+            ) : (
+              <Volume2 size={15} />
+            )}
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={player.muted ? 0 : player.volume}
+            title={`音量 ${Math.round((player.muted ? 0 : player.volume) * 100)}%`}
+            aria-label="音量"
+            onChange={(e) => player.setVolume(Number(e.target.value))}
+          />
+        </div>
         <div className="music-bar-actions">
           <button
             className="icon-btn"
             title={PLAY_MODE_LABEL[player.mode]}
+            aria-label={`播放模式：${PLAY_MODE_LABEL[player.mode]}`}
             onClick={player.cycleMode}
           >
             <ModeIcon size={16} />
           </button>
-          <button className="icon-btn" title="上一曲" onClick={player.prev}>
+          <button className="icon-btn" title="上一曲" aria-label="上一曲" onClick={player.prev}>
             <SkipBack size={17} />
           </button>
           <button
             className="icon-btn primary"
             title={player.playing ? '暂停' : '播放'}
+            aria-label={player.playing ? '暂停' : '播放'}
             disabled={player.resolving}
             onClick={player.toggle}
           >
             {player.playing ? <Pause size={17} /> : <Play size={17} />}
           </button>
-          <button className="icon-btn" title="下一曲" onClick={player.next}>
+          <button className="icon-btn" title="下一曲" aria-label="下一曲" onClick={player.next}>
             <SkipForward size={17} />
           </button>
           <button
             className={`icon-btn ${player.panelOpen ? 'active' : ''}`}
-            title="歌词 / 播放列表"
-            onClick={() => player.setPanelOpen(!player.panelOpen)}
+            title="歌词"
+            aria-label="歌词"
+            onClick={() => {
+              setPlaylistOpen(false)
+              player.setPanelOpen(!player.panelOpen)
+            }}
           >
             <ListMusic size={16} />
           </button>
-          <button className="icon-btn danger" title="关闭播放器" onClick={player.stop}>
+          <button
+            className="icon-btn danger"
+            title="关闭播放器"
+            aria-label="关闭播放器"
+            onClick={() => {
+              setPlaylistOpen(false)
+              player.stop()
+            }}
+          >
             <X size={16} />
           </button>
         </div>

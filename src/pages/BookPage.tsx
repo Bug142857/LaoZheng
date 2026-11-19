@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, Download, Heart } from 'lucide-react'
 import { useData } from '../state/DataContext'
+import { useDetailScrollRestore } from '../utils/scroll'
 import { ConfirmDialog, EmptyState, ModuleShortcuts, Pagination } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { zlibBookKey, type ZlibBook, type ZlibStatusResponse } from '../shared/zlib'
@@ -33,6 +34,7 @@ export function BookPage({
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<{ book: ZlibBook | null; loading: boolean; error: string | null } | null>(null)
+  useDetailScrollRestore(!!detail, 'book')
   const [downloading, setDownloading] = useState(false)
   const [pending, setPending] = useState<ZlibBook | null>(null)
   const seqRef = useRef(0)

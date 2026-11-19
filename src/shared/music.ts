@@ -29,6 +29,8 @@ export interface MusicSource {
   id: string
   name: string
   baseUrl: string
+  /** 内置默认源：不可删除，只能停用；自定义源可删 */
+  builtin?: boolean
   /** 缺省按地址自动识别（.js 结尾视为洛雪脚本） */
   kind?: MusicSourceKind
   /** 洛雪源启用的平台；不填时按脚本声明的全部平台搜索 */
@@ -193,6 +195,7 @@ export function normalizeMusicSources(raw: unknown): MusicSource[] {
   if (!Array.isArray(raw)) {
     return [...DEFAULT_MUSIC_SOURCES, ...LX_MUSIC_SOURCES].map((source) => ({
       ...source,
+      builtin: true,
       backup: source.backup ? cloneMusicBackup(source.backup) : null
     }))
   }
@@ -235,6 +238,12 @@ export function normalizeMusicSources(raw: unknown): MusicSource[] {
         id: source.id,
         name,
         baseUrl: source.baseUrl.trim().replace(/\/+$/, ''),
+        // 内置源（无名闪闪音乐 / 洛雪 fish）不可删除，只能停用；显式 builtin:false 的是自定义源
+        builtin:
+          source.builtin === false
+            ? false
+            : DEFAULT_MUSIC_SOURCES.some((preset) => preset.id === source.id) ||
+              LX_MUSIC_SOURCES.some((preset) => preset.id === source.id),
         kind: guessMusicSourceKind(source),
         platforms: Array.isArray(source.platforms)
           ? source.platforms.filter((item): item is MusicLxPlatform =>
@@ -273,6 +282,7 @@ export function normalizeMusicSources(raw: unknown): MusicSource[] {
       id: 's33ve',
       name: legacyBackup.name,
       baseUrl: legacyBackup.baseUrl,
+      builtin: true,
       enabled: legacyBackup.enabled,
       testStatus: legacyBackup.testStatus,
       testMsg: legacyBackup.testMsg,
@@ -293,6 +303,62 @@ export interface MusicQuality {
   format: string
   bitrate: string
   size?: string
+}
+
+/** 音乐播放队列条目：持久化到 settings.json，随备份 / 云同步走 */
+export interface MusicQueueItem {
+  /** 唯一键：platform|id 或直链 */
+  key: string
+  id: string
+  platform?: string
+  /** 音源站点地址（自定义 / 镜像音乐源需要） */
+  baseUrl?: string
+  /** 无损音乐站点的实际平台（kuwo / wyy），用于下载窗口提示 */
+  origin?: string
+  /** 下载时可选的音质 */
+  qualities?: MusicQuality[]
+  title: string
+  artists: string
+  cover: string | null
+  /** 已解析直链（本地音乐 / 下载音乐） */
+  url?: string
+}
+
+/** 恢复队列时做结构校验：只保留字段完整的条目，避免坏数据把播放器打挂 */
+export function normalizeMusicQueue(input: unknown): MusicQueueItem[] {
+  if (!Array.isArray(input)) return []
+  const out: MusicQueueItem[] = []
+  for (const raw of input.slice(0, 500)) {
+    if (!raw || typeof raw !== 'object') continue
+    const item = raw as Record<string, unknown>
+    if (typeof item.key !== 'string' || !item.key) continue
+    if (typeof item.id !== 'string' || !item.id) continue
+    if (typeof item.title !== 'string' || !item.title) continue
+    const qualities = Array.isArray(item.qualities)
+      ? item.qualities
+          .slice(0, 10)
+          .map((q) => q as Record<string, unknown>)
+          .filter((q) => typeof q?.format === 'string' && typeof q?.bitrate === 'string')
+          .map((q) => ({
+            format: String(q.format),
+            bitrate: String(q.bitrate),
+            ...(typeof q.size === 'string' ? { size: q.size } : {})
+          }))
+      : undefined
+    out.push({
+      key: item.key,
+      id: item.id,
+      ...(typeof item.platform === 'string' ? { platform: item.platform } : {}),
+      ...(typeof item.baseUrl === 'string' ? { baseUrl: item.baseUrl } : {}),
+      ...(typeof item.origin === 'string' ? { origin: item.origin } : {}),
+      ...(qualities && qualities.length ? { qualities } : {}),
+      title: item.title,
+      artists: typeof item.artists === 'string' ? item.artists : '',
+      cover: typeof item.cover === 'string' ? item.cover : null,
+      ...(typeof item.url === 'string' && item.url ? { url: item.url } : {})
+    })
+  }
+  return out
 }
 
 export interface MusicSong {

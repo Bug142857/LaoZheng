@@ -1,4 +1,4 @@
-import { app, BrowserWindow, nativeImage, session, shell } from 'electron'
+import { app, BrowserWindow, nativeImage, Notification, session, shell } from 'electron'
 import { existsSync, createReadStream, createWriteStream } from 'node:fs'
 import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type ServerResponse } from 'node:http'
@@ -142,7 +142,7 @@ async function cleanupArtifacts(taskId: string): Promise<void> {
 }
 
 /** 安装包内的 ffmpeg（依赖被 electron-builder 解包到 app.asar.unpacked），开发态用 node_modules 里的可执行文件 */
-function ffmpegBinary(): string | null {
+export function ffmpegBinary(): string | null {
   const rel = join('node_modules', '@ffmpeg-installer', 'win32-x64', 'ffmpeg.exe')
   // 不区分 isPackaged：开发态 / 安装包 / asar 解包路径都列出来，存在哪个用哪个
   const candidates = [
@@ -759,6 +759,115 @@ interface TaskJob {
 }
 
 const jobs = new Map<string, TaskJob>()
+/** 全局任务并发上限：HLS 切片并发单独计算，不占任务名额 */
+const MAX_CONCURRENT_TASKS = 2
+/** 等待队列（任务 id，先进先出） */
+const waiting: string[] = []
+
+function runningTaskCount(): number {
+  let count = 0
+  for (const task of tasks.values()) {
+    if (task.state === 'running') count += 1
+  }
+  return count
+}
+
+function removeFromWaiting(id: string): void {
+  const index = waiting.indexOf(id)
+  if (index >= 0) waiting.splice(index, 1)
+}
+
+/** 加入队列：有空闲名额直接开始，否则标记 queued 等前面的任务结束 */
+function enqueueTask(task: DownloadTask, job: TaskJob): void {
+  jobs.set(task.id, job)
+  // 先标记排队再统计运行数：新任务初始 state 是 running，直接统计会把它自己算进名额，
+  // 导致上限 2 实际只跑 1 个任务
+  task.state = 'queued'
+  if (runningTaskCount() < MAX_CONCURRENT_TASKS) {
+    startTask(task, job)
+    return
+  }
+  if (!waiting.includes(task.id)) waiting.push(task.id)
+  ensureStatsTimer()
+  notify()
+}
+
+/** 任务结束 / 暂停 / 取消后补位 */
+function pumpQueue(): void {
+  while (runningTaskCount() < MAX_CONCURRENT_TASKS && waiting.length) {
+    const id = waiting.shift()
+    if (!id) break
+    const task = tasks.get(id)
+    const job = jobs.get(id)
+    if (!task || !job || task.state !== 'queued') continue
+    startTask(task, job)
+  }
+  notify()
+}
+
+/* ---------------- 速度 / ETA / 完成通知 ---------------- */
+
+const speedSamples = new Map<string, { bytes: number; at: number; speed: number }>()
+let statsTimer: NodeJS.Timeout | null = null
+
+function ensureStatsTimer(): void {
+  if (statsTimer) return
+  statsTimer = setInterval(() => {
+    const now = Date.now()
+    let active = false
+    for (const task of tasks.values()) {
+      if (task.state !== 'running') {
+        task.speed = undefined
+        task.eta = undefined
+        continue
+      }
+      active = true
+      const prev = speedSamples.get(task.id)
+      if (!prev) {
+        speedSamples.set(task.id, { bytes: task.bytes, at: now, speed: 0 })
+        continue
+      }
+      const dt = Math.max(0.2, (now - prev.at) / 1000)
+      const instant = Math.max(0, (task.bytes - prev.bytes) / dt)
+      const speed = prev.speed > 0 ? prev.speed * 0.6 + instant * 0.4 : instant
+      speedSamples.set(task.id, { bytes: task.bytes, at: now, speed })
+      task.speed = speed > 0 ? Math.round(speed) : undefined
+      task.eta =
+        task.totalBytes > 0 && speed > 1
+          ? Math.max(0, Math.round((task.totalBytes - task.bytes) / speed))
+          : undefined
+    }
+    for (const id of [...speedSamples.keys()]) {
+      if (!tasks.has(id)) speedSamples.delete(id)
+    }
+    if (!active) {
+      if (statsTimer) {
+        clearInterval(statsTimer)
+        statsTimer = null
+      }
+      return
+    }
+    notify()
+  }, 1000)
+  statsTimer.unref?.()
+}
+
+/** 完成 / 失败系统通知：应用在前台时不打扰，只给后台 / 托盘状态发 */
+function notifyDownloadFinished(task: DownloadTask, ok: boolean): void {
+  if (!Notification.isSupported()) return
+  const focused = BrowserWindow.getAllWindows().some(
+    (win) => win.isVisible() && win.isFocused()
+  )
+  if (focused) return
+  try {
+    new Notification({
+      title: ok ? '下载完成' : '下载失败',
+      body: ok ? task.title : `${task.title}：${task.error ?? '未知错误'}`
+    }).show()
+  } catch {
+    // 系统通知失败不影响下载流程
+  }
+}
 
 /** 启动（或继续）一个下载任务：暂停后重新调用会换新的 run 标识 */
 function startTask(task: DownloadTask, job: TaskJob): void {
@@ -768,6 +877,7 @@ function startTask(task: DownloadTask, job: TaskJob): void {
   controllers.set(task.id, controller)
   task.state = 'running'
   task.error = undefined
+  ensureStatsTimer()
   void (async () => {
     try {
       const item =
@@ -787,11 +897,14 @@ function startTask(task: DownloadTask, job: TaskJob): void {
         items.push(item)
       }
       await saveLibrary()
+      notifyDownloadFinished(task, true)
       tasks.delete(task.id)
       controllers.delete(task.id)
       runs.delete(task.id)
       jobs.delete(task.id)
       artifacts.delete(task.id)
+      speedSamples.delete(task.id)
+      removeFromWaiting(task.id)
     } catch (err) {
       if (runs.get(task.id) !== run) return
       controllers.delete(task.id)
@@ -801,6 +914,8 @@ function startTask(task: DownloadTask, job: TaskJob): void {
           tasks.delete(task.id)
           runs.delete(task.id)
           jobs.delete(task.id)
+          speedSamples.delete(task.id)
+          removeFromWaiting(task.id)
           await new Promise((resolveDelay) => setTimeout(resolveDelay, 120))
           await cleanupArtifacts(task.id)
         }
@@ -808,11 +923,14 @@ function startTask(task: DownloadTask, job: TaskJob): void {
         task.state = 'failed'
         task.error = err instanceof Error ? err.message : '下载失败'
         jobs.delete(task.id)
+        speedSamples.delete(task.id)
         // 失败清掉半成品，避免留下 .part / 半个切片目录
         await cleanupArtifacts(task.id)
+        notifyDownloadFinished(task, false)
       }
     }
     notify()
+    pumpQueue()
   })()
   notify()
 }
@@ -820,11 +938,23 @@ function startTask(task: DownloadTask, job: TaskJob): void {
 /** 暂停：中止当前请求，保留已下载的分片 / .part，任务标记为 paused */
 export async function pauseTask(id: string): Promise<void> {
   const task = tasks.get(id)
-  if (!task || task.state !== 'running') return
+  if (!task) return
+  // 排队中的任务直接移出队列，不占名额
+  if (task.state === 'queued') {
+    task.state = 'paused'
+    removeFromWaiting(id)
+    speedSamples.delete(id)
+    notify()
+    pumpQueue()
+    return
+  }
+  if (task.state !== 'running') return
   task.state = 'paused'
   controllers.get(id)?.abort()
   controllers.delete(id)
+  speedSamples.delete(id)
   notify()
+  pumpQueue()
 }
 
 /** 继续：从暂停处继续下载（直链 Range 续传、HLS / 漫画跳过已下内容） */
@@ -832,7 +962,14 @@ export function resumeTask(id: string): void {
   const task = tasks.get(id)
   const job = jobs.get(id)
   if (!task || !job || task.state !== 'paused') return
-  startTask(task, job)
+  if (runningTaskCount() < MAX_CONCURRENT_TASKS) {
+    startTask(task, job)
+  } else {
+    task.state = 'queued'
+    if (!waiting.includes(id)) waiting.push(id)
+    ensureStatsTimer()
+    notify()
+  }
 }
 
 export async function addDownload(input: DownloadAddInput): Promise<DownloadAddResult> {
@@ -864,8 +1001,7 @@ export async function addDownload(input: DownloadAddInput): Promise<DownloadAddR
   }
   tasks.set(task.id, task)
   const job: TaskJob = { kind: isHls ? 'hls' : 'direct', input: payload }
-  jobs.set(task.id, job)
-  startTask(task, job)
+  enqueueTask(task, job)
   return { ok: true }
 }
 
@@ -1088,8 +1224,7 @@ export async function addComicBatchDownload(
     },
     comic: { ...input, comic, chapters }
   }
-  jobs.set(task.id, job)
-  startTask(task, job)
+  enqueueTask(task, job)
   return { ok: true }
 }
 
@@ -1281,6 +1416,55 @@ export async function setDownloadWallpaper(id: string): Promise<void> {
     await writeFile(temp, image.toJPEG(92))
     target = temp
   }
+  await applyWallpaperFile(target)
+}
+
+/** 壁纸详情页：直接下载远程原图并设为桌面壁纸，不用先走下载管理 */
+export async function setWallpaperFromUrl(rawUrl: string, referer?: string): Promise<void> {
+  const url = rawUrl.trim()
+  if (!/^https?:\/\//i.test(url)) throw new Error('壁纸地址无效')
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 30_000)
+  try {
+    const res = await netFetchWithFallback(url, downloadHeaders(url, referer), controller.signal)
+    if (!res.ok) throw new Error(`图片下载失败（${res.status}）`)
+    const declared = Number(res.headers.get('content-length') ?? 0)
+    if (declared > 60 * 1024 * 1024) throw new Error('图片超过 60MB，请先下载到本地再设置')
+    const data = Buffer.from(await res.arrayBuffer())
+    if (!data.length) throw new Error('图片数据为空')
+    if (data.length > 60 * 1024 * 1024) throw new Error('图片超过 60MB，请先下载到本地再设置')
+    const mime =
+      sniffImageMime(data) ??
+      (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase()
+    if (!mime.startsWith('image/')) throw new Error('返回的不是图片')
+    const ext = mime.includes('png')
+      ? '.png'
+      : mime.includes('gif')
+        ? '.gif'
+        : mime.includes('webp')
+          ? '.webp'
+          : mime.includes('avif')
+            ? '.avif'
+            : '.jpg'
+    const temp = join(app.getPath('temp'), `laozheng-wallpaper-url-${Date.now()}${ext}`)
+    await writeFile(temp, data)
+    // webp / avif / gif 统一转 jpg 后再交给 Windows
+    if (ext === '.webp' || ext === '.avif' || ext === '.gif') {
+      const image = nativeImage.createFromBuffer(data)
+      if (image.isEmpty()) throw new Error('图片读取失败')
+      const jpg = join(app.getPath('temp'), `laozheng-wallpaper-${Date.now()}.jpg`)
+      await writeFile(jpg, image.toJPEG(92))
+      await applyWallpaperFile(jpg)
+      return
+    }
+    await applyWallpaperFile(temp)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 调用 Windows 系统接口设置桌面壁纸（填充模式） */
+async function applyWallpaperFile(target: string): Promise<void> {
   const quote = (value: string): string => `'${value.replace(/'/g, "''")}'`
   const script = [
     `$path = ${quote(target)}`,
@@ -1507,17 +1691,20 @@ export async function removeDownload(
 }
 
 export async function cancelTask(id: string): Promise<void> {
+  removeFromWaiting(id)
   runs.delete(id)
   controllers.get(id)?.abort()
   controllers.delete(id)
   tasks.delete(id)
   jobs.delete(id)
+  speedSamples.delete(id)
   // 等一小会儿让写文件的流退出，再清掉本次产生的半成品
   await new Promise((resolveDelay) => setTimeout(resolveDelay, 120))
   // 任务 id 由下载地址哈希得到：这期间重新下载同一地址会复用 id，不能把新任务的产物删掉
   if (tasks.has(id) || runs.has(id)) return
   await cleanupArtifacts(id)
   notify()
+  pumpQueue()
 }
 
 /** 打开下载目录：带 kind 时直接打开对应子目录（视频 / 音乐 / 漫画 / 图书 / 小说 / 修改器） */

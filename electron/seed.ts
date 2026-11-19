@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
   AppData,
@@ -8,14 +8,18 @@ import type {
   ListItem,
   VodSource
 } from '../src/shared/types'
-import { normalizeSingingVideos } from '../src/shared/singing'
+import {
+  mergeDefaultSingingVideos,
+  normalizeSingingVideos,
+  type SingingVideo
+} from '../src/shared/singing'
 import { loadData, saveData } from './store'
 
 /**
- * 首次启动的默认数据（与手机端 `DefaultSeed.kt` 同一份资产）：
- * 影视源、表世界清单（含条目与关联）、软件使用经验、演唱默认视频一次性写入。
+ * 启动时补齐默认数据（与手机端 `DefaultSeed.kt` 同一份资产）：
+ * 影视源、表世界清单只在首次启动且为空时写入；
+ * 软件使用经验与演唱默认视频每次启动都按 bvid / 工具 id 合并（用户自己的笔记保留，默认内容随版本更新）。
  *
- * 只在对应数据为空、且从未播种过时写入；用户自己改过的配置一律不覆盖。
  * 资产位置：开发时 `resources/default-seed.json`，打包后 `process.resourcesPath/default-seed.json`。
  */
 
@@ -41,6 +45,14 @@ async function readSeed(): Promise<Record<string, unknown> | null> {
     }
   }
   return null
+}
+
+/** 种子文件约 1.2MB：进程内只解析一次，避免启动阶段重复读盘 */
+let seedCache: Promise<Record<string, unknown> | null> | null = null
+
+function readSeedCached(): Promise<Record<string, unknown> | null> {
+  if (!seedCache) seedCache = readSeed()
+  return seedCache
 }
 
 interface SeedMarker {
@@ -103,6 +115,8 @@ function mapVod(value: unknown): VodSource | null {
     name: str(o, 'name', id),
     baseUrl,
     enabled: o.enabled !== false,
+    // 种子里的影视源都是内置源：不可删除，只能停用
+    builtin: true,
     region: region === 'proxy' ? 'proxy' : 'cn',
     regionManual: o.regionManual === true,
     testStatus: nullableStr(o, 'testStatus'),
@@ -187,10 +201,39 @@ function mapToolNotes(value: unknown): Record<string, string> | null {
   return Object.keys(out).length ? out : null
 }
 
-/** 启动时调用：补齐空白的影视源、清单、软件使用经验与演唱默认视频，只播种一次 */
+/** 按种子里的影视源给老数据补 builtin 标记：内置源不可删除，只能停用 */
+function markVodSourcesBuiltin(data: AppData, seed: Record<string, unknown> | null): boolean {
+  if (!seed || !Array.isArray(seed.vodSources) || !data.vodSources.length) return false
+  const presets = seed.vodSources.map(mapVod).filter((s): s is VodSource => !!s)
+  if (!presets.length) return false
+  let changed = false
+  data.vodSources = data.vodSources.map((source) => {
+    if (source.builtin) return source
+    // 显式 builtin:false 的是用户自定义源，不要覆盖
+    if (source.builtin === false) return source
+    const builtin = presets.some(
+      (preset) => preset.id === source.id || preset.baseUrl === source.baseUrl
+    )
+    if (!builtin) return source
+    changed = true
+    return { ...source, builtin: true }
+  })
+  return changed
+}
+
+/** 导入 / 云恢复后给备份里的影视源补 builtin 标记，避免默认源变成可删除 */
+export async function markBuiltinVodSources(data: AppData): Promise<boolean> {
+  return markVodSourcesBuiltin(data, await readSeedCached())
+}
+
+/**
+ * 启动第一阶段（开窗前）：只处理首次安装需要的影视源 / 清单播种。
+ * 老用户（seed-state 已存在）直接返回，不再解析 1.2MB 的种子文件，缩短首屏时间。
+ */
 export async function seedDefaultData(): Promise<void> {
   const marker = await readMarker()
-  const seed = await readSeed()
+  if (marker.done) return
+  const seed = await readSeedCached()
   if (!seed) {
     console.warn('[seed] 未找到 default-seed.json，跳过默认数据')
     return
@@ -198,55 +241,144 @@ export async function seedDefaultData(): Promise<void> {
 
   const data: AppData = await loadData()
   let changed = false
-  let markerChanged = false
 
-  if (!marker.done) {
-    if (data.vodSources.length === 0 && Array.isArray(seed.vodSources)) {
-      const sources = seed.vodSources.map(mapVod).filter((s): s is VodSource => !!s)
-      if (sources.length) {
-        data.vodSources = sources
-        changed = true
-      }
+  if (data.vodSources.length === 0 && Array.isArray(seed.vodSources)) {
+    const sources = seed.vodSources.map(mapVod).filter((s): s is VodSource => !!s)
+    if (sources.length) {
+      data.vodSources = sources
+      changed = true
     }
-
-    if (data.lists.length === 0 && Array.isArray(seed.lists)) {
-      const lists = seed.lists.map(mapList).filter((l): l is ItemList => !!l)
-      if (lists.length) {
-        const items = Array.isArray(seed.items)
-          ? seed.items.map(mapItem).filter((i): i is CollectionItem => !!i)
-          : []
-        data.lists = lists
-        data.items = items
-        data.listItems = mapListItems(seed.listItems, lists, items)
-        changed = true
-      }
-    }
-
-    if (!data.toolNotes || Object.keys(data.toolNotes).length === 0) {
-      const notes = mapToolNotes(seed.toolNotes)
-      if (notes) {
-        data.toolNotes = notes
-        changed = true
-      }
-    }
-
-    marker.done = true
-    markerChanged = true
   }
 
-  // v0.194：演唱默认视频（225 个）。老用户列表为空时补一次，自己添加过的不覆盖
-  if (!marker.singing) {
-    if (data.singingVideos.length === 0) {
-      const videos = normalizeSingingVideos(seed.singingVideos)
-      if (videos.length) {
-        data.singingVideos = videos
-        changed = true
+  if (data.lists.length === 0 && Array.isArray(seed.lists)) {
+    const lists = seed.lists.map(mapList).filter((l): l is ItemList => !!l)
+    if (lists.length) {
+      const items = Array.isArray(seed.items)
+        ? seed.items.map(mapItem).filter((i): i is CollectionItem => !!i)
+        : []
+      data.lists = lists
+      data.items = items
+      data.listItems = mapListItems(seed.listItems, lists, items)
+      changed = true
+    }
+  }
+
+  await writeMarker(false)
+  if (changed) await saveData(data)
+}
+
+/**
+ * 启动第二阶段（主窗口显示后空闲执行）：标记内置源，并合并软件使用经验与演唱默认视频。
+ * 这些数据量最大的部分不再阻塞开窗；失败只记日志，下次启动会再同步。
+ */
+export async function syncSeedExtras(): Promise<void> {
+  const marker = await readMarker()
+  const seed = await readSeedCached()
+  if (!seed) return
+  const data: AppData = await loadData()
+  let changed = false
+
+  // 老数据 / 旧版本导出的备份：种子里的影视源统一标记为内置源
+  if (markVodSourcesBuiltin(data, seed)) changed = true
+
+  // 软件使用经验：种子里有的工具每次启动都同步（老郑编辑时会把内容写回种子，随版本更新给用户）
+  const seedNotes = mapToolNotes(seed.toolNotes)
+  if (seedNotes) {
+    const current = data.toolNotes ?? {}
+    const next = { ...current }
+    let notesChanged = false
+    for (const [key, html] of Object.entries(seedNotes)) {
+      if (next[key] !== html) {
+        next[key] = html
+        notesChanged = true
       }
     }
-    marker.singing = true
-    markerChanged = true
+    if (notesChanged) {
+      data.toolNotes = next
+      changed = true
+    }
+  }
+
+  // 演唱默认视频：缺少的按 bvid 补进来，已存在的强制同步标题与 favAt。
+  // 用户端没有改名入口，标题完全由 default-seed.json 维护，老郑改名后所有用户下次启动生效。
+  const seedVideos = normalizeSingingVideos(seed.singingVideos)
+  if (seedVideos.length) {
+    const merged = mergeDefaultSingingVideos(data.singingVideos, seedVideos)
+    if (merged.changed) {
+      data.singingVideos = merged.videos
+      changed = true
+    }
   }
 
   if (changed) await saveData(data)
-  if (markerChanged) await writeMarker(marker.singing)
+  if (!marker.singing) await writeMarker(true)
+}
+
+/** 种子写回串行化 + 原子替换：避免并发写交错，或写到一半把随版本下发的种子截断 */
+let seedWriteChain: Promise<unknown> = Promise.resolve()
+
+function enqueueSeedWrite<T>(task: () => Promise<T>): Promise<T> {
+  const result = seedWriteChain.catch(() => undefined).then(task)
+  seedWriteChain = result.catch(() => undefined)
+  return result
+}
+
+async function writeSeedFile(file: string, data: Record<string, unknown>): Promise<void> {
+  const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
+  await writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, 'utf8')
+  await rename(tmp, file)
+}
+
+/**
+ * 老郑在应用里保存软件经验时，把内容写回种子文件：
+ * 下次发版后新装 / 升级用户就能拿到这份默认经验。资源目录只读时静默失败。
+ */
+export function saveDefaultToolNote(toolId: string, html: string): Promise<boolean> {
+  return enqueueSeedWrite(async () => {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(toolId) || html.length > 5_000_000) return false
+    for (const file of assetCandidates()) {
+      try {
+        const raw = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>
+        if (!raw || typeof raw !== 'object') continue
+        const notes = { ...(obj(raw.toolNotes) ?? {}) }
+        if (html.trim()) notes[toolId] = html
+        else delete notes[toolId]
+        raw.toolNotes = notes
+        await writeSeedFile(file, raw)
+        seedCache = null
+        return true
+      } catch {
+        // 当前候选文件不存在或不可写，继续尝试下一个
+      }
+    }
+    return false
+  })
+}
+
+/** 老郑在设置里添加演唱视频时，把条目写回种子文件，随下个版本带给用户 */
+export function saveSingingVideoDefault(video: unknown): Promise<boolean> {
+  return enqueueSeedWrite(async () => {
+    const [clean] = normalizeSingingVideos([video])
+    if (!clean) return false
+    const entry: SingingVideo = { ...clean, favAt: clean.favAt || Date.now() }
+    for (const file of assetCandidates()) {
+      try {
+        const raw = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>
+        if (!raw || typeof raw !== 'object') continue
+        const videos = Array.isArray(raw.singingVideos)
+          ? normalizeSingingVideos(raw.singingVideos)
+          : []
+        const index = videos.findIndex((item) => item.bvid === entry.bvid)
+        if (index >= 0) videos[index] = { ...videos[index], ...entry }
+        else videos.push(entry)
+        raw.singingVideos = videos
+        await writeSeedFile(file, raw)
+        seedCache = null
+        return true
+      } catch {
+        // 当前候选文件不存在或不可写，继续尝试下一个
+      }
+    }
+    return false
+  })
 }

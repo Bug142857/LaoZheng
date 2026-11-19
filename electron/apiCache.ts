@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { cacheRoot } from './settings'
 
@@ -21,12 +21,33 @@ interface CacheEntry<T> {
 }
 
 const MEMORY_LIMIT = 400
+/**
+ * 接口缓存磁盘上限（1GB）+ LRU 淘汰：
+ * 以前只写不删，长期使用会无限增长；超过上限后按文件修改时间从旧到新淘汰，
+ * 10 分钟内写过的文件跳过，避免删掉正在读取的缓存。
+ */
+const DISK_LIMIT_BYTES = 1024 ** 3
+const DISK_TRIM_RATIO = 0.9
+const DISK_MIN_EVICT_AGE_MS = 10 * 60_000
 const memory = new Map<string, CacheEntry<unknown>>()
 /** 正在后台刷新的 key，避免同一接口被并发重复请求 */
 const refreshing = new Set<string>()
+/** 冷启动并发请求同一 key 时共用同一个 Promise，避免首屏重复打同一接口 */
+const inflight = new Map<string, Promise<unknown>>()
 /** 用户主动刷新时的临时绕过前缀：窗口期内命中的 key 直接重新请求 */
 const forced = new Map<string, number>()
 const FORCE_WINDOW_MS = 8_000
+/**
+ * 缓存代次：导入 / 云恢复 / 清理缓存时递增。
+ * 清理前发出的请求可能晚于清理才返回，不带代次校验会把旧结果重新写回内存和磁盘。
+ */
+let epoch = 0
+/** 接口缓存磁盘占用估算：写入时累加，淘汰时重新扫描校正 */
+let diskBytes = 0
+/** 启动后第一次写入时扫描一次已有缓存，避免历史超大目录一直不触发淘汰 */
+let diskScanned = false
+let trimRunning = false
+let trimAgain = false
 
 /** 标记一批 key 前缀，在接下来几秒内跳过旧缓存、直接取最新数据（刷新按钮 / 点标题用） */
 export function forceApiCache(prefixes: string[]): void {
@@ -59,12 +80,106 @@ function fileOf(key: string): string {
   return join(dirOf(), `${createHash('sha1').update(key).digest('hex')}.json`)
 }
 
+interface DiskCacheFile {
+  path: string
+  size: number
+  mtimeMs: number
+}
+
+async function listDiskCacheFiles(): Promise<DiskCacheFile[]> {
+  let names: string[]
+  try {
+    names = await readdir(dirOf())
+  } catch {
+    return []
+  }
+  const out: DiskCacheFile[] = []
+  for (const name of names) {
+    const path = join(dirOf(), name)
+    const info = await stat(path).catch(() => null)
+    if (!info?.isFile()) continue
+    out.push({ path, size: info.size, mtimeMs: info.mtimeMs })
+  }
+  return out
+}
+
+/** 淘汰到上限的 90%：按修改时间从旧到新删，刚写过的文件不动 */
+async function trimDiskCache(): Promise<void> {
+  const files = await listDiskCacheFiles()
+  const now = Date.now()
+  let total = 0
+  const candidates: DiskCacheFile[] = []
+  for (const file of files) {
+    total += file.size
+    const isTmp = file.path.endsWith('.tmp')
+    if (isTmp) {
+      // 写入中断留下的临时文件：超过 1 小时直接清掉
+      if (now - file.mtimeMs > 60 * 60_000) {
+        await unlink(file.path).catch(() => undefined)
+        total -= file.size
+      }
+      continue
+    }
+    if (file.path.endsWith('.json') && now - file.mtimeMs > DISK_MIN_EVICT_AGE_MS) {
+      candidates.push(file)
+    }
+  }
+  diskBytes = total
+  if (total <= DISK_LIMIT_BYTES) return
+  candidates.sort((a, b) => a.mtimeMs - b.mtimeMs)
+  const target = DISK_LIMIT_BYTES * DISK_TRIM_RATIO
+  for (const file of candidates) {
+    if (total <= target) break
+    try {
+      await unlink(file.path)
+      total -= file.size
+    } catch {
+      // 文件正被占用 / 已删除：跳过，不影响其他缓存
+    }
+  }
+  diskBytes = total
+}
+
+function scheduleDiskTrim(): void {
+  if (trimRunning) {
+    trimAgain = true
+    return
+  }
+  trimRunning = true
+  void trimDiskCache()
+    .catch(() => undefined)
+    .finally(() => {
+      trimRunning = false
+      if (trimAgain) {
+        trimAgain = false
+        if (diskBytes > DISK_LIMIT_BYTES) scheduleDiskTrim()
+      }
+    })
+}
+
+/** 缓存目录被整体清理 / 切换后重置磁盘占用估算 */
+export function resetApiCacheDiskUsage(): void {
+  diskBytes = 0
+  diskScanned = false
+}
+
 function remember<T>(key: string, entry: CacheEntry<T>): void {
   if (memory.size >= MEMORY_LIMIT) {
     const oldest = memory.keys().next().value
     if (oldest) memory.delete(oldest)
   }
   memory.set(key, entry as CacheEntry<unknown>)
+}
+
+/** 同一 key 的并发加载只请求一次 */
+function loadOnce<T>(key: string, load: () => Promise<T>): Promise<T> {
+  const existing = inflight.get(key)
+  if (existing) return existing as Promise<T>
+  const promise = load().finally(() => {
+    if (inflight.get(key) === promise) inflight.delete(key)
+  })
+  inflight.set(key, promise as Promise<unknown>)
+  return promise
 }
 
 function isFailure(value: unknown): boolean {
@@ -84,15 +199,25 @@ function isFailure(value: unknown): boolean {
   return o.partial === true || o.detail?.partial === true || o.person?.partial === true
 }
 
-async function store<T>(key: string, value: T): Promise<void> {
+async function store<T>(key: string, value: T, at: number): Promise<void> {
+  // 请求发出后缓存被清理过：这次结果相对新数据已经过期，不再写回
+  if (at !== epoch) return
   const entry: CacheEntry<T> = { at: Date.now(), value }
   remember(key, entry)
+  const text = JSON.stringify(entry)
   try {
     await mkdir(dirOf(), { recursive: true })
     const target = fileOf(key)
     const tmp = `${target}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
-    await writeFile(tmp, JSON.stringify(entry), 'utf8')
+    await writeFile(tmp, text, 'utf8')
     await rename(tmp, target)
+    diskBytes += Buffer.byteLength(text, 'utf8')
+    if (!diskScanned) {
+      diskScanned = true
+      scheduleDiskTrim()
+    } else if (diskBytes > DISK_LIMIT_BYTES) {
+      scheduleDiskTrim()
+    }
   } catch {
     // 缓存写入失败不影响正常返回
   }
@@ -102,9 +227,10 @@ async function store<T>(key: string, value: T): Promise<void> {
 async function revalidate<T>(key: string, load: () => Promise<T>): Promise<void> {
   if (refreshing.has(key)) return
   refreshing.add(key)
+  const at = epoch
   try {
     const value = await load()
-    if (!isFailure(value)) await store(key, value)
+    if (!isFailure(value)) await store(key, value, at)
   } catch {
     // 后台刷新失败：继续使用旧缓存
   } finally {
@@ -116,10 +242,11 @@ async function revalidate<T>(key: string, load: () => Promise<T>): Promise<void>
 async function refreshNow<T>(key: string, load: () => Promise<T>, stale: T): Promise<T> {
   if (refreshing.has(key)) return stale
   refreshing.add(key)
+  const at = epoch
   try {
     const value = await load()
     if (!isFailure(value)) {
-      await store(key, value)
+      await store(key, value, at)
       return value
     }
     // 刷新拿到的是失败结果：仍退回旧缓存，避免断网后页面直接空白
@@ -158,12 +285,19 @@ export async function cachedResponse<T>(
   maxStaleMs = Number.POSITIVE_INFINITY
 ): Promise<T> {
   const now = Date.now()
+  // 本次请求开始时的代次：加载期间缓存被清理过就不再写回
+  const at = epoch
   // 用户刚点了刷新：这次必须拿新数据，失败时才退回旧缓存
   if (isForced(key)) {
     try {
-      const value = await load()
-      if (!isFailure(value)) await store(key, value)
-      return value
+      const value = await loadOnce(key, load)
+      if (!isFailure(value)) {
+        await store(key, value, at)
+        return value
+      }
+      // 接口正常返回了失败结果（断网 / 源站限流）：退回旧缓存，避免页面直接变空
+      const cached = await readCached<T>(key)
+      return cached !== null ? cached : value
     } catch (err) {
       const cached = await readCached<T>(key)
       if (cached !== null) return cached
@@ -192,14 +326,24 @@ export async function cachedResponse<T>(
     // 没有缓存或内容损坏：继续请求
   }
 
-  const value = await load()
-  if (!isFailure(value)) void store(key, value)
+  const value = await loadOnce(key, load)
+  if (!isFailure(value)) void store(key, value, at)
   return value
 }
 
 /** 清理缓存时同步清掉内存，否则删了磁盘还会继续命中旧数据 */
 export function clearApiCacheMemory(): void {
+  // 递增代次：清理前发出的请求返回后不能再把旧结果写回缓存
+  epoch += 1
   memory.clear()
   refreshing.clear()
   forced.clear()
+  inflight.clear()
+}
+
+/** 导入备份 / 云恢复后清掉接口缓存：避免页面继续显示导入前的列表；图片缓存不动 */
+export async function clearApiCache(): Promise<void> {
+  clearApiCacheMemory()
+  await rm(dirOf(), { recursive: true, force: true }).catch(() => undefined)
+  resetApiCacheDiskUsage()
 }

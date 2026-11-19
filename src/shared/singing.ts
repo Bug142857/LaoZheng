@@ -17,6 +17,8 @@ export interface SingingVideo {
   /** 分类名（手动添加时填写） */
   category: string
   owner: string
+  /** B站收藏夹添加时间（毫秒）；手动添加的条目为 0，排序时回退 addedAt */
+  favAt: number
   addedAt: number
 }
 
@@ -77,6 +79,43 @@ export const SINGING_TAIL_CATEGORIES = ['游戏剧情', '影视动漫', '文学�
 
 export const SINGING_MANUAL_CATEGORY = '手动添加'
 
+export interface SingingSeedMergeResult {
+  videos: SingingVideo[]
+  changed: boolean
+}
+
+/**
+ * 启动时合并默认演唱视频：
+ * - 缺少的默认视频按 bvid 补进来；
+ * - 已存在的默认视频强制同步标题与 favAt。
+ * 用户端没有改名入口，标题完全由 default-seed.json 维护，老郑改名后所有用户下次启动即生效。
+ */
+export function mergeDefaultSingingVideos(
+  videos: SingingVideo[],
+  defaults: SingingVideo[]
+): SingingSeedMergeResult {
+  if (!defaults.length) return { videos, changed: false }
+  const defaultsById = new Map(defaults.map((video) => [video.bvid, video]))
+  const existing = new Set(videos.map((video) => video.bvid))
+  let changed = false
+  const next = videos.map((video) => {
+    const def = defaultsById.get(video.bvid)
+    if (!def) return video
+    const title = def.title || video.title
+    const favAt = def.favAt > 0 && def.favAt !== video.favAt ? def.favAt : video.favAt
+    if (title === video.title && favAt === video.favAt) return video
+    changed = true
+    return { ...video, title, favAt }
+  })
+  for (const def of defaults) {
+    if (existing.has(def.bvid)) continue
+    existing.add(def.bvid)
+    next.push(def)
+    changed = true
+  }
+  return { videos: changed ? next : videos, changed }
+}
+
 const BVID_RE = /^BV[0-9A-Za-z]{10}$/
 
 export function isBvid(value: unknown): value is string {
@@ -115,6 +154,10 @@ export function normalizeSingingVideos(raw: unknown): SingingVideo[] {
           ? o.category.trim()
           : SINGING_MANUAL_CATEGORY,
       owner: typeof o.owner === 'string' ? o.owner.trim() : '',
+      favAt:
+        typeof o.favAt === 'number' && Number.isFinite(o.favAt) && o.favAt > 0
+          ? Math.round(o.favAt)
+          : 0,
       addedAt:
         typeof o.addedAt === 'number' && Number.isFinite(o.addedAt) ? o.addedAt : Date.now()
     })

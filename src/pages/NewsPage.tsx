@@ -4,6 +4,7 @@ import { useData } from '../state/DataContext'
 import { EmptyState, ModuleShortcuts, Pagination } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import {
   NEWS_CATEGORIES,
   newsCategoryLabel,
@@ -75,6 +76,7 @@ export function NewsPage({
   const [error, setError] = useState<string | null>(null)
   const [detailNode, setDetailNode] = useState<NewsNodeCard | null>(null)
   const [detail, setDetail] = useState<NewsNodeDetail | null>(null)
+  useDetailScrollRestore(!!detail, 'news')
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
   const feedSeq = useRef(0)

@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process'
+import { ffmpegBinary } from './downloads'
 import { normalizeBaseUrl, parsePlayGroups } from '../src/shared/vod'
 import type {
   VodCategoriesResponse,
@@ -5,6 +7,7 @@ import type {
   VodDetailResponse,
   VodItem,
   VodListResponse,
+  VodQualityProbeResponse,
   VodSearchItem,
   VodSearchResponse,
   VodSourceInput,
@@ -280,5 +283,198 @@ export async function testVodSource(source: VodSourceInput): Promise<VodTestResp
       return { ok: true, status: 'proxy', message: '需外网 · 直连超时/被拒', testAt, region: 'proxy' }
     }
     return { ok: true, status: 'dead', message: '已失效 · 连接失败', testAt, region: 'cn' }
+  }
+}
+
+/** 按画面宽度映射成 B 站式档位（宽银幕裁切如 1280x506 仍归 720P；竖屏按高度算） */
+function qualityLabelOf(width: number, height: number): string {
+  const base = Math.max(width, height)
+  if (base >= 3600) return '4K'
+  if (base >= 2400) return '2K'
+  if (base >= 1800) return '1080P'
+  if (base >= 1200) return '720P'
+  if (base >= 800) return '480P'
+  if (width > 0) return `${width}×${height}`
+  return ''
+}
+
+/** 解析 m3u8 主清单里的清晰度档位；不是 m3u8 返回 null（单码率清单返回空数组） */
+function parseHlsQualities(text: string): string[] | null {
+  if (!text.trimStart().startsWith('#EXTM3U')) return null
+  const seen = new Set<string>()
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith('#EXT-X-STREAM-INF')) continue
+    const resolution = /RESOLUTION=(\d+)x(\d+)/i.exec(line)
+    if (!resolution) continue
+    const label = qualityLabelOf(Number(resolution[1]), Number(resolution[2]))
+    if (label) seen.add(label)
+  }
+  const order = ['4K', '2K', '1080P', '720P', '480P']
+  return [...seen].sort((a, b) => {
+    const ia = order.indexOf(a)
+    const ib = order.indexOf(b)
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
+  })
+}
+
+/** 从分享页 HTML 里找真实 m3u8（可能是相对路径） */
+function extractM3u8(html: string, base: string): string | null {
+  const absolute = /https?:\\?\/\\?\/[^"'\s\\]+?\.m3u8[^"'\s\\]*/i.exec(html)
+  if (absolute) return absolute[0].replace(/\\\//g, '/')
+  const relative = /["'](\/[^"'\s]*?\.m3u8[^"'\s]*)["']/i.exec(html)
+  if (!relative) return null
+  try {
+    return new URL(relative[1], base).toString()
+  } catch {
+    return null
+  }
+}
+
+/** 判断是否属于内网 / 回环 / 链路本地 / 组播等不该由主进程访问的地址 */
+function isPrivateV4(parts: number[]): boolean {
+  if (parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true
+  const [a, b] = parts
+  if (a === 0 || a === 10 || a === 127) return true
+  if (a === 169 && b === 254) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  if (a === 192 && b === 168) return true
+  if (a === 100 && b >= 64 && b <= 127) return true
+  if (a >= 224) return true
+  return false
+}
+
+/** 内网主机名判断：localhost / .local、点分 IPv4、纯数字或十六进制整数写法、IPv6 回环与本地段 */
+function isPrivateHostname(rawHost: string): boolean {
+  const host = rawHost.trim().toLowerCase().replace(/^\[|\]$/g, '')
+  if (!host) return true
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+  if (v4) return isPrivateV4(v4.slice(1).map(Number))
+  // http://2130706433/ / http://0x7f000001/ 这类整数写法
+  if (/^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host)) {
+    const value = /^\d+$/.test(host) ? Number(host) : Number.parseInt(host.slice(2), 16)
+    if (Number.isFinite(value)) {
+      return isPrivateV4([
+        (value >>> 24) & 255,
+        (value >>> 16) & 255,
+        (value >>> 8) & 255,
+        value & 255
+      ])
+    }
+  }
+  if (host.includes(':')) {
+    if (host === '::1' || host === '::') return true
+    if (/^f[cd][0-9a-f]{2}:/.test(host)) return true
+    if (/^fe[89ab][0-9a-f]:/.test(host)) return true
+    const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(host)
+    if (mapped) return isPrivateV4(mapped[1].split('.').map(Number))
+  }
+  return false
+}
+
+/** 探测只允许访问公网 http(s) 地址，避免被采集源引到本机 / 内网服务 */
+function isPublicHttpUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+    return !isPrivateHostname(url.hostname)
+  } catch {
+    return false
+  }
+}
+
+/** 单码率清单拿不到档位时，用随包 ffmpeg 读流头里的真实分辨率 */
+function probeStreamResolution(url: string): Promise<string[]> {
+  if (!isPublicHttpUrl(url)) return Promise.resolve([])
+  const bin = ffmpegBinary()
+  if (!bin) {
+    console.error('[vod-probe] 找不到 ffmpeg')
+    return Promise.resolve([])
+  }
+  return new Promise((resolve) => {
+    const proc = spawn(
+      bin,
+      [
+        '-hide_banner',
+        '-nostdin',
+        // 只允许 http(s) 相关协议，禁止 file / ftp 等本地或非预期通道
+        '-protocol_whitelist',
+        'http,https,tcp,tls,crypto',
+        '-analyzeduration',
+        '1500000',
+        '-probesize',
+        '800000',
+        '-i',
+        url,
+        '-frames:v',
+        '1',
+        '-f',
+        'null',
+        '-'
+      ],
+      { windowsHide: true }
+    )
+    let stderr = ''
+    let settled = false
+    const finish = (result: string[]): void => {
+      if (settled) return
+      settled = true
+      try {
+        proc.kill('SIGKILL')
+      } catch {
+        // 进程可能已经退出
+      }
+      resolve(result)
+    }
+    const timer = setTimeout(() => finish([]), 12_000)
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString()
+      const match = /,\s*(\d{2,5})x(\d{3,5})[\s,]/.exec(stderr)
+      if (!match) return
+      clearTimeout(timer)
+      const label = qualityLabelOf(Number(match[1]), Number(match[2]))
+      finish(label ? [label] : [])
+    })
+    proc.on('error', (err) => {
+      console.error('[vod-probe] ffmpeg 启动失败', err)
+      clearTimeout(timer)
+      finish([])
+    })
+    proc.on('exit', (code) => {
+      if (!settled) console.error('[vod-probe] ffmpeg 退出', code, stderr.slice(-300))
+      clearTimeout(timer)
+      finish([])
+    })
+  })
+}
+
+/**
+ * 探测条目清晰度：优先解析第一条 3u8 线路的主清单，多码率会把所有档位列全；
+ * 单码率清单 / 分享页则先找到真实 m3u8，再用 ffmpeg 读流头拿分辨率。
+ */
+export async function probeVodQualities(
+  from: string,
+  playUrl: string
+): Promise<VodQualityProbeResponse> {
+  const groups = parsePlayGroups(from, playUrl)
+  const first = groups[0]?.episodes[0]
+  if (!first || !isPublicHttpUrl(first.url)) return { ok: true, qualities: [] }
+  let target = first.url
+  try {
+    const text = await getText(first.url, 6000)
+    let qualities = parseHlsQualities(text)
+    if (!qualities) {
+      const inner = extractM3u8(text, first.url)
+      if (inner && isPublicHttpUrl(inner)) {
+        target = inner
+        const body = await getText(inner, 6000).catch(() => '')
+        qualities = body ? parseHlsQualities(body) : null
+      }
+    }
+    if (qualities && qualities.length) return { ok: true, qualities: qualities.slice(0, 5) }
+    return { ok: true, qualities: await probeStreamResolution(target) }
+  } catch (err) {
+    console.error('[vod-probe] 探测失败', target, err)
+    return { ok: true, qualities: [] }
   }
 }

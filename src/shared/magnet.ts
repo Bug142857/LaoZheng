@@ -22,6 +22,8 @@ export interface MagnetApiMapping {
 export interface MagnetSource {
   id: string
   name: string
+  /** 内置默认资源库：不可删除，只能停用；自定义源可删 */
+  builtin?: boolean
   enabled: boolean
   /** 站点需要外网 / 代理，仅作提示，实际走系统代理 */
   needProxy: boolean

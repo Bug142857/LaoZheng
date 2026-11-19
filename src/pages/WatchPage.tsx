@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, Download, Heart } from 'lucide-react'
 import { useData } from '../state/DataContext'
-import { EmptyState, ModuleShortcuts, Pagination } from '../components/ui'
+import { CacheTip, EmptyState, ModuleShortcuts, Pagination } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
 import { VideoPlayer } from '../components/VideoPlayer'
 import { loadCache, saveCache } from '../utils/cache'
+import { useDetailScrollRestore } from '../utils/scroll'
 import { requestDownload } from '../utils/download'
 import {
   parsePlayGroups,
@@ -237,7 +238,7 @@ export function WatchPage({
   onOpenFavorites?: () => void
   onOpenDownloads?: () => void
 }) {
-  const { data, update } = useData()
+  const { data, update, updateProgress, getProgressSnapshot } = useData()
   const favModule = variant ? 'h1' : 'watch'
   const [keyword, setKeyword] = useState('')
   const [sourceId, setSourceId] = useState('')
@@ -245,8 +246,11 @@ export function WatchPage({
   const [searched, setSearched] = useState(false)
   const [progress, setProgress] = useState({ done: 0, total: 0 })
   const [results, setResults] = useState<WatchResult[]>([])
+  /** 搜索结果条目清晰度探测结果（key = sourceId|vod_id，空数组表示探测过但没识别到） */
+  const [qualityInfo, setQualityInfo] = useState<Record<string, string[]>>({})
   const [sourceErrors, setSourceErrors] = useState<{ name: string; error: string }[]>([])
   const [playback, setPlayback] = useState<Playback | null>(null)
+  useDetailScrollRestore(!!playback, 'watch')
   /** 当前播放页是不是从收藏 / 清单外部入口进来的：是则返回走上一页 */
   const [externalPlayback, setExternalPlayback] = useState(false)
   const [episodeAsc, setEpisodeAsc] = useState(false)
@@ -258,6 +262,8 @@ export function WatchPage({
   const handledFocusRef = useRef('')
   const handledSearchRef = useRef('')
   const playbackRef = useRef<HTMLDivElement | null>(null)
+  /** 已发起过清晰度探测的搜索结果，避免列表更新时重复请求 */
+  const probedQualityRef = useRef(new Set<string>())
   /** 播放失败时只自动往上一集降一次，避免连续失败一路跳到底 */
   const downgradedRef = useRef(false)
 
@@ -705,6 +711,36 @@ export function WatchPage({
     setProgress((prev) => ({ ...prev, done: prev.total }))
   }
 
+  // 搜索结果逐条探测真实清晰度：多码率源直接读主清单，单码率源由主进程用 ffmpeg 读流头；
+  // 只探前 12 条（并发 2），同一 sourceId+vod_id 只探一次，主进程按地址哈希缓存 30 分钟
+  useEffect(() => {
+    if (variant) return
+    const pending = results
+      .slice(0, 12)
+      .filter((item) => {
+        const key = `${item.sourceId}|${item.vod_id}`
+        return !!item.vod_play_url && !probedQualityRef.current.has(key)
+      })
+    if (!pending.length) return
+    for (const item of pending) probedQualityRef.current.add(`${item.sourceId}|${item.vod_id}`)
+    const queue = pending.slice()
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const item = queue.shift()
+        if (!item) return
+        const key = `${item.sourceId}|${item.vod_id}`
+        try {
+          const res = await window.laozheng.probeVodQualities(item.vod_play_from, item.vod_play_url)
+          setQualityInfo((prev) => ({ ...prev, [key]: res.ok ? res.qualities : [] }))
+        } catch {
+          // 探测失败只留空标签，不影响搜索结果本身
+          setQualityInfo((prev) => ({ ...prev, [key]: [] }))
+        }
+      }
+    }
+    void Promise.all(Array.from({ length: Math.min(2, queue.length) }, worker))
+  }, [results, variant])
+
   const startPlayback = (
     source: VodSource,
     item: VodItem,
@@ -731,11 +767,8 @@ export function WatchPage({
     if (item.vod_id > 0) {
       const progressKey = episodeProgressKey(source.id, item.vod_id)
       const value = `${group.name}|${episode.name}`
-      if (data.readProgress[progressKey] !== value) {
-        update((d) => ({
-          ...d,
-          readProgress: { ...d.readProgress, [progressKey]: value }
-        }))
+      if (getProgressSnapshot()[progressKey] !== value) {
+        updateProgress(progressKey, value)
       }
     }
   }
@@ -801,7 +834,7 @@ export function WatchPage({
       if (res.ok && res.item && res.groups?.length) {
         const groups = res.groups
         // 优先续「上次看到的那一集」（收藏后可能又看了别的集），没有再按收藏里保存的地址找
-        const saved = data.readProgress[episodeProgressKey(source.id, target.vodId)] ?? ''
+        const saved = getProgressSnapshot()[episodeProgressKey(source.id, target.vodId)] ?? ''
         const [savedGroup, savedEp] = saved.includes('|') ? saved.split('|') : ['', saved]
         let gi = savedEp
           ? groups.findIndex(
@@ -1196,7 +1229,7 @@ export function WatchPage({
 
             {h1Loading && h1Items.length === 0 ? (
               <EmptyState title="正在加载…" desc="外网片源首次加载可能稍慢。" />
-            ) : h1Error ? (
+            ) : h1Error && h1Items.length === 0 ? (
               <EmptyState
                 title="加载失败"
                 desc={h1Error}
@@ -1213,6 +1246,12 @@ export function WatchPage({
               />
             ) : (
               <>
+                {h1Error ? (
+                  <CacheTip
+                    message={`刷新失败：${h1Error}，当前显示上次缓存。`}
+                    onRetry={() => void loadH1(h1Page, h1Keyword, h1Type)}
+                  />
+                ) : null}
                 <div className="comic-grid">
                   {h1Items.map((item) => {
                     const source = h1ById.get(item.sourceId)
@@ -1446,7 +1485,7 @@ export function WatchPage({
               : `共 ${results.length} 条结果（${progress.total || sources.length} 个片源）`}
           </div>
           <div className="rows">
-            {results.map((item) => {
+            {results.map((item, index) => {
               const fav = favOf(item.sourceId, item.vod_id)
               const source = sourceById.get(item.sourceId)
               return (
@@ -1468,6 +1507,25 @@ export function WatchPage({
                         .join(' · ') || '—'}
                     </div>
                     <div className="row-meta">来自 {item.sourceName}</div>
+                    {(() => {
+                      const info = qualityInfo[`${item.sourceId}|${item.vod_id}`]
+                      if (info?.length) {
+                        return (
+                          <div className="row-meta row-qualities">
+                            <span>清晰度</span>
+                            {info.map((quality) => (
+                              <span key={quality} className="badge brand">
+                                {quality}
+                              </span>
+                            ))}
+                          </div>
+                        )
+                      }
+                      if (!info && index < 12 && item.vod_play_url) {
+                        return <div className="row-meta row-quality-wait">清晰度检测中…</div>
+                      }
+                      return null
+                    })()}
                   </div>
                   <button
                     className="icon-btn"
