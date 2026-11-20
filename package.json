@@ -1,6 +1,6 @@
 {
   "name": "laozheng-pc",
-  "version": "0.228.0",
+  "version": "0.229.0",
   "private": true,
   "description": "老郑分享 PC 端（Electron + React）",
   "author": "老郑",
@@ -64,7 +64,14 @@
       "!node_modules/artplayer/**",
       "!node_modules/danmaku/**"
     ],
-    "electronLanguages": ["zh-CN", "zh-TW", "en-US", "en-GB", "ja", "ko"],
+    "electronLanguages": [
+      "zh-CN",
+      "zh-TW",
+      "en-US",
+      "en-GB",
+      "ja",
+      "ko"
+    ],
     "compression": "maximum",
     "extraResources": [
       {

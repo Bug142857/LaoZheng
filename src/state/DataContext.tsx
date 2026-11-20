@@ -87,6 +87,30 @@ export function DataProvider({ children }: { children: ReactNode }) {
     }
   }, [notifyProgress])
 
+  // 新版本首次启动：种子里的软件使用经验 / 演唱标题在开窗后才合并，
+  // 主进程合并完通知这里重新读一次，避免界面一直显示旧内容。
+  useEffect(() => {
+    let alive = true
+    const off = window.laozheng.onSeedSynced(() => {
+      // 本地还有没落盘的修改时不覆盖，下次启动再同步
+      if (dirtyRef.current) return
+      window.laozheng
+        .loadData()
+        .then((loaded) => {
+          if (!alive) return
+          dataRef.current = loaded
+          progressRef.current = loaded.readProgress
+          setData(loaded)
+          notifyProgress()
+        })
+        .catch((err) => console.error('[data] 种子同步后刷新数据失败', err))
+    })
+    return () => {
+      alive = false
+      off()
+    }
+  }, [notifyProgress])
+
   const flush = useCallback((next: AppData) => {
     setSaveState('saving')
     saveChainRef.current = saveChainRef.current

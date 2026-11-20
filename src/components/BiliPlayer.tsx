@@ -285,18 +285,14 @@ export function BiliPlayer({
    * 弹幕：用 Danmaku 引擎渲染。轨道分配按每条弹幕的实际宽度做碰撞检测
    * （同轨不重叠、不追尾，顶部 / 底部按停留时间占位），即 B 站弹幕的排版算法；
    * 播放 / 暂停 / 拖动进度由引擎跟随视频自动同步。
-   * 字号随播放器宽度放大（全屏约 1.8 倍），滚动速度按宽度换算，横穿屏幕约 8 秒。
+   * 字号与 B 站播放器一致（18 / 25 / 36px 固定），滚屏速度按播放器宽度换算，横穿约 8 秒。
    */
   useEffect(() => {
     const video = artRef.current?.video
     const layer = danmakuLayerRef.current
     if (!video || !layer || !danmakuOn || !danmaku?.length) return
 
-    /** 900px 宽以内保持原字号，更宽的窗口 / 全屏按比例放大，上限 1.8 倍 */
-    const fontScaleOf = (): number =>
-      Math.round(Math.min(1.8, Math.max(1, layer.clientWidth / 900)) * 10) / 10
-
-    const build = (scale: number): Danmaku =>
+    const build = (): Danmaku =>
       new Danmaku({
         container: layer,
         media: video,
@@ -313,7 +309,8 @@ export function BiliPlayer({
               | 'rtl',
             style: {
               color: color !== 0xffffff ? `#${color.toString(16).padStart(6, '0')}` : '#ffffff',
-              fontSize: `${Math.round((item.size >= 30 ? 22 : 18) * scale)}px`,
+              // B 站字号档位：18 小 / 25 标准 / 36 大
+              fontSize: `${item.size >= 30 ? 36 : item.size > 0 && item.size <= 20 ? 18 : 25}px`,
               lineHeight: '1.2',
               fontWeight: '600',
               textShadow: '0 1px 2px rgba(0, 0, 0, 0.9), 0 0 4px rgba(0, 0, 0, 0.6)'
@@ -322,23 +319,14 @@ export function BiliPlayer({
         })
       })
 
-    let scale = fontScaleOf()
-    let engine = build(scale)
+    let engine = build()
     let timer = 0
 
-    // 窗口缩放 / 进出全屏：字号档位变了就重建（碰撞检测用的是创建时测量的弹幕宽度），
-    // 否则只重新分配轨道并更新滚动速度
+    // 窗口缩放 / 进出全屏：字号固定不变，只需重新分配轨道并更新滚动速度
     const resize = (): void => {
       window.clearTimeout(timer)
       timer = window.setTimeout(() => {
         if (!layer.clientWidth) return
-        const next = fontScaleOf()
-        if (next !== scale) {
-          engine.destroy()
-          engine = build(next)
-          scale = next
-          return
-        }
         engine.resize()
         engine.speed = Math.max(80, layer.clientWidth / 8)
       }, 220)

@@ -525,6 +525,11 @@ if (!gotLock) {
       // 避免 1.2MB JSON 解析和写盘与开窗抢时间；失败只记日志，下次启动再补。
       setTimeout(() => {
         void syncSeedExtras()
+          .then((changed) => {
+            // 新版首次启动：种子里的标题 / 使用经验在开窗后才合并，
+            // 通知渲染层重新读一次数据，避免用户以为「更新后没变化」
+            if (changed && !win.isDestroyed()) win.webContents.send('data:seedSynced')
+          })
           .catch((err) => console.error('[seed] 空闲同步种子附加数据失败', err))
           .finally(() => {
             void ensureDailySnapshot(

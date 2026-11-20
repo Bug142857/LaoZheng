@@ -619,8 +619,17 @@ export function ToolsPage({
       return { ...current, toolNotes: next }
     })
     // 老郑的编辑同步写回默认种子：用户更新版本后就能看到这份经验
-    void window.laozheng.saveToolNoteDefault(tool.id, clean).catch(() => undefined)
-    if (notify) onNotice(`已保存「${tool.name}」的使用经验`)
+    void window.laozheng
+      .saveToolNoteDefault(tool.id, clean)
+      .then((ok) => {
+        if (!notify) return
+        onNotice(
+          ok
+            ? `已保存「${tool.name}」的使用经验`
+            : '笔记已保存本机，但写回默认种子失败，发版不会带上这条修改'
+        )
+      })
+      .catch(() => undefined)
   }
 
   const persistActive = (notify: boolean) => {

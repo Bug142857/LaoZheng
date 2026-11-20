@@ -536,6 +536,8 @@ export interface LaozhengApi {
   setReadProgress: (key: string, value: string) => Promise<void>
   /** 暂停 / 切集 / 退出前立即把进度刷到磁盘 */
   flushReadProgress: () => Promise<void>
+  /** 启动后种子里的软件经验 / 演唱标题合并完成，通知渲染层重新读数据 */
+  onSeedSynced: (callback: () => void) => () => void
   /** 覆盖前生成带时间戳的本地快照；失败时调用方中止覆盖 */
   snapshotData: (reason: string) => Promise<DataSnapshotCreateResult>
   listSnapshots: () => Promise<DataSnapshotInfo[]>

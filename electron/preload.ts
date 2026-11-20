@@ -11,6 +11,11 @@ const api: LaozhengApi = {
   },
   setReadProgress: (key, value) => ipcRenderer.invoke('data:setProgress', key, value),
   flushReadProgress: () => ipcRenderer.invoke('data:flushProgress'),
+  onSeedSynced: (callback) => {
+    const handler = (): void => callback()
+    ipcRenderer.on('data:seedSynced', handler)
+    return () => ipcRenderer.removeListener('data:seedSynced', handler)
+  },
   snapshotData: (reason) => ipcRenderer.invoke('data:snapshot', reason),
   listSnapshots: () => ipcRenderer.invoke('data:snapshots'),
   restoreSnapshot: (name) => ipcRenderer.invoke('data:restoreSnapshot', name),

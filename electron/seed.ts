@@ -35,6 +35,19 @@ function assetCandidates(): string[] {
   ]
 }
 
+/**
+ * 老郑源码仓库里的默认种子：打包版在开发者模式改标题 / 使用经验时也要写回这里，
+ * 否则修改只留在本机安装目录，发版构建拿不到，另一台电脑更新后看不到变化。
+ */
+const DEV_REPO_SEED = 'D:\\D_P\\LaoZheng\\resources\\default-seed.json'
+
+/** 写回时所有可写位置都写一份：本机安装目录 + 源码仓库（发版用） */
+function seedWriteCandidates(): string[] {
+  const list = assetCandidates()
+  if (app.isPackaged) list.push(DEV_REPO_SEED)
+  return [...new Set(list)]
+}
+
 async function readSeed(): Promise<Record<string, unknown> | null> {
   for (const file of assetCandidates()) {
     try {
@@ -271,10 +284,10 @@ export async function seedDefaultData(): Promise<void> {
  * 启动第二阶段（主窗口显示后空闲执行）：标记内置源，并合并软件使用经验与演唱默认视频。
  * 这些数据量最大的部分不再阻塞开窗；失败只记日志，下次启动会再同步。
  */
-export async function syncSeedExtras(): Promise<void> {
+export async function syncSeedExtras(): Promise<boolean> {
   const marker = await readMarker()
   const seed = await readSeedCached()
-  if (!seed) return
+  if (!seed) return false
   const data: AppData = await loadData()
   let changed = false
 
@@ -312,6 +325,7 @@ export async function syncSeedExtras(): Promise<void> {
 
   if (changed) await saveData(data)
   if (!marker.singing) await writeMarker(true)
+  return changed
 }
 
 /** 种子写回串行化 + 原子替换：避免并发写交错，或写到一半把随版本下发的种子截断 */
@@ -330,55 +344,58 @@ async function writeSeedFile(file: string, data: Record<string, unknown>): Promi
 }
 
 /**
+ * 把所有可写位置的种子各写一份（本机安装目录 + 源码仓库）。
+ * 只写成功一个不算完：源码仓库那份才是发版时带给其他电脑的内容。
+ */
+async function writeSeedEverywhere(
+  mutate: (raw: Record<string, unknown>) => void
+): Promise<boolean> {
+  let wrote = false
+  for (const file of seedWriteCandidates()) {
+    try {
+      const raw = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>
+      if (!raw || typeof raw !== 'object') continue
+      mutate(raw)
+      await writeSeedFile(file, raw)
+      wrote = true
+    } catch {
+      // 当前候选文件不存在或不可写，继续尝试下一个
+    }
+  }
+  if (wrote) seedCache = null
+  return wrote
+}
+
+/**
  * 老郑在应用里保存软件经验时，把内容写回种子文件：
- * 下次发版后新装 / 升级用户就能拿到这份默认经验。资源目录只读时静默失败。
+ * 本机安装目录与源码仓库各写一份，发版后新装 / 升级用户就能拿到这份默认经验。
  */
 export function saveDefaultToolNote(toolId: string, html: string): Promise<boolean> {
   return enqueueSeedWrite(async () => {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(toolId) || html.length > 5_000_000) return false
-    for (const file of assetCandidates()) {
-      try {
-        const raw = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>
-        if (!raw || typeof raw !== 'object') continue
-        const notes = { ...(obj(raw.toolNotes) ?? {}) }
-        if (html.trim()) notes[toolId] = html
-        else delete notes[toolId]
-        raw.toolNotes = notes
-        await writeSeedFile(file, raw)
-        seedCache = null
-        return true
-      } catch {
-        // 当前候选文件不存在或不可写，继续尝试下一个
-      }
-    }
-    return false
+    return writeSeedEverywhere((raw) => {
+      const notes = { ...(obj(raw.toolNotes) ?? {}) }
+      if (html.trim()) notes[toolId] = html
+      else delete notes[toolId]
+      raw.toolNotes = notes
+    })
   })
 }
 
-/** 老郑在设置里添加演唱视频时，把条目写回种子文件，随下个版本带给用户 */
+/** 老郑在设置里添加 / 改名演唱视频时，把条目写回种子，随下个版本带给用户 */
 export function saveSingingVideoDefault(video: unknown): Promise<boolean> {
   return enqueueSeedWrite(async () => {
     const [clean] = normalizeSingingVideos([video])
     if (!clean) return false
     const entry: SingingVideo = { ...clean, favAt: clean.favAt || Date.now() }
-    for (const file of assetCandidates()) {
-      try {
-        const raw = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>
-        if (!raw || typeof raw !== 'object') continue
-        const videos = Array.isArray(raw.singingVideos)
-          ? normalizeSingingVideos(raw.singingVideos)
-          : []
-        const index = videos.findIndex((item) => item.bvid === entry.bvid)
-        if (index >= 0) videos[index] = { ...videos[index], ...entry }
-        else videos.push(entry)
-        raw.singingVideos = videos
-        await writeSeedFile(file, raw)
-        seedCache = null
-        return true
-      } catch {
-        // 当前候选文件不存在或不可写，继续尝试下一个
-      }
-    }
-    return false
+    return writeSeedEverywhere((raw) => {
+      const videos = Array.isArray(raw.singingVideos)
+        ? normalizeSingingVideos(raw.singingVideos)
+        : []
+      const index = videos.findIndex((item) => item.bvid === entry.bvid)
+      if (index >= 0) videos[index] = { ...videos[index], ...entry }
+      else videos.push(entry)
+      raw.singingVideos = videos
+    })
   })
 }

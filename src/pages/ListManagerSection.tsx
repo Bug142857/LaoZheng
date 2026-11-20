@@ -281,12 +281,20 @@ export function ListManagerSection({
           : [...d.singingVideos, entry]
       }))
       // 写回默认种子，用户更新版本后就能看到这个视频
-      void window.laozheng.saveSingingVideoDefault(entry).catch(() => undefined)
+      void window.laozheng
+        .saveSingingVideoDefault(entry)
+        .then((ok) => {
+          onNotice(
+            ok
+              ? `已添加「${entry.title}」`
+              : '视频已添加本机，但写回默认种子失败，发版不会带上这条'
+          )
+        })
+        .catch(() => undefined)
       setSingingAddOpen(false)
       setSingingLink('')
       setSingingTitle('')
       setSingingCategory('')
-      onNotice(`已添加「${entry.title}」`)
     } catch (err) {
       setSingingError(err instanceof Error ? err.message : '添加失败')
     } finally {
@@ -303,9 +311,17 @@ export function ListManagerSection({
       singingVideos: d.singingVideos.map((video) => (video.bvid === target.bvid ? next : video))
     }))
     // 默认标题同步写回种子，随下个版本发给用户
-    void window.laozheng.saveSingingVideoDefault(next).catch(() => undefined)
+    void window.laozheng
+      .saveSingingVideoDefault(next)
+      .then((ok) => {
+        onNotice(
+          ok
+            ? `已改名为「${title}」`
+            : '改名已保存本机，但写回默认种子失败，发版不会带上这条修改'
+        )
+      })
+      .catch(() => undefined)
     setSingingRenameTarget(null)
-    onNotice(`已改名为「${title}」`)
   }
 
   const rows: ReactNode[] = []
