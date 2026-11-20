@@ -87,7 +87,8 @@ export function openLoginWindow(options: LoginWindowOptions): Promise<LoginWindo
     maximizable: false,
     webPreferences: {
       partition: LIVE_PARTITION,
-      sandbox: false,
+      // 登录窗口不注入 preload，也不依赖 Node；远端页面统一开启 OS 沙箱
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false
     }

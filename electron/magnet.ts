@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, session, shell } from 'electron'
-import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
+import { existsSync } from 'node:fs'
+import { appendLogSync } from './logFile'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
@@ -81,12 +82,7 @@ function logTime(): string {
 
 /** 测试 / 搜索失败日志：只记资源库、地址和错误，不记任何账号信息 */
 function appendMagnetLog(tag: string, message: string): void {
-  try {
-    mkdirSync(app.getPath('userData'), { recursive: true })
-    appendFileSync(logPath(), `[${logTime()}] ${tag} ${message.replace(/\s+/g, ' ')}\n`, 'utf8')
-  } catch {
-    // 日志失败不影响搜索
-  }
+  appendLogSync(logPath(), `[${logTime()}] ${tag} ${message.replace(/\s+/g, ' ')}\n`)
 }
 
 function stamp(): string {

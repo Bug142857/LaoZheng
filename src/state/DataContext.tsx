@@ -206,11 +206,17 @@ export function DataProvider({ children }: { children: ReactNode }) {
       clearModuleCaches()
       // 常驻挂载的模块页还持有旧源的列表 / 详情状态，广播出去让 App 重新挂载它们
       window.dispatchEvent(new CustomEvent('laozheng:data-replaced'))
+      // 备份没带播放进度时主进程会保留本机进度（见 data:applyExtras），
+      // 渲染层保持一致，避免本次会话进度看起来被清空、重启后又重新出现。
+      const nextProgress = Object.keys(next.readProgress ?? {}).length
+        ? next.readProgress
+        : dataRef.current.readProgress
       // 电视源 / 下载记录 / 磁力源 / 本机设置 / 磁力搜索缓存都由主进程各自存储，
       // 备份里的这些字段已通过 applyBackupExtras 写回；不再落进 data.json，
       // 否则之后恢复快照会把 data.json 里的旧副本重新盖回这些存储。
       const persisted: AppData = {
         ...next,
+        readProgress: nextProgress,
         liveSources: undefined,
         downloads: undefined,
         magnetSources: undefined,

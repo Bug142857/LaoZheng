@@ -105,6 +105,10 @@ function toInput(source: NovelSource) {
   }
 }
 
+function chapterCacheKey(sourceId: string, bookId: string, chapterId: string): string {
+  return `${sourceId}|${bookId}|${chapterId}`
+}
+
 function progressKey(sourceId: string, bookId: string): string {
   return `novel/${sourceId}/${bookId}`
 }
@@ -225,6 +229,29 @@ export function NovelPage({
   const detailSeq = useRef(0)
   const readerSeq = useRef(0)
   const readerRef = useRef<HTMLDivElement | null>(null)
+  /** 预加载过的章节正文：最多保留最近 8 章，切章时直接命中 */
+  const chapterCacheRef = useRef<Map<string, string>>(new Map())
+  const prefetchingRef = useRef<Set<string>>(new Set())
+  /** 预取定时器 / 代次：关闭详情或换书后作废，避免晚到的正文写回已清空的缓存 */
+  const prefetchTimersRef = useRef<Set<number>>(new Set())
+  const prefetchGenRef = useRef(0)
+
+  const resetChapterPrefetch = () => {
+    prefetchGenRef.current += 1
+    for (const timer of prefetchTimersRef.current) window.clearTimeout(timer)
+    prefetchTimersRef.current.clear()
+    prefetchingRef.current.clear()
+    chapterCacheRef.current.clear()
+  }
+
+  // 页面卸载时清掉未触发的预取定时器；已在请求中的结果只写 ref，不会再影响界面
+  useEffect(() => {
+    const timers = prefetchTimersRef.current
+    return () => {
+      for (const timer of timers) window.clearTimeout(timer)
+      timers.clear()
+    }
+  }, [])
 
   // 排版设置按本机持久化；改字号 / 行距不重置章节进度与滚动位置
   useEffect(() => {
@@ -456,6 +483,7 @@ export function NovelPage({
   ) => {
     const seq = ++detailSeq.current
     readerSeq.current += 1
+    resetChapterPrefetch()
     setDetailSourceId(source.id)
     setDetailLoading(true)
     setDetailError(null)
@@ -491,15 +519,66 @@ export function NovelPage({
   const closeDetail = () => {
     detailSeq.current += 1
     readerSeq.current += 1
+    resetChapterPrefetch()
     setDetail(null)
     setDetailError(null)
     setReader(null)
     if (focus && onExit) onExit()
   }
 
+  const rememberChapter = (key: string, content: string) => {
+    const cache = chapterCacheRef.current
+    cache.set(key, content)
+    while (cache.size > 8) {
+      const oldest = cache.keys().next().value
+      if (!oldest) break
+      cache.delete(oldest)
+    }
+  }
+
+  /** 空闲预取下一章；失败不提示，用户翻到时会正常请求 */
+  const prefetchChapter = (chapter: NovelChapter | undefined) => {
+    if (!chapter || !detail || !detailSource) return
+    const cacheKey = chapterCacheKey(detailSource.id, detail.bookId, chapter.id)
+    if (chapterCacheRef.current.has(cacheKey) || prefetchingRef.current.has(cacheKey)) return
+    prefetchingRef.current.add(cacheKey)
+    const sourceInput = toInput(detailSource)
+    const bookId = detail.bookId
+    const gen = prefetchGenRef.current
+    const timer = window.setTimeout(() => {
+      prefetchTimersRef.current.delete(timer)
+      // 期间已经关闭详情 / 换了书：这次预取作废，不再发请求
+      if (gen !== prefetchGenRef.current) return
+      void window.laozheng
+        .novelChapter(sourceInput, bookId, chapter.id)
+        .then((res) => {
+          if (gen !== prefetchGenRef.current) return
+          if (res.ok && res.chapter) rememberChapter(cacheKey, res.chapter.content)
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          // 新一轮预取开始后旧请求不能清掉新轮次的标记
+          if (gen === prefetchGenRef.current) prefetchingRef.current.delete(cacheKey)
+        })
+    }, 500)
+    prefetchTimersRef.current.add(timer)
+  }
+
   const openChapter = async (chapter: NovelChapter) => {
     if (!detail || !detailSource) return
+    const cacheKey = chapterCacheKey(detailSource.id, detail.bookId, chapter.id)
+    const cached = chapterCacheRef.current.get(cacheKey)
+    const index = detail.chapters.findIndex((item) => item.id === chapter.id)
+    const prefetchNext = () => {
+      prefetchChapter(index >= 0 ? detail.chapters[index + 1] : undefined)
+    }
     const seq = ++readerSeq.current
+    if (cached != null) {
+      setReader({ chapter, content: cached, loading: false, error: null })
+      updateProgress(progressKey(detailSource.id, detail.bookId), chapter.id)
+      prefetchNext()
+      return
+    }
     setReader({ chapter, content: '', loading: true, error: null })
     const res = await window.laozheng.novelChapter(
       toInput(detailSource),
@@ -516,8 +595,10 @@ export function NovelPage({
       })
       return
     }
+    rememberChapter(cacheKey, res.chapter.content)
     setReader({ chapter, content: res.chapter.content, loading: false, error: null })
     updateProgress(progressKey(detailSource.id, detail.bookId), chapter.id)
+    prefetchNext()
   }
 
   const stepChapter = (delta: number) => {

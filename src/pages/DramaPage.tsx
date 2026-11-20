@@ -137,6 +137,8 @@ export function DramaPage({
   /** 只应用最后一次选集请求，快速连点两集时不播旧请求的那一集 */
   const playSeqRef = useRef(0)
   const handledFocusRef = useRef('')
+  /** 从收藏进入时正在展示详情：默认源落定的那次 source effect 不能把详情请求作废 */
+  const focusActiveRef = useRef(false)
   /** 源地址 / 启停变化时强制重新拉列表，避免继续显示旧地址的缓存 */
   const lastAvailableKeyRef = useRef(availableKey)
 
@@ -307,14 +309,17 @@ export function DramaPage({
     const sourcesChanged = lastAvailableKeyRef.current !== availableKey
     lastAvailableKeyRef.current = availableKey
     seqRef.current += 1
-    detailSeqRef.current += 1
-    playSeqRef.current += 1
     setLoading(false)
-    setDetail(null)
-    setDetailSource(null)
-    setPlaying(null)
-    setDetailLoading(false)
-    setPlayLoading(false)
+    // 从收藏进入时，focus effect 会打开详情；这里只重置列表，不能取消详情请求
+    if (!focusActiveRef.current) {
+      detailSeqRef.current += 1
+      playSeqRef.current += 1
+      setDetail(null)
+      setDetailSource(null)
+      setPlaying(null)
+      setDetailLoading(false)
+      setPlayLoading(false)
+    }
     setKeyword('')
     setInput('')
     setError('')
@@ -415,11 +420,17 @@ export function DramaPage({
   useEffect(() => {
     if (!focus) {
       handledFocusRef.current = ''
+      focusActiveRef.current = false
       return
     }
     const key = `${focus.sourceId}|${focus.seriesId}|${focus.title}`
     if (handledFocusRef.current === key) return
     handledFocusRef.current = key
+    focusActiveRef.current = true
+    // 让模块源与收藏来源保持一致，返回列表时看到的就是对应源的列表
+    if (focus.sourceId && available.some((source) => source.id === focus.sourceId)) {
+      setSourceId(focus.sourceId)
+    }
     const configured = data.dramaSources.find((source) => source.id === focus.sourceId)
     const baseUrl = configured?.baseUrl ?? focus.baseUrl ?? ''
     const source: DramaSource = {
@@ -465,6 +476,8 @@ export function DramaPage({
   }
 
   const backToList = () => {
+    // 收藏详情已关闭：之后的源切换 / 重置要恢复正常清理详情与播放
+    focusActiveRef.current = false
     detailSeqRef.current += 1
     playSeqRef.current += 1
     setDetail(null)

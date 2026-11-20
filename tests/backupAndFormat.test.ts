@@ -2,10 +2,15 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { normalizeData, stripNullFields } from '../src/shared/types'
+import { mergeLocalPcFields, normalizeData, stripNullFields } from '../src/shared/types'
 import { formatBytes, formatEta, formatSpeed } from '../src/shared/downloads'
 import { sniffImageMime } from '../src/shared/imageSniff'
-import { createDataSnapshot, listDataSnapshots } from '../electron/snapshots'
+import {
+  createDataSnapshot,
+  ensureDailySnapshot,
+  listDataSnapshots,
+  writeDataSnapshot
+} from '../electron/snapshots'
 
 describe('normalizeData（备份 / data.json 兜底）', () => {
   it('缺失或非法字段回退为空数组 / 空对象', () => {
@@ -15,6 +20,56 @@ describe('normalizeData（备份 / data.json 兜底）', () => {
     expect(data.listItems).toEqual([])
     expect(data.readProgress).toEqual({})
     expect(data.innerFavs).toEqual([])
+  })
+
+  it('收藏缺 subtitle 等字段时补齐，收藏页搜索 / 排序不会崩', () => {
+    const data = normalizeData({
+      innerFavs: [
+        { module: 'music', id: '1', title: '歌', savedAt: 1 },
+        { module: 'music', title: '没有 id' },
+        { id: 'x', title: '没有 module' }
+      ]
+    })
+    expect(data.innerFavs).toHaveLength(1)
+    expect(data.innerFavs[0].subtitle).toBe('')
+    expect(data.innerFavs[0].durationSec).toBe(0)
+  })
+
+  it('导入手机端 / 旧版备份时，缺失的 PC 扩展字段保留本机现值', () => {
+    const current = normalizeData({
+      localShortcuts: [
+        { id: 'a', name: '桌面', path: 'C:\\Users\\me\\Desktop', kind: 'folder' }
+      ],
+      toolNotes: { steam: '<p>经验</p>' }
+    })
+    const incoming = mergeLocalPcFields(
+      { items: [], lists: [], listItems: [] },
+      normalizeData({ items: [], lists: [], listItems: [] }),
+      current
+    )
+    expect(incoming.localShortcuts).toEqual(current.localShortcuts)
+    expect(incoming.toolNotes).toEqual(current.toolNotes)
+    // 备份里显式带了字段（哪怕是空数组）仍以备份为准
+    const explicit = mergeLocalPcFields(
+      { items: [], lists: [], listItems: [], localShortcuts: [] },
+      normalizeData({ items: [], lists: [], listItems: [], localShortcuts: [] }),
+      current
+    )
+    expect(explicit.localShortcuts).toEqual([])
+  })
+
+  it('旧备份里的番号源与番号收藏会被忽略', () => {
+    const data = normalizeData({
+      h1Sources: [
+        { id: 'h1_fixed_1', name: '旧番号源', baseUrl: 'https://example.com/api.php/provide/vod' }
+      ],
+      innerFavs: [
+        { module: 'h1', id: 'h1_fixed_1|1', title: '番号收藏', subtitle: '', savedAt: 1 },
+        { module: 'watch', id: 'src|2', title: '影视收藏', subtitle: '', savedAt: 2 }
+      ]
+    })
+    expect('h1Sources' in data).toBe(false)
+    expect(data.innerFavs.map((fav) => fav.module)).toEqual(['watch'])
   })
 
   it('根清单缺 parentId 时补回 null，坏条目被丢弃', () => {
@@ -99,6 +154,58 @@ describe('覆盖前数据快照', () => {
         await readFile(join(root, 'snapshots', info!.name), 'utf8')
       ) as { readProgress: Record<string, string> }
       expect(raw.readProgress).toEqual({ old: '1', 'video/1': '5' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('导入前完整快照带电视源 / 磁力源 / 本机设置，恢复时能读回', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lz-snapshot-full-'))
+    try {
+      const info = await writeDataSnapshot(root, 'import', {
+        version: 1,
+        items: [],
+        lists: [],
+        listItems: [],
+        liveSources: [{ id: 'live_1', name: '电视源', url: 'http://example.com/live.m3u', content: '' }],
+        magnetSources: [{ id: 'magnet_1', name: '磁力源', baseUrl: 'http://example.com', enabled: true }],
+        settings: { theme: 'dark', accent: 'purple', downloadRoot: 'D:\\laozheng\\download' }
+      })
+      expect((await listDataSnapshots(root)).some((item) => item.name === info.name)).toBe(true)
+      const data = normalizeData(
+        JSON.parse(await readFile(join(root, 'snapshots', info.name), 'utf8'))
+      )
+      expect(data.liveSources).toHaveLength(1)
+      expect(data.magnetSources).toHaveLength(1)
+      expect(data.settings?.downloadRoot).toBe('D:\\laozheng\\download')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('每日自动快照写入完整备份，同一天只生成一份', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lz-snapshot-auto-'))
+    try {
+      const dataFile = join(root, 'data.json')
+      const info = await ensureDailySnapshot(root, dataFile, undefined, async () => ({
+        version: 1,
+        items: [],
+        lists: [],
+        listItems: [],
+        liveSources: [{ id: 'live_auto', name: '电视源', url: 'http://example.com/live.m3u', content: '' }],
+        settings: { theme: 'system', accent: 'purple', downloadRoot: 'D:\\auto' }
+      }))
+      expect(info?.reason).toBe('auto')
+      const data = normalizeData(
+        JSON.parse(await readFile(join(root, 'snapshots', info!.name), 'utf8'))
+      )
+      expect(data.liveSources).toHaveLength(1)
+      expect(data.settings?.downloadRoot).toBe('D:\\auto')
+      // 当天已有自动快照：不再生成，也不应再调用完整备份构建
+      const again = await ensureDailySnapshot(root, dataFile, undefined, async () => {
+        throw new Error('同一天不应重复构建快照')
+      })
+      expect(again).toBeNull()
     } finally {
       await rm(root, { recursive: true, force: true })
     }

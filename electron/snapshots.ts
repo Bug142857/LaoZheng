@@ -51,7 +51,7 @@ export async function createDataSnapshot(
   await mkdir(dir, { recursive: true })
   const name = `data-${stamp()}-${safeReason(reason)}.json`
   const target = join(dir, name)
-  const tmp = `${target}.${process.pid}.tmp`
+  const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`
   // 播放 / 阅读进度存在独立文件里，纯观看不会触发整份 data.json 保存，快照可能落后。
   // 这里把主进程内存里的最新进度合进快照，避免恢复快照把最近的观看进度一起回退。
   let merged = false
@@ -80,6 +80,33 @@ export async function createDataSnapshot(
   return { name, createdAt: info.mtimeMs, bytes: info.size, reason: safeReason(reason) }
 }
 
+/**
+ * 导入 / 云恢复前的完整快照：直接写入备份内容。
+ * data.json 里只有基础数据，电视源 / 下载记录 / 磁力源 / 本机设置单独存储，
+ * 只复制 data.json 的话，导入覆盖这些数据后无法通过「恢复快照」回滚。
+ */
+export async function writeDataSnapshot(
+  root: string,
+  reason: string,
+  payload: unknown
+): Promise<DataSnapshot> {
+  const dir = snapshotsDir(root)
+  await mkdir(dir, { recursive: true })
+  const name = `data-${stamp()}-${safeReason(reason)}.json`
+  const target = join(dir, name)
+  const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`
+  try {
+    await writeFile(tmp, JSON.stringify(payload, null, 2), 'utf8')
+    await rename(tmp, target)
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => undefined)
+    throw err
+  }
+  await pruneSnapshots(root)
+  const info = await stat(target)
+  return { name, createdAt: info.mtimeMs, bytes: info.size, reason: safeReason(reason) }
+}
+
 /** 本地日期（年月日），用于判断今天是否已经自动快照过 */
 function dayStamp(ms: number): string {
   const date = new Date(ms)
@@ -91,11 +118,14 @@ function dayStamp(ms: number): string {
 /**
  * 每日自动快照：每天最多一份，复用现有快照目录与保留策略。
  * 导入 / 云恢复之外也给普通误删、数据异常留一个可回滚点。
+ * buildPayload 提供时写入完整备份（含电视源 / 下载记录 / 磁力源 / 本机设置），
+ * 否则只复制 data.json。
  */
 export async function ensureDailySnapshot(
   root: string,
   dataFile: string,
-  latestProgress?: Record<string, string>
+  latestProgress?: Record<string, string>,
+  buildPayload?: () => Promise<unknown>
 ): Promise<DataSnapshot | null> {
   try {
     const list = await listDataSnapshots(root)
@@ -103,6 +133,7 @@ export async function ensureDailySnapshot(
     if (list.some((item) => item.reason === 'auto' && dayStamp(item.createdAt) === today)) {
       return null
     }
+    if (buildPayload) return await writeDataSnapshot(root, 'auto', await buildPayload())
     return await createDataSnapshot(root, dataFile, 'auto', latestProgress)
   } catch (err) {
     console.error('[snapshot] 每日自动快照失败，跳过本次', err)

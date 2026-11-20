@@ -4,15 +4,17 @@ import {
   dialog,
   Menu,
   nativeImage,
+  powerMonitor,
   powerSaveBlocker,
   session,
   shell,
   Tray
 } from 'electron'
 import { join } from 'node:path'
-import { appendFileSync, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
+import { appendLogSync } from './logFile'
 
-import { dataFilePath } from './store'
+import { dataFilePath, loadData } from './store'
 import { initSettings } from './settings'
 import { cleanupUpdatesDir } from './cacheManager'
 
@@ -47,8 +49,11 @@ import { IMAGE_REFERER, IMAGE_UA, VOD_UA, KOMIIC_UA, BIKA_UA } from './userAgent
 import { flushProgressSync, progress } from './progress'
 import { autoUpdateCheck } from './updateManager'
 import { registerIpc } from './ipc'
+import { buildBackupPayload } from './ipc/shared'
 
-const isDev = !app.isPackaged
+// Electron 45 的 app.isPackaged 在 `electron .` 启动时也返回 true（与 process.defaultApp 矛盾），
+// 继续用 !app.isPackaged 会把 dev 误判成打包态，导致 electron-vite dev 加载 out/renderer 的旧构建、HMR 失效。
+const isDev = process.defaultApp === true
 
 // 图片缓存用的自定义协议必须在 app ready 之前注册
 registerImageCacheScheme()
@@ -70,6 +75,39 @@ function updateMediaPowerBlocker(): void {
 /** 通过托盘菜单 / 系统退出时为 true，允许真正关闭窗口 */
 let quitting = false
 let trayTipShown = false
+let dailySnapshotTimer: NodeJS.Timeout | null = null
+let dailySnapshotRunning = false
+
+/** 每日快照：应用常驻托盘跨天时也要补一份，不只依赖启动那一次 */
+async function runDailySnapshot(): Promise<void> {
+  if (dailySnapshotRunning) return
+  dailySnapshotRunning = true
+  try {
+    // 完整备份：电视源 / 下载记录 / 磁力源 / 本机设置也要能回滚
+    await ensureDailySnapshot(
+      app.getPath('userData'),
+      dataFilePath(),
+      progress().peek(),
+      async () => buildBackupPayload(await loadData())
+    )
+  } catch (err) {
+    console.error('[snapshot] 每日自动快照失败，跳过本次', err)
+  } finally {
+    dailySnapshotRunning = false
+  }
+}
+
+function scheduleDailySnapshots(): void {
+  if (dailySnapshotTimer) return
+  dailySnapshotTimer = setInterval(() => {
+    void runDailySnapshot()
+  }, 6 * 60 * 60 * 1000)
+  dailySnapshotTimer.unref?.()
+  // 睡眠唤醒后补查，避免电脑连续挂机几天没有新快照
+  powerMonitor.on('resume', () => {
+    void runDailySnapshot()
+  })
+}
 
 function trayIconPath(): string | null {
   const candidates = [
@@ -88,6 +126,13 @@ function showMainWindow(): void {
   win.focus()
 }
 
+/** 托盘音乐控制：把命令转给渲染层的 MusicPlayerProvider */
+function sendMusicCommand(command: 'toggle' | 'prev' | 'next'): void {
+  const win = mainWindow
+  if (!win || win.isDestroyed()) return
+  win.webContents.send('music:command', command)
+}
+
 /** 关闭按钮改为隐藏到右下角托盘，保证下载 / 播放不被误关；托盘菜单里可真正退出 */
 function ensureTray(): void {
   if (tray || !mainWindow) return
@@ -101,6 +146,15 @@ function ensureTray(): void {
     Menu.buildFromTemplate([
       { label: '显示主界面', click: () => showMainWindow() },
       { label: '隐藏到托盘', click: () => mainWindow?.hide() },
+      { type: 'separator' },
+      {
+        label: '音乐',
+        submenu: [
+          { label: '播放 / 暂停', click: () => sendMusicCommand('toggle') },
+          { label: '上一首', click: () => sendMusicCommand('prev') },
+          { label: '下一首', click: () => sendMusicCommand('next') }
+        ]
+      },
       { type: 'separator' },
       {
         label: '退出老郑分享',
@@ -446,7 +500,7 @@ process.on('uncaughtException', (err) => {
   console.error('[app] 未捕获异常，准备退出', err)
   try {
     const log = join(app.getPath('userData'), 'crash.log')
-    appendFileSync(log, `[${new Date().toISOString()}] ${err?.stack ?? String(err)}\n`, 'utf8')
+    appendLogSync(log, `[${new Date().toISOString()}] ${err?.stack ?? String(err)}\n`)
   } catch {
     // 崩溃日志写入失败不影响后续提示
   }
@@ -536,13 +590,10 @@ if (!gotLock) {
           })
           .catch((err) => console.error('[seed] 空闲同步种子附加数据失败', err))
           .finally(() => {
-            void ensureDailySnapshot(
-              app.getPath('userData'),
-              dataFilePath(),
-              progress().peek()
-            )
+            void runDailySnapshot()
           })
       }, 1200)
+      scheduleDailySnapshots()
     })
 
     // 内置账号静默登录改为空闲延迟执行：不阻塞启动；离线时直接跳过，

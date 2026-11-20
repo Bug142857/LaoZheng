@@ -68,7 +68,6 @@ const api: LaozhengApi = {
   vodCategories: (source) => ipcRenderer.invoke('vod:categories', source),
   probeVodQualities: (from, playUrl) => ipcRenderer.invoke('vod:probe', from, playUrl),
   exportVodSources: (sources) => ipcRenderer.invoke('vod:exportSources', sources),
-  exportH1Sources: (sources) => ipcRenderer.invoke('h1:exportSources', sources),
   magnetState: () => ipcRenderer.invoke('magnet:state'),
   saveMagnetSources: (sources) => ipcRenderer.invoke('magnet:saveSources', sources),
   resetMagnetSources: () => ipcRenderer.invoke('magnet:resetSources'),
@@ -139,6 +138,7 @@ const api: LaozhengApi = {
   chooseCacheDir: () => ipcRenderer.invoke('app:chooseCacheDir'),
   getUiSettings: () => ipcRenderer.invoke('settings:getUi'),
   setUiSettings: (input) => ipcRenderer.invoke('settings:setUi', input),
+  reportError: (input) => ipcRenderer.invoke('app:reportError', input),
   doubanStatus: () => ipcRenderer.invoke('douban:status'),
   doubanLogin: () => ipcRenderer.invoke('douban:login'),
   doubanLogout: () => ipcRenderer.invoke('douban:logout'),
@@ -146,6 +146,12 @@ const api: LaozhengApi = {
     const handler = (): void => callback()
     ipcRenderer.on('downloads:changed', handler)
     return () => ipcRenderer.removeListener('downloads:changed', handler)
+  },
+  onMusicCommand: (callback) => {
+    const handler = (_e: unknown, command: Parameters<typeof callback>[0]): void =>
+      callback(command)
+    ipcRenderer.on('music:command', handler)
+    return () => ipcRenderer.removeListener('music:command', handler)
   },
   xCategories: () => ipcRenderer.invoke('xsite:categories'),
   xList: (range, page, category) => ipcRenderer.invoke('xsite:list', range, page, category),
@@ -205,7 +211,7 @@ const api: LaozhengApi = {
   getSyncConfig: () => ipcRenderer.invoke('sync:getConfig'),
   saveSyncConfig: (input) => ipcRenderer.invoke('sync:saveConfig', input),
   testSync: () => ipcRenderer.invoke('sync:test'),
-  uploadSync: (data) => ipcRenderer.invoke('sync:upload', data),
+  uploadSync: (data, options) => ipcRenderer.invoke('sync:upload', data, options),
   downloadSync: () => ipcRenderer.invoke('sync:download'),
   checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
   downloadUpdate: (url, sha256) => ipcRenderer.invoke('app:downloadUpdate', url, sha256),
@@ -227,6 +233,7 @@ const api: LaozhengApi = {
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   pickLocalPath: (mode) => ipcRenderer.invoke('app:pickLocalPath', mode),
   openLocalPath: (path) => ipcRenderer.invoke('app:openLocalPath', path),
+  fileIcon: (path) => ipcRenderer.invoke('app:fileIcon', path),
   saveNoteFile: (name, dataUrl) => ipcRenderer.invoke('app:saveNoteFile', name, dataUrl),
   saveToolNoteDefault: (toolId, html) =>
     ipcRenderer.invoke('app:saveToolNoteDefault', toolId, html) as Promise<boolean>,

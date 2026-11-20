@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile, writeFile, rename, mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { AppData, EMPTY_DATA, normalizeData, stripNullFields } from '../src/shared/types'
+import { AppData, EMPTY_DATA, mergeLocalPcFields, normalizeData, stripNullFields } from '../src/shared/types'
 
 /** 数据文件固定放在 app.getPath('userData') 下，便于备份与排查 */
 export function dataFilePath(): string {
@@ -21,9 +21,22 @@ export async function loadData(): Promise<AppData> {
   try {
     const text = await readFile(dataFilePath(), 'utf8')
     if (cachedData && cachedDataText === text) return cachedData
-    const data = normalizeData(JSON.parse(text))
+    const parsed = JSON.parse(text) as Record<string, unknown>
+    const data = normalizeData(parsed)
     cachedDataText = text
     cachedData = data
+    // 清理历史遗留的番号源与番号收藏：归一化会丢掉它们，这里把清理结果落盘，避免旧数据继续带出去
+    const legacyFavs = Array.isArray(parsed.innerFavs) ? parsed.innerFavs : []
+    const hasLegacyH1Fav = legacyFavs.some(
+      (entry) =>
+        !!entry &&
+        typeof entry === 'object' &&
+        (entry as { module?: unknown }).module === 'h1'
+    )
+    const hasLegacyH1Sources = Array.isArray(parsed.h1Sources) && parsed.h1Sources.length > 0
+    if (hasLegacyH1Fav || hasLegacyH1Sources) {
+      await saveData(data).catch((err) => console.error('[store] 清理遗留番号数据失败', err))
+    }
     return data
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
@@ -113,6 +126,11 @@ export async function saveData(data: AppData): Promise<void> {
   }
 }
 
+/** 当前保存序号：后台合并（种子同步）写盘前用来确认期间没有用户保存 */
+export function dataSaveSeq(): number {
+  return saveSeq
+}
+
 /** 退出前同步落盘：防止防抖队列里的最后一次修改随窗口关闭一起丢掉 */
 export function saveDataSync(data: AppData): void {
   const seq = ++saveSeq
@@ -153,7 +171,8 @@ export async function importFromFile(file: string): Promise<AppData> {
   if (!Array.isArray(raw.items) || !Array.isArray(raw.lists) || !Array.isArray(raw.listItems)) {
     throw new Error('不是有效的备份文件（items / lists / listItems 必须是数组）')
   }
-  return normalizeData(raw)
+  // 手机端 / 旧版备份缺的 PC 扩展字段保留本机现值，避免导入后本地快捷方式 / 使用经验被清空
+  return mergeLocalPcFields(raw, normalizeData(raw), await loadData())
 }
 
 /** 导出为手机端可识别的 JSON（字段与 Android ExportJson.kt 一致） */

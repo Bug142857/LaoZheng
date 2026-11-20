@@ -197,7 +197,6 @@ import {
   DEFAULT_NOVEL_SOURCES,
   normalizeNovelSources
 } from './novel'
-import { DEFAULT_H1_SOURCES, normalizeH1Sources } from './h1'
 import type { BikahubCategoryCountsResponse } from './bikahub'
 import type { TptoonCategoryCountsResponse } from './tptoon'
 import type { JmcomicCategoryCountsResponse } from './jmcomic'
@@ -329,6 +328,13 @@ export interface LocalOpenResult {
   error?: string
 }
 
+/** 本机应用 / 文件夹 / 文件的系统真实图标（PNG data URL） */
+export interface LocalIconResult {
+  ok: boolean
+  icon?: string
+  error?: string
+}
+
 /** 本机设置快照（PC 端备份扩展；手机端会忽略） */
 export interface BackupSettings {
   theme?: string
@@ -379,8 +385,6 @@ export interface AppData {
   novelSources: NovelSource[]
   /** 漫画源（漫画客 / Komiic），随备份与云同步一起走 */
   comicSources: ComicSource[]
-  /** 番号源（默认四个外网采集站），随备份与云同步一起走 */
-  h1Sources: VodSource[]
   /** 平台直播源（B站 / 斗鱼 / 抖音），随备份与云同步一起走 */
   livePlatformSources: LivePlatformSource[]
   /** 壁纸源（Wallspic / 壁纸迷站点模板），随备份与云同步一起走 */
@@ -479,12 +483,6 @@ export interface AllSourcesBundle {
     name: string
     baseUrl: string
     template?: string
-    enabled?: boolean
-  }[]
-  h1Sources?: {
-    id?: string
-    name: string
-    baseUrl: string
     enabled?: boolean
   }[]
   livePlatformSources?: {
@@ -657,12 +655,6 @@ export interface LaozhengApi {
   vodCategories: (source: VodSourceInput) => Promise<VodCategoriesResponse>
   probeVodQualities: (from: string, playUrl: string) => Promise<VodQualityProbeResponse>
   exportVodSources: (sources: { name: string; baseUrl: string; enabled?: boolean }[]) => Promise<SourcesExportResult>
-  exportH1Sources: (sources: {
-    id?: string
-    name: string
-    baseUrl: string
-    enabled?: boolean
-  }[]) => Promise<SourcesExportResult>
   magnetState: () => Promise<MagnetState>
   saveMagnetSources: (sources: MagnetSource[]) => Promise<MagnetState>
   resetMagnetSources: () => Promise<MagnetState>
@@ -723,6 +715,8 @@ export interface LaozhengApi {
   ) => Promise<MusicSearchResponse>
   /** 榜单：分类 id 来自 shared/music 的 MUSIC_TOP_CATEGORIES */
   musicTop: (sources: MusicSourceInput[], category: string) => Promise<MusicSearchResponse>
+  /** 托盘音乐控制：播放 / 暂停、上一首、下一首 */
+  onMusicCommand: (callback: (command: 'toggle' | 'prev' | 'next') => void) => () => void
   resolveMusic: (
     songId: string,
     platform?: string,
@@ -759,6 +753,8 @@ export interface LaozhengApi {
   chooseCacheDir: () => Promise<CacheDirResult>
   getUiSettings: () => Promise<UiSettings>
   setUiSettings: (input: Partial<UiSettings>) => Promise<UiSettings>
+  /** 渲染层错误落盘（只收模块名 / 消息 / 堆栈） */
+  reportError: (input: { label?: string; message: string; stack?: string }) => Promise<void>
   exportTrainerSources: (sources: {
     id?: string
     name: string
@@ -879,7 +875,10 @@ export interface LaozhengApi {
   getSyncConfig: () => Promise<SyncConfigView>
   saveSyncConfig: (input: SyncConfigInput) => Promise<SyncConfigView>
   testSync: () => Promise<SyncActionResult>
-  uploadSync: (data: AppData) => Promise<SyncActionResult>
+  uploadSync: (
+    data: AppData,
+    options?: { force?: boolean }
+  ) => Promise<SyncActionResult>
   downloadSync: () => Promise<SyncActionResult>
   checkUpdate: () => Promise<UpdateCheckResult>
   downloadUpdate: (url: string, sha256?: string) => Promise<UpdateDownloadResult>
@@ -896,6 +895,8 @@ export interface LaozhengApi {
   pickLocalPath: (mode: 'file' | 'folder') => Promise<LocalPickResult>
   /** 主页「本地」快捷方式：用系统默认方式打开应用 / 文件夹 / 文件 */
   openLocalPath: (path: string) => Promise<LocalOpenResult>
+  /** 主页「本地」快捷方式：读取系统真实图标（PNG data URL） */
+  fileIcon: (path: string) => Promise<LocalIconResult>
   saveNoteFile: (
     name: string,
     dataUrl: string
@@ -1082,7 +1083,6 @@ export const EMPTY_DATA: AppData = {
   })),
   novelSources: DEFAULT_NOVEL_SOURCES,
   comicSources: DEFAULT_COMIC_SOURCES,
-  h1Sources: DEFAULT_H1_SOURCES,
   livePlatformSources: DEFAULT_LIVE_PLATFORM_SOURCES,
   wallpaperSources: DEFAULT_WALLPAPER_SOURCES,
   meituSources: DEFAULT_MEITU_SOURCES,
@@ -1123,6 +1123,40 @@ function normalizeToolNotes(raw: unknown): Record<string, string> {
   return out
 }
 
+/** 收藏条目兜底：备份 / 云同步里的字符串字段可能缺失，收藏页搜索 / 排序直接取用会崩 */
+function normalizeInnerFavs(raw: unknown): InnerFav[] {
+  const out: InnerFav[] = []
+  for (const entry of objectRows<Record<string, unknown>>(raw)) {
+    const module = typeof entry.module === 'string' ? entry.module : ''
+    // 番号模块已移除：旧备份 / 旧数据里的番号收藏一并清掉，避免刷新时留下打不开的条目
+    if (module === 'h1') continue
+    const id =
+      typeof entry.id === 'string'
+        ? entry.id
+        : typeof entry.id === 'number'
+          ? String(entry.id)
+          : ''
+    if (!module || !id) continue
+    out.push({
+      module,
+      id,
+      title: typeof entry.title === 'string' ? entry.title : '',
+      subtitle: typeof entry.subtitle === 'string' ? entry.subtitle : '',
+      cover: typeof entry.cover === 'string' ? entry.cover : null,
+      savedAt: typeof entry.savedAt === 'number' && Number.isFinite(entry.savedAt) ? entry.savedAt : 0,
+      videoUrl: typeof entry.videoUrl === 'string' ? entry.videoUrl : null,
+      mediaId: typeof entry.mediaId === 'number' && Number.isFinite(entry.mediaId) ? entry.mediaId : 0,
+      durationSec:
+        typeof entry.durationSec === 'number' && Number.isFinite(entry.durationSec)
+          ? entry.durationSec
+          : 0,
+      tweetUrl: typeof entry.tweetUrl === 'string' ? entry.tweetUrl : null,
+      payload: typeof entry.payload === 'string' ? entry.payload : null
+    })
+  }
+  return out
+}
+
 /** 本地快捷方式兜底：丢掉缺 id / 名称 / 路径的坏条目，kind 非法回退为文件夹 */
 function normalizeLocalShortcuts(raw: unknown): LocalShortcut[] {
   if (!Array.isArray(raw)) return []
@@ -1152,7 +1186,7 @@ export function normalizeData(raw: unknown): AppData {
     lists: normalizeLists(o.lists),
     listItems: objectRows<ListItem>(o.listItems),
     vodSources: objectRows<VodSource>(o.vodSources),
-    innerFavs: objectRows<InnerFav>(o.innerFavs),
+    innerFavs: normalizeInnerFavs(o.innerFavs),
     readProgress:
       o.readProgress && typeof o.readProgress === 'object' && !Array.isArray(o.readProgress)
         ? (o.readProgress as Record<string, string>)
@@ -1173,8 +1207,6 @@ export function normalizeData(raw: unknown): AppData {
     novelSources: normalizeNovelSources(o.novelSources),
     // 漫画源缺失时补漫画客 + Komiic；已有配置以用户为准
     comicSources: normalizeComicSources(o.comicSources),
-    // 番号源缺失时补四个默认源；已有配置以用户为准
-    h1Sources: normalizeH1Sources(o.h1Sources),
     // 平台直播源缺失时补 B站 / 斗鱼 / 抖音；已有配置以用户为准
     livePlatformSources: normalizeLivePlatformSources(o.livePlatformSources),
     // 壁纸源缺失时补 Wallspic / 壁纸迷；删空不补回
@@ -1341,6 +1373,40 @@ export function normalizeData(raw: unknown): AppData {
             ? entry.installedAt
             : Date.now()
       }))
+  }
+  return out
+}
+
+/**
+ * 手机端 / 旧版备份不含的 PC 扩展字段：导入时保留本机现值，
+ * 避免 normalizeData 补成空数组 / 空对象后把本机数据清空。
+ * 备份里显式带了字段（哪怕是空数组）仍以备份为准。
+ */
+const PC_LOCAL_FIELDS = [
+  'dramaSources',
+  'trainerSources',
+  'installedTrainers',
+  'wallpaperSources',
+  'meituSources',
+  'comicSources',
+  'musicSources',
+  'novelSources',
+  'livePlatformSources',
+  'shuangkanSources',
+  'toolNotes',
+  'singingVideos',
+  'localShortcuts',
+  'liveFavorites',
+  'liveHistory'
+] as const satisfies ReadonlyArray<keyof AppData>
+
+export function mergeLocalPcFields(raw: unknown, incoming: AppData, current: AppData): AppData {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return incoming
+  const source = raw as Record<string, unknown>
+  const out: AppData = { ...incoming }
+  for (const key of PC_LOCAL_FIELDS) {
+    if (source[key] !== undefined) continue
+    ;(out as unknown as Record<string, unknown>)[key] = current[key]
   }
   return out
 }

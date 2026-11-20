@@ -1,9 +1,14 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode
+} from 'react'
 import {
   ChevronLeft,
   ChevronRight,
   Cloud,
-  Code2,
   Database,
   Download,
   Eraser,
@@ -101,6 +106,25 @@ export function SettingsPage({
   const { data, replaceData } = useData()
   const [section, setSection] = useState<Section>('root')
   const [devPasswordOpen, setDevPasswordOpen] = useState(false)
+  /** 「配置管理」标题连点计数：不显示按钮，5 次内间隔超过 1.5 秒重新计数 */
+  const devTapRef = useRef({ count: 0, at: 0 })
+
+  const handleDevTitleClick = (event: ReactMouseEvent<HTMLHeadingElement>): void => {
+    // 阻断 App 的「点标题刷新当前页」：刷新会重挂载本页，连击计数会丢
+    event.stopPropagation()
+    const now = Date.now()
+    const next = now - devTapRef.current.at > 1500 ? 1 : devTapRef.current.count + 1
+    if (next < 5) {
+      devTapRef.current = { count: next, at: now }
+      return
+    }
+    devTapRef.current = { count: 0, at: 0 }
+    if (developerMode) {
+      onNotice('开发者模式已开启，退出客户端前无需重复输入')
+      return
+    }
+    setDevPasswordOpen(true)
+  }
   const [version, setVersion] = useState('—')
   const [downloadDir, setDownloadDir] = useState('')
   const [downloadStats, setDownloadStats] = useState({ count: 0, bytes: 0 })
@@ -116,6 +140,7 @@ export function SettingsPage({
   const [syncPass, setSyncPass] = useState('')
   const [syncBusy, setSyncBusy] = useState<string | null>(null)
   const [pendingSync, setPendingSync] = useState<AppData | null>(null)
+  const [uploadConflictAt, setUploadConflictAt] = useState<number | null>(null)
   const [zlib, setZlib] = useState<ZlibStatusResponse | null>(null)
   const [zlibBusy, setZlibBusy] = useState(false)
   const [zlibUser, setZlibUser] = useState('')
@@ -308,10 +333,14 @@ export function SettingsPage({
     onNotice(res.message)
   }
 
-  const uploadSync = async () => {
+  const uploadSync = async (force = false) => {
     setSyncBusy('upload')
-    const res = await window.laozheng.uploadSync(data)
+    const res = await window.laozheng.uploadSync(data, force ? { force: true } : undefined)
     setSyncBusy(null)
+    if (res.conflict) {
+      setUploadConflictAt(res.remoteAt ?? Date.now())
+      return
+    }
     onNotice(res.message)
   }
 
@@ -498,29 +527,6 @@ export function SettingsPage({
     void refreshDownloads()
   }
 
-  /** 设置页右上角的开发者模式入口：本次客户端运行期间有效 */
-  const developerModeButton = (
-    <div className="page-actions">
-      <button
-        className={`btn ${developerMode ? 'primary' : ''}`}
-        title={
-          developerMode
-            ? '开发者模式已开启，退出客户端前无需重复输入'
-            : '输入密码进入开发者模式'
-        }
-        onClick={() => {
-          if (developerMode) {
-            onNotice('开发者模式已开启，退出客户端前无需重复输入')
-            return
-          }
-          setDevPasswordOpen(true)
-        }}
-      >
-        <Code2 size={15} /> {developerMode ? '开发者模式已开启' : '开发者模式'}
-      </button>
-    </div>
-  )
-
   const sourceTotal =
     data.vodSources.length +
     data.dramaSources.length +
@@ -548,8 +554,13 @@ export function SettingsPage({
       {section === 'root' ? (
         <>
           <header className="page-header">
-            <h1 className="page-title">配置管理</h1>
-            {developerModeButton}
+            <h1
+              className="page-title"
+              style={{ userSelect: 'none' }}
+              onClick={handleDevTitleClick}
+            >
+              配置管理
+            </h1>
           </header>
           <div className="settings-list">
             <SettingsEntry
@@ -623,7 +634,9 @@ export function SettingsPage({
               title="清理缓存"
               hint={`当前缓存：${cache ? formatBytes(cache.bytes) : '计算中…'}${
                 cache
-                  ? `（图片 ${formatBytes(cache.imageBytes)} · 接口 ${formatBytes(cache.apiBytes)}）`
+                  ? `（图片 ${formatBytes(cache.imageBytes)} · 接口 ${formatBytes(cache.apiBytes)}${
+                      cache.partitionBytes ? ` · 分区 ${formatBytes(cache.partitionBytes)}` : ''
+                    }）`
                   : ''
               }${cache?.parts ? ` · ${cache.parts} 个未完成文件` : ''} · ${cache?.dir ?? '读取中…'}`}
               onClick={() => setClearOpen(true)}
@@ -661,7 +674,6 @@ export function SettingsPage({
               <ChevronLeft size={15} /> 返回配置管理
             </button>
             <h1 className="page-title">{SECTION_TITLE[section]}</h1>
-            {developerModeButton}
           </header>
 
           {section === 'theme' && (
@@ -991,6 +1003,20 @@ export function SettingsPage({
         />
       )}
 
+      {uploadConflictAt !== null && (
+        <ConfirmDialog
+          title="云端备份比本机新"
+          message={`云端备份最后修改于 ${new Date(uploadConflictAt).toLocaleString()}，比本机数据更新。\n继续上传会用本机数据覆盖云端，云端较新的内容将丢失。\n\n如果是另一台电脑刚同步过，建议先点「从云端恢复」。`}
+          confirmText="仍然覆盖上传"
+          danger
+          onConfirm={() => {
+            setUploadConflictAt(null)
+            void uploadSync(true)
+          }}
+          onCancel={() => setUploadConflictAt(null)}
+        />
+      )}
+
       {pendingSync && (
         <ConfirmDialog
           title="从云端恢复"
@@ -1011,7 +1037,7 @@ export function SettingsPage({
       {clearOpen && (
         <ConfirmDialog
           title="清理缓存"
-          message={`将清除图片与接口缓存、各模块列表缓存、已下载的更新安装包、下载目录里未完成的临时文件，并重新加载应用。\n当前可清理：${cache ? formatBytes(cache.bytes) : '计算中…'}\n\n不影响收藏、清单、阅读进度与各站登录状态。`}
+          message={`将清除图片与接口缓存、各网页分区缓存、各模块列表缓存、已下载的更新安装包（更新包正在下载时保留），并重新加载应用。\n下载目录里的未完成临时文件：没有未完成下载任务时一起清理；有任务时保留，方便继续下载 / 续传。\n当前可清理：${cache ? formatBytes(cache.bytes) : '计算中…'}\n\n不影响收藏、清单、阅读进度与各站登录状态（Cookie、模拟器存档会保留）。`}
           confirmText={clearing ? '清理中…' : '清理'}
           danger
           onConfirm={() => {

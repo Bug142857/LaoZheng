@@ -1840,12 +1840,6 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         template: s.template,
         enabled: s.enabled
       })),
-      h1Sources: data.h1Sources.map((s) => ({
-        id: s.id,
-        name: s.name,
-        baseUrl: s.baseUrl,
-        enabled: s.enabled
-      })),
       livePlatformSources: data.livePlatformSources.map((s) => ({
         id: s.id,
         name: s.name,
@@ -1898,7 +1892,6 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     let musicAdded = 0
     let novelAdded = 0
     let comicAdded = 0
-    let h1Added = 0
     let livePlatformAdded = 0
     let wallpaperAdded = 0
     let meituAdded = 0
@@ -2147,34 +2140,6 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         comicAddedCount += 1
       }
 
-      const nextH1Sources = [...d.h1Sources]
-      let h1AddedCount = 0
-      const h1Urls = new Set(nextH1Sources.map((s) => s.baseUrl))
-      for (const raw of bundle.h1Sources ?? []) {
-        if (!raw || typeof raw !== 'object') continue
-        const baseUrl = normalizeBaseUrl(String(raw.baseUrl ?? ''))
-        if (!/^https?:\/\//i.test(baseUrl) || h1Urls.has(baseUrl)) continue
-        h1Urls.add(baseUrl)
-        const id =
-          typeof raw.id === 'string' && raw.id ? raw.id : `h1_${genSourceId(baseUrl)}`
-        let newId = id
-        let n = 2
-        while (nextH1Sources.some((s) => s.id === newId)) newId = `${id}_${n++}`
-        nextH1Sources.push({
-          id: newId,
-          name: String(raw.name ?? '').trim() || vodHost(baseUrl),
-          baseUrl,
-          enabled: raw.enabled !== false,
-          region: 'proxy',
-          regionManual: true,
-          testStatus: 'ok',
-          testMsg: '可用',
-          testAt: Date.now()
-        })
-        h1AddedCount += 1
-      }
-      h1Added = h1AddedCount
-
       vodAdded = vodRows.length
       dramaAdded = dramaAddedCount
       trainerAdded = trainerAddedCount
@@ -2315,7 +2280,6 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
         musicSources: nextMusicSources,
         novelSources: nextNovelSources,
         comicSources: nextComicSources,
-        h1Sources: nextH1Sources,
         livePlatformSources: nextLivePlatformSources,
         wallpaperSources: nextWallpaperSources,
         meituSources: nextMeituSources,
@@ -2403,7 +2367,6 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       !musicAdded &&
       !novelAdded &&
       !comicAdded &&
-      !h1Added &&
       !livePlatformAdded &&
       !wallpaperAdded &&
       !meituAdded &&
@@ -2415,7 +2378,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
     // 源配置变了：清掉各模块的列表缓存，避免下次进入还显示旧源的列表
     clearModuleCaches()
     onNotice(
-      `已导入：影视源 ${vodAdded} · 短剧源 ${dramaAdded} · 小说源 ${novelAdded} · 漫画源 ${comicAdded} · 番号源 ${h1Added} · 直播源 ${livePlatformAdded} · 电视源 ${liveRows.length} · 磁力源 ${magnetAdded} · 补丁源 ${trainerAdded} · 音乐源 ${musicAdded} · 壁纸源 ${wallpaperAdded} · 套图源 ${meituAdded} · 皇片源 ${shuangkanAdded}`
+      `已导入：影视源 ${vodAdded} · 短剧源 ${dramaAdded} · 小说源 ${novelAdded} · 漫画源 ${comicAdded} · 直播源 ${livePlatformAdded} · 电视源 ${liveRows.length} · 磁力源 ${magnetAdded} · 补丁源 ${trainerAdded} · 音乐源 ${musicAdded} · 壁纸源 ${wallpaperAdded} · 套图源 ${meituAdded} · 皇片源 ${shuangkanAdded}`
     )
   }
 

@@ -28,6 +28,7 @@ import {
   Image,
   ImagePlus,
   Italic,
+  KeyRound,
   Keyboard,
   Languages,
   List,
@@ -52,6 +53,7 @@ import {
   Shield,
   ShieldBan,
   ShieldCheck,
+  SlidersHorizontal,
   Smartphone,
   Sparkles,
   Strikethrough,
@@ -72,6 +74,8 @@ const ICONS: Record<string, LucideIcon> = {
   ShieldCheck,
   Shield,
   ShieldBan,
+  KeyRound,
+  SlidersHorizontal,
   Globe,
   Cat,
   Languages,
@@ -569,7 +573,7 @@ export function ToolsPage({
 }: {
   onNotice: (text: string) => void
   resetSignal?: number
-  /** 开发者模式：解锁使用经验编辑；密码只在设置页右上角输入一次 */
+  /** 开发者模式：解锁使用经验编辑；在「配置管理」标题连点 5 次并输入密码进入 */
   developerMode: boolean
 }) {
   const { data, update } = useData()
@@ -734,10 +738,10 @@ export function ToolsPage({
             {editing ? null : (
               <button
                 className="btn tool-note-edit"
-                title={developerMode ? undefined : '请先在设置页右上角进入开发者模式'}
+                title={developerMode ? undefined : '请先在「配置管理」标题连点 5 次并输入密码'}
                 onClick={() => {
                   if (!developerMode) {
-                    onNotice('请先在 设置 → 右上角「开发者模式」输入密码解锁')
+                    onNotice('请先在设置页「配置管理」标题连点 5 次，输入密码解锁')
                     return
                   }
                   setEditing(true)

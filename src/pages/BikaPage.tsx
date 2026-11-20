@@ -99,11 +99,14 @@ export function BikaPage({
   const [pending, setPending] = useState<{ category: string; sort: string } | null>(null)
   const readerRef = useRef<HTMLDivElement | null>(null)
   const requestSeq = useRef(0)
+  /** 只应用最后一次详情请求，避免连点两本 / 返回后旧详情又弹回来 */
+  const detailSeq = useRef(0)
   /** 只应用最后一次章节取图结果，避免返回后旧请求又把阅读器打开 */
   const chapterSeq = useRef(0)
 
   useEffect(() => {
     if (resetSignal === undefined) return
+    detailSeq.current += 1
     chapterSeq.current += 1
     setDetail(null)
     setReader(null)
@@ -207,12 +210,14 @@ export function BikaPage({
   }
 
   const openDetail = async (comic: BikaComic) => {
+    const seq = ++detailSeq.current
     setChapterDesc(true)
     setDetail({ comic, chapters: [], loading: true, error: null })
     const [detailRes, chapterRes] = await Promise.all([
       window.laozheng.bikaDetail(comic.id),
       window.laozheng.bikaChapters(comic.id)
     ])
+    if (seq !== detailSeq.current) return
     const merged = detailRes.ok && detailRes.comic ? detailRes.comic : comic
     setDetail({
       comic: merged,
@@ -227,6 +232,7 @@ export function BikaPage({
   }
 
   const openDetailById = async (id: string, alive?: () => boolean) => {
+    const seq = ++detailSeq.current
     setChapterDesc(true)
     const placeholder: BikaComic = {
       id,
@@ -250,6 +256,7 @@ export function BikaPage({
       window.laozheng.bikaChapters(id)
     ])
     if (alive && !alive()) return
+    if (seq !== detailSeq.current) return
     setDetail({
       comic: detailRes.ok && detailRes.comic ? detailRes.comic : placeholder,
       chapters: chapterRes.ok ? sortChapters(chapterRes.items) : [],
@@ -268,6 +275,7 @@ export function BikaPage({
     void openDetailById(focusId, () => alive)
     return () => {
       alive = false
+      detailSeq.current += 1
       chapterSeq.current += 1
       setDetail(null)
       setReader(null)
@@ -434,7 +442,8 @@ export function BikaPage({
           <button
             className="btn ghost"
             onClick={() => {
-              // 先清掉详情再返回，避免从收藏返回后又落回详情页
+              // 先清掉详情再返回，避免从收藏返回后又落回详情页；同时作废仍在加载的详情请求
+              detailSeq.current += 1
               chapterSeq.current += 1
               setDetail(null)
               setReader(null)

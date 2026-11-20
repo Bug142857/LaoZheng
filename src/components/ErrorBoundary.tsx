@@ -27,6 +27,14 @@ export class ErrorBoundary extends Component<
   componentDidCatch(error: Error, info: ErrorInfo): void {
     // 只记录模块名与堆栈，不写账号 / Cookie 等敏感信息
     console.error(`[render] ${this.props.label ?? '页面'}渲染异常`, error, info.componentStack)
+    if (!window.laozheng?.reportError) return
+    void window.laozheng
+      .reportError({
+        label: this.props.label ?? '页面',
+        message: error.message || '渲染异常',
+        stack: `${error.stack ?? ''}\n${info.componentStack ?? ''}`.slice(0, 8000)
+      })
+      .catch(() => undefined)
   }
 
   private retry = (): void => {

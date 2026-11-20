@@ -527,3 +527,40 @@ Electron 升级和隐藏窗口 `sandbox` 收紧建议单独安排一轮完整回
 - 更新检查：约 1.1 秒返回 0.228，走 gh-proxy 线路，sha256 与 Release 一致。
 - 启动隐藏页登录（无忧）页面加载正常，日志无 Unhandled / TypeError / ERROR。
 - 未做：各站点真实内容逐项人工回归、扫码登录交互、安装包代码签名。
+
+### 11.2 v0.251 复查（2026-11-20）
+
+- 套图：关闭大图 / 切换源 / 分类 / 翻页 / 返回时作废未完成的图集详情请求，加载中关掉大图不会再被晚到的响应弹回来。
+- 短剧 / 套图 / 皇片 / 影视等收藏入口的 StrictMode 双执行修复维持现状；本轮补审其余模块的异步详情竞态。
+- 本子 BikaPage 详情请求补序号守卫（该页面当前未挂载，仅作同类竞态预防）。
+- 下载：HLS 合并失败保留切片目录时，释放的是实际分配的占位路径，修正同名占位泄漏导致后续同名下载被无谓改名。
+- 生产构建冒烟：21 个模块 0 ErrorBoundary / 0 控制台异常，KeepAlive 稳定 6 个槽位，`app:fileIcon` / `app:openLocalPath` / 快照 IPC 正常。
+
+### 11.3 v0.252 第二轮优化（2026-11-20）
+
+已实施：
+
+- **下载任务跨重启**：未完成任务写 `userData/download-tasks.json`，启动恢复为暂停态；直链 `.part`、HLS 切片、漫画已下图片继续续传，取消恢复任务会清理旧半成品。队列只在本机，不进备份 / 云同步（半成品文件不在新机器上）。
+- **分区缓存**：缓存统计与清理纳入 `Partitions/<分区>/Cache / Code Cache / GPUCache / Dawn*`；清理走各 `persist:*` 的 `clearCache` / `clearCodeCaches`，保留 Network（Cookie）、Local Storage、IndexedDB（模拟器存档）。
+- **云同步冲突**：上传前 PROPFIND 取云端 `getlastmodified`，云端比本机 `data.json` 新超过 5 秒时弹确认框，确认后才强制覆盖。
+- **每日快照**：启动后 + 每 6 小时 + 睡眠唤醒检查，常驻托盘跨天也会补快照。
+- **设置页缓存统计**：复用图片缓存增量值，分区 / 系统缓存并行统计，10 秒内重复打开直接复用结果。
+- **系统媒体键 / 托盘音乐控制**：MediaSession 标题 / 封面 / 播放暂停 / 切歌 / 进度；托盘「音乐」子菜单发送播放控制。
+- **Modal**：统一 Esc 关闭、Tab 焦点陷阱、关闭后焦点恢复；有输入框的弹窗点遮罩不再误关。
+- **日志**：`crash.log` / `magnet-test.log` / `renderer-errors.log` 按 2MB 轮转；ErrorBoundary、window error、unhandledrejection 写入渲染层错误日志。
+- **预加载**：漫画左右翻页预取后两页；小说加载完预取下一章，最多缓存 8 章。
+- **CSP**：`frame-src` 由任意 `http: https:` 改为 `'none'`（主界面无 iframe / webview；隐藏取页窗口是独立 BrowserWindow，不受影响）。
+- **远端窗口沙箱**：B站 / 斗鱼 / 抖音登录、昵称读取、抖音取流 / 搜索取页窗口全部改回 `sandbox: true`；这些窗口均无 preload / Node 依赖，`executeJavaScript` 由主进程发起仍可用。`electron/` 下已无 `sandbox: false`。
+- **测试**：新增云同步时间解析 / 冲突判断、日志轮转测试；共 6 个测试文件 40 条。
+
+按用户要求不做：**全局界面缩放**、CSP 的 `script-src` / `connect-src` 收紧。
+
+仍不做：P2-3 主页「继续观看」、P2-5 全局 `Ctrl+F`、P3-1 巨型文件纯搬家式拆分、DataContext 按域拆分、安装包代码签名。
+
+### 11.4 v0.260 缓存与备份复查
+
+- **清理缓存不再打断更新下载**：更新包下载（含暂停等待）期间 `cleanupUpdatesDir` 直接跳过，避免把 `updates` 里正在写的 `.part` 删掉；下载结束恢复清理。
+- **GPU 着色器缓存纳入统计 / 清理**：`GrShaderCache` / `ShaderCache` 加入 userData 缓存目录（实测 6.7MB 之前未统计）。
+- **导入备份的进度一致性**：备份没带播放进度时主进程保留本机进度，渲染层同步保留，不再出现「本次会话进度被清空、重启后又回来」。
+- 复查结论：快照（覆盖前 / 每日 / 恢复前）均为完整备份，导入 / 云恢复 / 快照恢复都先快照后覆盖；云上传、导出、快照共用 `buildBackupPayload`，电视源 / 下载记录 / 磁力源 / 本机设置 / 进度不缺失。
+

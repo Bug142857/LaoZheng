@@ -2,7 +2,7 @@ import { app, BrowserWindow, nativeImage, Notification, session, shell } from 'e
 import { existsSync, createReadStream, createWriteStream } from 'node:fs'
 import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type ServerResponse } from 'node:http'
-import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, join, parse, relative, resolve, sep } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createDecipheriv } from 'node:crypto'
@@ -108,7 +108,8 @@ async function netFetchWithFallback(
 }
 
 let items: StoredItem[] = []
-let libraryLoaded = false
+/** 下载记录只加载一次；并发调用共用同一个 Promise，避免后到的调用在加载完成前拿到空列表并写回 */
+let libraryPromise: Promise<void> | null = null
 let meituDirMigrated = false
 const tasks = new Map<string, DownloadTask>()
 const controllers = new Map<string, AbortController>()
@@ -348,8 +349,17 @@ function hashUrl(url: string): string {
 }
 
 async function loadLibrary(): Promise<void> {
-  if (libraryLoaded) return
-  libraryLoaded = true
+  if (!libraryPromise) {
+    // 加载失败（如迁移落盘异常）时不要把 rejected 状态缓存到进程结束，下次调用还能重试
+    libraryPromise = loadLibraryInner().catch((err) => {
+      libraryPromise = null
+      throw err
+    })
+  }
+  return libraryPromise
+}
+
+async function loadLibraryInner(): Promise<void> {
   try {
     const raw = JSON.parse(await readFile(libraryPath(), 'utf8')) as unknown
     if (Array.isArray(raw)) {
@@ -365,6 +375,8 @@ async function loadLibrary(): Promise<void> {
     }
   }
   await migrateMeituDir()
+  // 上次退出 / 崩溃时未完成的任务：加载成暂停态，等用户点继续
+  await loadTaskStore()
 }
 
 /** 「美图」分区已改名「套图」：旧下载目录与记录路径一次性迁移，避免打开目录看不到旧文件 */
@@ -495,7 +507,26 @@ async function restoreDeletedRecords(): Promise<void> {
   }
 }
 
+/** 任务队列 / 状态签名：只有状态变化时才重新计算并落盘 */
+let lastTaskSignature = ''
+/** 任务增删 / 状态变化后置为 true；纯进度分片不会触发 signature 计算 */
+let taskStateDirty = false
+
+function markTaskStateChanged(): void {
+  taskStateDirty = true
+}
+
 function notify(): void {
+  // 只有任务增删 / 状态变化才写任务队列；进度更新每秒都有，不能触发落盘。
+  // 用脏标记避免每个进度分片都重新拼接全部任务的 signature。
+  if (taskStateDirty) {
+    taskStateDirty = false
+    const signature = taskSignature()
+    if (signature !== lastTaskSignature) {
+      lastTaskSignature = signature
+      schedulePersistTasks()
+    }
+  }
   const fire = () => {
     lastNotifyAt = Date.now()
     for (const win of BrowserWindow.getAllWindows()) {
@@ -653,13 +684,18 @@ async function flattenMergedVideo(
   if (!existsSync(source)) return null
   const target = await uniqueTarget(videoRoot, safeName(title), '.mp4')
   try {
-    await rename(source, target)
-  } catch {
-    await cp(source, target)
+    try {
+      await rename(source, target)
+    } catch {
+      await cp(source, target)
+    }
+    const size = (await stat(target)).size
+    await rm(folder, { recursive: true, force: true }).catch(() => undefined)
+    return { rel: `视频/${basename(target)}`, size }
+  } finally {
+    // 最终文件已落盘（或失败时不存在）：释放同名占用
+    releaseTarget(target)
   }
-  const size = (await stat(target)).size
-  await rm(folder, { recursive: true, force: true }).catch(() => undefined)
-  return { rel: `视频/${basename(target)}`, size }
 }
 
 /** 把历史上遗留的「m3u8 + 切片目录」尽量合并成单个 mp4，并更新下载记录 */
@@ -783,6 +819,7 @@ function enqueueTask(task: DownloadTask, job: TaskJob): void {
   // 先标记排队再统计运行数：新任务初始 state 是 running，直接统计会把它自己算进名额，
   // 导致上限 2 实际只跑 1 个任务
   task.state = 'queued'
+  markTaskStateChanged()
   if (runningTaskCount() < MAX_CONCURRENT_TASKS) {
     startTask(task, job)
     return
@@ -803,6 +840,269 @@ function pumpQueue(): void {
     startTask(task, job)
   }
   notify()
+}
+
+/* ---------------- 未完成任务持久化：重启后可在下载页继续 ---------------- */
+
+/**
+ * 未完成队列只在本机有效：直链靠 .part、HLS / 漫画靠已下切片目录续传。
+ * 队列不写进备份 / 云同步（新机器上没有这些半成品文件，恢复没有意义）。
+ */
+interface PersistedTask {
+  task: DownloadTask
+  job: TaskJob
+}
+
+const TASK_STORE_LIMIT_CHARS = 16 * 1024 * 1024
+let taskStoreLoaded = false
+let taskStoreLoading: Promise<void> | null = null
+let persistTasksTimer: NodeJS.Timeout | null = null
+
+function taskStorePath(): string {
+  return join(app.getPath('userData'), 'download-tasks.json')
+}
+
+function taskSignature(): string {
+  return [...tasks.values()]
+    .map((task) => `${task.id}:${task.state}`)
+    .sort()
+    .join('|')
+}
+
+function schedulePersistTasks(): void {
+  if (persistTasksTimer) return
+  persistTasksTimer = setTimeout(() => {
+    persistTasksTimer = null
+    void persistTasks()
+  }, 600)
+  persistTasksTimer.unref?.()
+}
+
+function sanitizePersistedJob(job: TaskJob): TaskJob | null {
+  const input = job?.input
+  if (!input || typeof input.url !== 'string' || !/^https?:\/\//i.test(input.url)) return null
+  if (job.kind !== 'direct' && job.kind !== 'hls' && job.kind !== 'comic') return null
+  const next: TaskJob = {
+    kind: job.kind,
+    input: {
+      ...input,
+      title: String(input.title ?? '').slice(0, 160),
+      url: input.url.trim(),
+      kind: job.kind === 'comic' ? 'comic' : input.kind
+    }
+  }
+  if (job.direct?.target && job.direct?.tmp) {
+    next.direct = { target: job.direct.target, tmp: job.direct.tmp }
+  }
+  if (job.kind === 'comic') {
+    if (!job.comic?.comic || !Array.isArray(job.comic.chapters)) return null
+    next.comic = job.comic
+  }
+  return next
+}
+
+async function persistTasks(): Promise<void> {
+  const payload: PersistedTask[] = []
+  for (const task of tasks.values()) {
+    if (task.state === 'failed') continue
+    const job = jobs.get(task.id)
+    if (!job) continue
+    const safeJob = sanitizePersistedJob(job)
+    if (!safeJob) continue
+    payload.push({
+      task: {
+        id: task.id,
+        title: task.title,
+        kind: task.kind,
+        url: task.url,
+        sourceName: task.sourceName,
+        coverUrl: task.coverUrl,
+        // 重启后一律显示为暂停，由用户决定继续；运行中状态跨进程没有意义
+        state: 'paused',
+        progress: task.progress,
+        bytes: task.bytes,
+        totalBytes: task.totalBytes
+      },
+      job: safeJob
+    })
+  }
+  const target = taskStorePath()
+  try {
+    if (!payload.length) {
+      await rm(target, { force: true }).catch(() => undefined)
+      return
+    }
+    const text = JSON.stringify(payload)
+    if (text.length > TASK_STORE_LIMIT_CHARS) {
+      console.error('[downloads] 未完成任务体积过大，跳过保存')
+      return
+    }
+    await mkdir(app.getPath('userData'), { recursive: true })
+    const tmp = `${target}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
+    await writeFile(tmp, text, 'utf8')
+    await rename(tmp, target)
+  } catch (err) {
+    console.error('[downloads] 保存未完成任务失败', err)
+  }
+}
+
+async function loadTaskStore(): Promise<void> {
+  if (taskStoreLoaded) return
+  if (taskStoreLoading) return taskStoreLoading
+  taskStoreLoading = (async () => {
+    try {
+      const raw = JSON.parse(await readFile(taskStorePath(), 'utf8')) as unknown
+      if (Array.isArray(raw)) {
+        const root = resolve(downloadsRoot())
+        for (const entry of raw) {
+          if (!entry || typeof entry !== 'object') continue
+          const value = entry as Record<string, unknown>
+          const taskRaw = value.task as Record<string, unknown> | undefined
+          const jobRaw = value.job as Record<string, unknown> | undefined
+          if (!taskRaw || !jobRaw) continue
+          const id = typeof taskRaw.id === 'string' ? taskRaw.id.trim() : ''
+          // id 会拼进 HLS 切片目录名，只接受安全字符
+          if (!/^[A-Za-z0-9_-]{1,120}$/.test(id) || tasks.has(id)) continue
+          if (typeof jobRaw.input !== 'object' || !jobRaw.input) continue
+          const job = normalizePersistedJob(jobRaw)
+          if (!job) continue
+          if (items.some((item) => item.sourceUrl === job.input.url)) continue
+          if (
+            job.kind === 'comic' &&
+            items.some((item) => item.kind === 'comic' && item.title === String(taskRaw.title ?? ''))
+          ) {
+            continue
+          }
+          let restoredBytes = 0
+          if (job.direct) {
+            const target = resolve(job.direct.target)
+            const tmp = resolve(job.direct.tmp)
+            const insideRoot = (path: string): boolean =>
+              path.toLowerCase().startsWith((root + sep).toLowerCase())
+            // 下载目录被改到别处后旧半成品无法安全续传，直接从头开始
+            if (!insideRoot(target) || !insideRoot(tmp)) {
+              job.direct = undefined
+            } else {
+              const exists = await stat(target).then(
+                (info) => info.isFile(),
+                () => false
+              )
+              // 目标文件已经生成但记录没落盘：不覆盖，交给用户重新下载 / 手动扫描
+              if (exists) continue
+              const part = await stat(tmp).then(
+                (info) => (info.isFile() ? info.size : -1),
+                () => -1
+              )
+              if (part <= 0) {
+                job.direct = undefined
+              } else {
+                restoredBytes = part
+                // 暂停期间点取消时也要清掉上次留下的 .part
+                artifactsOf(id).files.add(tmp)
+              }
+            }
+          }
+          if (job.kind === 'hls') {
+            const folder = join(root, '视频', `.hls-${id}`)
+            const exists = await stat(folder).then(
+              (info) => info.isDirectory(),
+              () => false
+            )
+            // 暂停期间点取消时清掉上次留下的切片目录
+            if (exists) artifactsOf(id).dirs.add(folder)
+          }
+          const savedBytes =
+            typeof taskRaw.bytes === 'number' && Number.isFinite(taskRaw.bytes)
+              ? Math.max(0, taskRaw.bytes)
+              : 0
+          const savedTotal =
+            typeof taskRaw.totalBytes === 'number' && Number.isFinite(taskRaw.totalBytes)
+              ? Math.max(0, taskRaw.totalBytes)
+              : 0
+          const savedProgress =
+            typeof taskRaw.progress === 'number' && Number.isFinite(taskRaw.progress)
+              ? Math.min(1, Math.max(-1, taskRaw.progress))
+              : -1
+          const bytes = restoredBytes > 0 ? restoredBytes : savedBytes
+          const task: DownloadTask = {
+            id,
+            title: String(taskRaw.title ?? '').slice(0, 160) || '未命名下载',
+            kind: job.input.kind,
+            url: job.input.url,
+            sourceName: typeof taskRaw.sourceName === 'string' ? taskRaw.sourceName : '',
+            coverUrl: typeof taskRaw.coverUrl === 'string' ? taskRaw.coverUrl : '',
+            state: 'paused',
+            // 直链按实际 .part 大小重算，暂停百分比不会停留在上次状态变化时的旧值
+            progress:
+              restoredBytes > 0 && savedTotal > 0
+                ? Math.min(1, restoredBytes / savedTotal)
+                : savedProgress,
+            bytes,
+            totalBytes: savedTotal
+          }
+          tasks.set(id, task)
+          jobs.set(id, job)
+        }
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.error('[downloads] 读取未完成任务失败', err)
+      }
+    } finally {
+      taskStoreLoaded = true
+      taskStoreLoading = null
+      lastTaskSignature = taskSignature()
+      taskStateDirty = false
+    }
+  })()
+  return taskStoreLoading
+}
+
+function normalizePersistedJob(raw: Record<string, unknown>): TaskJob | null {
+  const kind = raw.kind
+  if (kind !== 'direct' && kind !== 'hls' && kind !== 'comic') return null
+  const inputRaw = raw.input as Record<string, unknown>
+  const url = typeof inputRaw.url === 'string' ? inputRaw.url.trim() : ''
+  if (!/^https?:\/\//i.test(url)) return null
+  const input: DownloadAddInput = {
+    title: typeof inputRaw.title === 'string' ? inputRaw.title.slice(0, 160) : '未命名下载',
+    url,
+    kind:
+      kind === 'comic'
+        ? 'comic'
+        : inputRaw.kind === 'music' ||
+            inputRaw.kind === 'video' ||
+            inputRaw.kind === 'book' ||
+            inputRaw.kind === 'novel' ||
+            inputRaw.kind === 'wallpaper' ||
+            inputRaw.kind === 'meitu' ||
+            inputRaw.kind === 'trainer' ||
+            inputRaw.kind === 'file'
+          ? inputRaw.kind
+          : 'video',
+    coverUrl: typeof inputRaw.coverUrl === 'string' ? inputRaw.coverUrl : undefined,
+    sourceName: typeof inputRaw.sourceName === 'string' ? inputRaw.sourceName : undefined,
+    referer: typeof inputRaw.referer === 'string' ? inputRaw.referer : undefined
+  }
+  const job: TaskJob = { kind, input }
+  const direct = raw.direct as Record<string, unknown> | undefined
+  if (
+    direct &&
+    typeof direct.target === 'string' &&
+    typeof direct.tmp === 'string' &&
+    direct.target &&
+    direct.tmp
+  ) {
+    job.direct = { target: direct.target, tmp: direct.tmp }
+  }
+  if (kind === 'comic') {
+    const comicRaw = raw.comic as Record<string, unknown> | undefined
+    if (!comicRaw || typeof comicRaw.comic !== 'object' || !Array.isArray(comicRaw.chapters)) {
+      return null
+    }
+    job.comic = comicRaw as unknown as ComicBatchDownloadInput
+  }
+  return job
 }
 
 /* ---------------- 速度 / ETA / 完成通知 ---------------- */
@@ -877,6 +1177,7 @@ function startTask(task: DownloadTask, job: TaskJob): void {
   controllers.set(task.id, controller)
   task.state = 'running'
   task.error = undefined
+  markTaskStateChanged()
   ensureStatsTimer()
   void (async () => {
     try {
@@ -899,6 +1200,7 @@ function startTask(task: DownloadTask, job: TaskJob): void {
       await saveLibrary()
       notifyDownloadFinished(task, true)
       tasks.delete(task.id)
+      markTaskStateChanged()
       controllers.delete(task.id)
       runs.delete(task.id)
       jobs.delete(task.id)
@@ -912,6 +1214,7 @@ function startTask(task: DownloadTask, job: TaskJob): void {
         // 暂停：保留任务、半成品和续传上下文，等用户点「继续」
         if (task.state !== 'paused') {
           tasks.delete(task.id)
+          markTaskStateChanged()
           runs.delete(task.id)
           jobs.delete(task.id)
           speedSamples.delete(task.id)
@@ -922,6 +1225,7 @@ function startTask(task: DownloadTask, job: TaskJob): void {
       } else {
         task.state = 'failed'
         task.error = err instanceof Error ? err.message : '下载失败'
+        markTaskStateChanged()
         jobs.delete(task.id)
         speedSamples.delete(task.id)
         // 失败清掉半成品，避免留下 .part / 半个切片目录
@@ -942,6 +1246,7 @@ export async function pauseTask(id: string): Promise<void> {
   // 排队中的任务直接移出队列，不占名额
   if (task.state === 'queued') {
     task.state = 'paused'
+    markTaskStateChanged()
     removeFromWaiting(id)
     speedSamples.delete(id)
     notify()
@@ -950,6 +1255,7 @@ export async function pauseTask(id: string): Promise<void> {
   }
   if (task.state !== 'running') return
   task.state = 'paused'
+  markTaskStateChanged()
   controllers.get(id)?.abort()
   controllers.delete(id)
   speedSamples.delete(id)
@@ -966,6 +1272,7 @@ export function resumeTask(id: string): void {
     startTask(task, job)
   } else {
     task.state = 'queued'
+    markTaskStateChanged()
     if (!waiting.includes(id)) waiting.push(id)
     ensureStatsTimer()
     notify()
@@ -1353,7 +1660,11 @@ export async function saveMusicLyrics(input: {
   await mkdir(dir, { recursive: true })
   const base = safeName([input.artists, input.title].filter(Boolean).join(' - ') || '歌词')
   const target = await uniqueTarget(dir, base, '.lrc')
-  await writeFile(target, lrc, 'utf8')
+  try {
+    await writeFile(target, lrc, 'utf8')
+  } finally {
+    releaseTarget(target)
+  }
   return { ok: true, path: target }
 }
 
@@ -1367,8 +1678,13 @@ export async function saveNovelFile(input: {
   const dir = join(downloadsRoot(), kindDir('novel'))
   await mkdir(dir, { recursive: true })
   const target = await uniqueTarget(dir, safeName(input.title), '.txt')
-  await writeFile(target, input.content, 'utf8')
-  const info = await stat(target)
+  let sizeBytes = 0
+  try {
+    await writeFile(target, input.content, 'utf8')
+    sizeBytes = (await stat(target)).size
+  } finally {
+    releaseTarget(target)
+  }
   await registerLocalFile({
     title: input.title,
     kind: 'novel',
@@ -1376,7 +1692,7 @@ export async function saveNovelFile(input: {
     sourceName: input.sourceName,
     coverUrl: input.coverUrl
   })
-  return { path: target, sizeBytes: info.size }
+  return { path: target, sizeBytes }
 }
 
 /** 在系统里打开下载项（文件或目录） */
@@ -1696,6 +2012,7 @@ export async function cancelTask(id: string): Promise<void> {
   controllers.get(id)?.abort()
   controllers.delete(id)
   tasks.delete(id)
+  markTaskStateChanged()
   jobs.delete(id)
   speedSamples.delete(id)
   // 等一小会儿让写文件的流退出，再清掉本次产生的半成品
@@ -1736,6 +2053,19 @@ async function moveEntry(from: string, to: string): Promise<void> {
   await rm(from, { recursive: true, force: true })
 }
 
+/** 磁盘根目录 / 系统目录 / 用户主目录：不能作为下载根，也不能在迁移后递归删除 */
+function isUnsafeDownloadRoot(abs: string): boolean {
+  const normalized = resolve(abs)
+  const lower = normalized.toLowerCase()
+  const root = parse(normalized).root.toLowerCase()
+  if (lower === root || `${lower}\\` === root) return true
+  for (const name of ['windows', 'program files', 'program files (x86)', 'programdata']) {
+    const base = join(parse(normalized).root, name).toLowerCase()
+    if (lower === base || lower.startsWith(base + sep)) return true
+  }
+  return lower === resolve(app.getPath('home')).toLowerCase()
+}
+
 /**
  * 更改下载总目录。
  * move = true 时把旧目录里的全部内容迁移到新目录，迁移完成后删除旧目录残余；
@@ -1753,6 +2083,15 @@ export async function changeDownloadRoot(
   if (oldAbs === nextAbs) return { ok: true, root: nextAbs, moved: 0 }
   if (nextAbs.startsWith(oldAbs + sep) || oldAbs.startsWith(nextAbs + sep)) {
     return { ok: false, error: '新旧目录不能互相包含' }
+  }
+  if (isUnsafeDownloadRoot(nextAbs)) {
+    return { ok: false, error: '不能把磁盘根目录 / 系统目录设为下载目录，请选择具体文件夹' }
+  }
+  if (move && isUnsafeDownloadRoot(oldAbs)) {
+    return {
+      ok: false,
+      error: '当前下载目录是磁盘根目录 / 系统目录，不能整体迁移；可取消「迁移已有文件」只更换目录'
+    }
   }
   if (move && hasRunningDownloads()) {
     return { ok: false, error: '还有下载任务进行中，等下载完成后再迁移' }
@@ -1780,8 +2119,8 @@ export async function changeDownloadRoot(
         await moveEntry(join(oldAbs, name), join(nextAbs, name))
         moved += 1
       }
-      // 迁移完成后清理旧目录残余（空壳、跨盘复制留下的空目录）
-      if (oldAbs !== resolve(app.getPath('downloads'))) {
+      // 迁移完成后清理旧目录残余（空壳、跨盘复制留下的空目录）；系统目录绝不递归删除
+      if (!isUnsafeDownloadRoot(oldAbs) && oldAbs !== resolve(app.getPath('downloads'))) {
         await rm(oldAbs, { recursive: true, force: true }).catch(() => undefined)
       }
     } catch (err) {
@@ -1811,16 +2150,31 @@ function guessExt(url: string, kind: DownloadKind): string {
   return kind === 'music' ? '.mp3' : kind === 'video' ? '.mp4' : ''
 }
 
+/** 已被并发任务占用、但尚未落盘的目标路径：同名任务不能分到同一个文件 */
+const reservedTargets = new Set<string>()
+
+function releaseTarget(target: string): void {
+  reservedTargets.delete(target)
+}
+
 async function uniqueTarget(dir: string, base: string, ext: string): Promise<string> {
   let name = `${base}${ext}`
   let n = 2
   for (;;) {
-    try {
-      await stat(join(dir, name))
-      name = `${base} (${n++})${ext}`
-    } catch {
-      return join(dir, name)
+    const target = join(dir, name)
+    if (!reservedTargets.has(target)) {
+      // 最终文件要到下载完成才 rename 出来，但 .part 已在写入：两者都要判定占用
+      const [exists, partExists] = await Promise.all([
+        stat(target).then(() => true, () => false),
+        stat(`${target}.part`).then(() => true, () => false)
+      ])
+      // 检查与登记之间没有 await：两个并发任务不会同时拿到同一个目标
+      if (!exists && !partExists && !reservedTargets.has(target)) {
+        reservedTargets.add(target)
+        return target
+      }
     }
+    name = `${base} (${n++})${ext}`
   }
 }
 
@@ -1828,12 +2182,14 @@ async function uniqueDir(dir: string, base: string): Promise<string> {
   let target = join(dir, base)
   let n = 2
   for (;;) {
-    try {
-      await stat(target)
-      target = join(dir, `${base} (${n++})`)
-    } catch {
-      return target
+    if (!reservedTargets.has(target)) {
+      const exists = await stat(target).then(() => true, () => false)
+      if (!exists && !reservedTargets.has(target)) {
+        reservedTargets.add(target)
+        return target
+      }
     }
+    target = join(dir, `${base} (${n++})`)
   }
 }
 
@@ -1860,6 +2216,8 @@ async function downloadDirect(
 
   let target: string
   let tmp: string
+  /** 本函数新分配的目标路径（续传复用旧路径不算），结束时释放同名占用 */
+  let allocatedTarget: string | null = null
   let res: Response
   if (resume && offset > 0) {
     const headers = downloadHeaders(input.url, input.referer)
@@ -1898,6 +2256,7 @@ async function downloadDirect(
             : guessImageExt(input.url, contentType)
         : guessExt(input.url, input.kind)
     target = await uniqueTarget(dir, safeName(input.title), ext)
+    allocatedTarget = target
     tmp = `${target}.part`
     artifactsOf(task.id).files.add(tmp)
     job.direct = { target, tmp }
@@ -1915,29 +2274,34 @@ async function downloadDirect(
     }
   })
   const append = !!(resume && offset > 0)
-  await pipeline(
-    Readable.fromWeb(res.body as never),
-    meter,
-    createWriteStream(tmp, append ? { flags: 'a' } : undefined)
-  )
-  await rename(tmp, target)
+  try {
+    await pipeline(
+      Readable.fromWeb(res.body as never),
+      meter,
+      createWriteStream(tmp, append ? { flags: 'a' } : undefined)
+    )
+    await rename(tmp, target)
 
-  const info = await stat(target)
-  const size = info.size
-  return {
-    id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    title: input.title.trim() || '未命名下载',
-    kind: input.kind,
-    sourceUrl: input.url,
-    playPath: join(dirName, target.slice(dir.length + 1)).replace(/\\/g, '/'),
-    displayPath: join(dirName, target.slice(dir.length + 1)).replace(/\\/g, '/'),
-    sizeBytes: size,
-    createdAt: Date.now(),
-    coverUrl: input.coverUrl ?? '',
-    sourceName: input.sourceName ?? '',
-    hls: false,
-    durationSec: input.durationSec,
-    referer: input.referer
+    const info = await stat(target)
+    const size = info.size
+    return {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      title: input.title.trim() || '未命名下载',
+      kind: input.kind,
+      sourceUrl: input.url,
+      playPath: join(dirName, target.slice(dir.length + 1)).replace(/\\/g, '/'),
+      displayPath: join(dirName, target.slice(dir.length + 1)).replace(/\\/g, '/'),
+      sizeBytes: size,
+      createdAt: Date.now(),
+      coverUrl: input.coverUrl ?? '',
+      sourceName: input.sourceName ?? '',
+      hls: false,
+      durationSec: input.durationSec,
+      referer: input.referer
+    }
+  } finally {
+    // 下载成功时最终文件已存在；失败 / 取消时半成品由 cleanupArtifacts 清掉
+    if (allocatedTarget) releaseTarget(allocatedTarget)
   }
 }
 
@@ -2227,22 +2591,32 @@ async function downloadHls(
     const target = await uniqueTarget(videoDir, base, '.mp4')
     const source = join(folder, 'video.mp4')
     try {
-      await rename(source, target)
-    } catch {
-      await cp(source, target)
+      try {
+        await rename(source, target)
+      } catch {
+        await cp(source, target)
+      }
+      playSize = (await stat(target)).size
+      await rm(folder, { recursive: true, force: true }).catch(() => undefined)
+      playRel = `视频/${basename(target)}`
+    } finally {
+      releaseTarget(target)
     }
-    playSize = (await stat(target)).size
-    await rm(folder, { recursive: true, force: true }).catch(() => undefined)
-    playRel = `视频/${basename(target)}`
   } else {
     // 合并失败：保留切片目录（用标题命名），等下次启动再修
-    let fallbackDir = await uniqueDir(videoDir, base)
+    const allocatedDir = await uniqueDir(videoDir, base)
     try {
-      await rename(folder, fallbackDir)
-    } catch {
-      fallbackDir = folder
+      let fallbackDir = allocatedDir
+      try {
+        await rename(folder, fallbackDir)
+      } catch {
+        fallbackDir = folder
+      }
+      playRel = `视频/${basename(fallbackDir)}/index.m3u8`
+    } finally {
+      // 释放的是 uniqueDir 分配并占用的路径；rename 失败时占位路径并未真正使用
+      releaseTarget(allocatedDir)
     }
-    playRel = `视频/${basename(fallbackDir)}/index.m3u8`
   }
   return {
     id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,

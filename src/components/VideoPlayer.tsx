@@ -203,6 +203,18 @@ export function VideoPlayer({
       disposed = true
       save()
       flushProgress()
+      // 先显式停掉 video：ArtPlayer 销毁后 video 已被移出 DOM，
+      // 若还有未完成的 play() / 晚到的媒体流，就没人能再暂停它了。
+      // 同时强制静音 / 关自动播放：即使有晚到的 HLS 挂到已脱离 DOM 的元素上，也不会出声
+      try {
+        art.video.autoplay = false
+        art.video.muted = true
+        art.video.pause()
+        art.video.removeAttribute('src')
+        art.video.load()
+      } catch {
+        // video 已被销毁时忽略
+      }
       // ArtPlayer destroy 会一并销毁 hls / 事件，关闭页面不留后台声音
       art.destroy()
       if (artRef.current === art) artRef.current = null

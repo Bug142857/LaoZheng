@@ -235,36 +235,6 @@ export function registerSourcesIpc(): void {
     }
   })
 
-  // 导出番号源为 JSON（默认四个外网采集站 + 用户添加的）
-  ipcMain.handle('h1:exportSources', async (_e, sources: unknown) => {
-    const list = Array.isArray(sources) ? sources : []
-    const picked = await dialog.showSaveDialog({
-      title: '导出番号源',
-      defaultPath: join(
-        lastDialogDir('h1', app.getPath('documents')),
-        `老郑分享-番号源-${stamp()}.json`
-      ),
-      filters: [{ name: 'JSON', extensions: ['json'] }]
-    })
-    if (picked.canceled || !picked.filePath) return { canceled: true }
-    await rememberDialogDir('h1', picked.filePath)
-    try {
-      const rows = list
-        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
-        .map((s) => ({
-          id: typeof s.id === 'string' ? s.id : '',
-          name: typeof s.name === 'string' ? s.name : '',
-          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
-          enabled: s.enabled !== false
-        }))
-        .filter((s) => /^https?:\/\//i.test(s.baseUrl))
-      await writeJsonAtomic(picked.filePath, rows)
-      return { canceled: false, path: picked.filePath, count: rows.length }
-    } catch (err) {
-      return { canceled: false, error: (err as Error).message }
-    }
-  })
-
   // 导出短剧源为 JSON（含西饭短剧及其自定义地址）
   ipcMain.handle('drama:exportSources', async (_e, sources: unknown) => {
     const list = Array.isArray(sources) ? sources : []
@@ -427,14 +397,6 @@ export function registerSourcesIpc(): void {
           enabled: s.enabled !== false
         }))
         .filter((s) => /^https?:\/\//i.test(s.baseUrl) && !!s.template)
-      const h1Sources = rowsOf('h1Sources')
-        .map((s) => ({
-          id: typeof s.id === 'string' ? s.id : '',
-          name: typeof s.name === 'string' ? s.name : '',
-          baseUrl: typeof s.baseUrl === 'string' ? s.baseUrl : '',
-          enabled: s.enabled !== false
-        }))
-        .filter((s) => /^https?:\/\//i.test(s.baseUrl))
       const livePlatformSources = rowsOf('livePlatformSources')
         .map((s) => ({
           id: typeof s.id === 'string' ? s.id : '',
@@ -482,7 +444,6 @@ export function registerSourcesIpc(): void {
         musicSources,
         novelSources,
         comicSources,
-        h1Sources,
         livePlatformSources,
         wallpaperSources,
         meituSources,
@@ -501,7 +462,6 @@ export function registerSourcesIpc(): void {
           musicSources.length +
           novelSources.length +
           comicSources.length +
-          h1Sources.length +
           livePlatformSources.length +
           wallpaperSources.length +
           meituSources.length +
@@ -535,7 +495,6 @@ export function registerSourcesIpc(): void {
         musicSources: rowsOf('musicSources'),
         novelSources: rowsOf('novelSources'),
         comicSources: rowsOf('comicSources'),
-        h1Sources: rowsOf('h1Sources'),
         livePlatformSources: rowsOf('livePlatformSources'),
         wallpaperSources: rowsOf('wallpaperSources'),
         meituSources: rowsOf('meituSources'),
@@ -550,7 +509,6 @@ export function registerSourcesIpc(): void {
         !data.musicSources.length &&
         !data.novelSources.length &&
         !data.comicSources.length &&
-        !data.h1Sources.length &&
         !data.livePlatformSources.length &&
         !data.wallpaperSources.length &&
         !data.meituSources.length &&

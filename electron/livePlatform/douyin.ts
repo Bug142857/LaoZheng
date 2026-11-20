@@ -70,7 +70,8 @@ async function withHiddenPage<T>(
     height: 800,
     webPreferences: {
       partition: LIVE_PARTITION,
-      sandbox: false,
+      // 取流窗口不注入 preload，也不依赖 Node；远端页面统一开启 OS 沙箱
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,
@@ -684,7 +685,8 @@ async function openSearchWindow(url: string): Promise<BrowserWindow> {
     height: 800,
     webPreferences: {
       partition: LIVE_PARTITION,
-      sandbox: false,
+      // 搜索取页窗口不注入 preload，也不依赖 Node；远端页面统一开启 OS 沙箱
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,

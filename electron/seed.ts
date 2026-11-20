@@ -13,7 +13,7 @@ import {
   normalizeSingingVideos,
   type SingingVideo
 } from '../src/shared/singing'
-import { loadData, saveData } from './store'
+import { dataSaveSeq, loadData, saveData } from './store'
 
 /**
  * 启动时补齐默认数据（与手机端 `DefaultSeed.kt` 同一份资产）：
@@ -276,8 +276,9 @@ export async function seedDefaultData(): Promise<void> {
     }
   }
 
-  await writeMarker(false)
   if (changed) await saveData(data)
+  // 落重标记要放在写盘之后：保存失败时下次启动还会重试，避免标记已生效但默认数据没写进去
+  await writeMarker(false)
 }
 
 /**
@@ -289,6 +290,8 @@ export async function syncSeedExtras(): Promise<boolean> {
   const seed = await readSeedCached()
   if (!seed) return false
   const data: AppData = await loadData()
+  // 合并期间用户可能已经保存了新数据：那之后这份旧快照不能再写盘，否则会覆盖用户改动
+  const seqAtLoad = dataSaveSeq()
   let changed = false
 
   // 老数据 / 旧版本导出的备份：种子里的影视源统一标记为内置源
@@ -323,7 +326,14 @@ export async function syncSeedExtras(): Promise<boolean> {
     }
   }
 
-  if (changed) await saveData(data)
+  if (changed) {
+    // 期间用户已经保存过：放弃这一轮写盘，改动留到下次启动再合并，避免把用户数据覆盖回旧值
+    if (dataSaveSeq() !== seqAtLoad) {
+      console.warn('[seed] 合并期间数据已被更新，跳过本次种子写盘')
+      return false
+    }
+    await saveData(data)
+  }
   if (!marker.singing) await writeMarker(true)
   return changed
 }

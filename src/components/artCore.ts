@@ -119,8 +119,20 @@ export async function attachM3u8(
   art: Artplayer,
   hooks: HlsHooks = {}
 ): Promise<void> {
+  // hls.js 是动态加载的：用户可能在加载期间就返回并销毁播放器，
+  // 晚到的 Hls 实例会挂到已移出 DOM 的 video 上继续出声，必须先登记销毁状态。
+  let disposed = false
+  let stopHls: (() => void) | null = null
+  art.on('destroy', () => {
+    disposed = true
+    stopHls?.()
+    stopHls = null
+  })
   // hls.js 只在真正播放 HLS 时加载，避免 B 站 / 直播等不走 HLS 的播放器也跟着拉大包
   const { default: Hls } = await import('hls.js')
+  // 播放器可能在动态加载期间已被销毁：video 已被移出 DOM 时绝不能再挂载，
+  // 否则会得到一个脱离界面、没人能暂停的隐藏播放器（返回后仍出声）
+  if (disposed || !video.isConnected) return
   if (!Hls.isSupported()) {
     // 原生支持 HLS 的环境（Safari / 部分 Chromium 构建）
     video.src = url
@@ -137,6 +149,7 @@ export async function attachM3u8(
       }
     }
   })
+  stopHls = () => hls.destroy()
   art.hls = hls
   hls.on(Hls.Events.MANIFEST_PARSED, (_event, manifest) => {
     // 有的源只在主清单里声明带宽、不写分辨率，这类档位也纳入清晰度列表
@@ -170,7 +183,6 @@ export async function attachM3u8(
   })
   hls.loadSource(url)
   hls.attachMedia(video)
-  art.on('destroy', () => hls.destroy())
 }
 
 /** FLV 直播挂载（斗鱼 / 抖音 / B 站直播） */
@@ -180,7 +192,16 @@ export async function attachFlv(
   art: Artplayer,
   onFatal: (message: string) => void
 ): Promise<void> {
+  // 与 HLS 相同：动态加载期间用户可能已经返回，晚到的实例不能再挂到销毁后的 video 上
+  let disposed = false
+  let stopFlv: (() => void) | null = null
+  art.on('destroy', () => {
+    disposed = true
+    stopFlv?.()
+    stopFlv = null
+  })
   const { default: mpegts } = await import('mpegts.js')
+  if (disposed || !video.isConnected) return
   if (!mpegts.isSupported()) {
     onFatal('当前环境不支持 FLV 播放')
     return
@@ -189,10 +210,10 @@ export async function attachFlv(
     { type: 'flv', url, isLive: true, cors: true },
     { enableWorker: true, liveBufferLatencyChasing: true, lazyLoad: false }
   )
+  stopFlv = () => flv.destroy()
   flv.attachMediaElement(video)
   flv.on(mpegts.Events.ERROR, () => onFatal('FLV 直播流已中断，可能是线路失效'))
   flv.load()
-  art.on('destroy', () => flv.destroy())
 }
 
 /** 切换 HLS 内部清晰度（-1 = 自动） */

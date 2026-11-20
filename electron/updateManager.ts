@@ -6,7 +6,7 @@ import { join, resolve, sep } from 'node:path'
 import { spawn } from 'node:child_process'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { updatesDir } from './cacheManager'
+import { setUpdatesDownloadActive, updatesDir } from './cacheManager'
 import { compareVersions } from '../src/shared/update'
 import type { UpdateCheckResult, UpdateDownloadResult, UpdateProgress } from '../src/shared/update'
 
@@ -296,6 +296,8 @@ export async function downloadUpdateInstaller(
   }
   if (updateDownloading) return { ok: false, error: '更新安装包正在下载，请稍候' }
   updateDownloading = true
+  // 下载期间清理缓存不能删 updates 里的 .part
+  setUpdatesDownloadActive(true)
   const task: UpdateDownloadTask = {
     paused: false,
     canceled: false,
@@ -329,6 +331,7 @@ export async function downloadUpdateInstaller(
   } finally {
     updateTask = null
     updateDownloading = false
+    setUpdatesDownloadActive(false)
   }
 }
 

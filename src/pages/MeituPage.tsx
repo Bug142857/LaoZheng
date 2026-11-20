@@ -136,8 +136,16 @@ export function MeituPage({
   const [broken, setBroken] = useState<Record<string, true>>({})
   const [categoriesMap, setCategoriesMap] = useState<Record<string, MeituCategory[]>>({})
   const requestSeq = useRef(0)
+  const detailSeq = useRef(0)
   const detailCache = useRef(new Map<string, MeituAlbumDetail>())
   const openedFocus = useRef(0)
+
+  /** 关闭大图：作废尚未返回的图集请求，避免用户关掉后响应又把大图弹回来 */
+  const closeViewer = (): void => {
+    detailSeq.current += 1
+    setViewer(null)
+  }
+
   const activeSource = useMemo(
     () => sources.find((entry) => entry.id === sourceId) ?? sources[0],
     [sources, sourceId]
@@ -239,7 +247,7 @@ export function MeituPage({
     setCategory('')
     setStarName('')
     setPageNum(1)
-    setViewer(null)
+    closeViewer()
     void load({ category: '', page: 1, keyword: '' })
     // 点标题回到默认态
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -300,6 +308,8 @@ export function MeituPage({
   }
 
   const openAlbum = async (album: MeituAlbum) => {
+    // 快速连点两本图集时，先发出的慢响应不能覆盖后点的那一本
+    const seq = ++detailSeq.current
     const sourceConfig = appData.meituSources.find((entry) => entry.id === album.source)
     if (!sourceConfig) {
       onNotice('这个套图源已被删除')
@@ -313,6 +323,7 @@ export function MeituPage({
     }
     setViewer({ album, images: [], loading: true, error: null })
     const res = await window.laozheng.meituDetail(toMeituSourceRef(sourceConfig), album.pageUrl)
+    if (seq !== detailSeq.current) return
     if (!res.ok || !res.album) {
       setViewer({
         album,
@@ -333,8 +344,14 @@ export function MeituPage({
 
   useEffect(() => {
     if (!focus || focus.at === openedFocus.current) return
-    openedFocus.current = focus.at
+    const at = focus.at
+    openedFocus.current = at
     void openAlbum(focus.album)
+    // StrictMode 会 mount 后立刻 cleanup 再 mount：释放已处理的标记，
+    // 否则第二次 effect 直接跳过，而 reset effect 已把 viewer 清空
+    return () => {
+      if (openedFocus.current === at) openedFocus.current = 0
+    }
     // focus 由收藏进入时带上，只处理一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.at])
@@ -342,7 +359,7 @@ export function MeituPage({
   useEffect(() => {
     if (!viewer) return
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setViewer(null)
+      if (event.key === 'Escape') closeViewer()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -357,7 +374,7 @@ export function MeituPage({
     setPageNum(1)
     setKeyword('')
     setInput('')
-    setViewer(null)
+    closeViewer()
     void load({ sourceId: id, category: '', page: 1, keyword: '' })
   }
 
@@ -367,7 +384,7 @@ export function MeituPage({
     setKeyword('')
     setInput('')
     setPageNum(1)
-    setViewer(null)
+    closeViewer()
     void load({ category: id, page: 1, keyword: '' })
   }
 
@@ -378,7 +395,7 @@ export function MeituPage({
     setKeyword('')
     setInput('')
     setPageNum(1)
-    setViewer(null)
+    closeViewer()
     void load({ category: next, page: 1, keyword: '' })
   }
 
@@ -387,7 +404,7 @@ export function MeituPage({
     if (next === keyword) return
     setKeyword(next)
     setPageNum(1)
-    setViewer(null)
+    closeViewer()
     void load({ keyword: next, page: 1 })
   }
 
@@ -401,7 +418,7 @@ export function MeituPage({
 
   const changePage = (next: number) => {
     setPageNum(next)
-    setViewer(null)
+    closeViewer()
     void load({ page: next })
   }
 
@@ -492,7 +509,7 @@ export function MeituPage({
         <button
           className="btn ghost"
           onClick={() => {
-            setViewer(null)
+            closeViewer()
             onExit()
           }}
         >
@@ -526,7 +543,7 @@ export function MeituPage({
           <button
             className="btn ghost"
             onClick={() => {
-              setViewer(null)
+              closeViewer()
               if (focus && onExit) onExit()
             }}
           >

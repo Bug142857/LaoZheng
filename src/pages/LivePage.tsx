@@ -120,7 +120,8 @@ export function LivePage({
   // 从播放页去收藏/下载再返回时，回到频道列表而不是又停在播放页；
   // 同时重新读一次电视源，保证导入备份 / 云恢复后不会继续用旧的源列表
   useEffect(() => {
-    if (resetSignal === undefined) return
+    // 从收藏进入时不能被 reset 清掉正在播放的频道；真正点侧栏返回时 focusUrl 已为空
+    if (resetSignal === undefined || focusUrl) return
     setPlaying(null)
     let alive = true
     void window.laozheng

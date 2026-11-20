@@ -54,6 +54,17 @@ export function ComicReader({
     setZoom(1)
   }, [images])
 
+  // 左右翻页时预取后两页：网络图不用等翻到才加载
+  useEffect(() => {
+    if (mode !== 'horizontal') return
+    for (const index of [page + 1, page + 2]) {
+      const url = images[index]
+      if (!url) continue
+      const image = new Image()
+      image.src = url
+    }
+  }, [images, mode, page])
+
   useEffect(() => {
     if (mode !== 'horizontal') return
     const onKey = (event: KeyboardEvent): void => {

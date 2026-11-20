@@ -489,6 +489,101 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
     setPanelOpen(false)
   }, [])
 
+  // 托盘菜单的音乐控制
+  useEffect(() => {
+    return window.laozheng.onMusicCommand((command) => {
+      if (command === 'toggle') toggle()
+      else if (command === 'prev') prev()
+      else if (command === 'next') next()
+    })
+  }, [next, prev, toggle])
+
+  // Windows 媒体键 / 系统媒体浮层：标题、封面与播放控制
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+    if (!current) {
+      navigator.mediaSession.metadata = null
+      navigator.mediaSession.playbackState = 'none'
+      return
+    }
+    const cover =
+      typeof current.cover === 'string' && /^https?:\/\//i.test(current.cover) ? current.cover : ''
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: current.title,
+        artist: current.artists || '老郑分享',
+        album: '老郑分享',
+        artwork: cover ? [{ src: cover, sizes: '512x512' }] : []
+      })
+    } catch {
+      // 个别环境不支持 MediaMetadata 时只保留播放控制
+    }
+    const actions: MediaSessionAction[] = [
+      'play',
+      'pause',
+      'previoustrack',
+      'nexttrack',
+      'stop',
+      'seekbackward',
+      'seekforward',
+      'seekto'
+    ]
+    for (const action of actions) {
+      try {
+        navigator.mediaSession.setActionHandler(action, (details) => {
+          if (action === 'play') {
+            if (!audioRef.current || audioRef.current.paused) toggle()
+          } else if (action === 'pause') {
+            if (audioRef.current && !audioRef.current.paused) toggle()
+          } else if (action === 'previoustrack') {
+            prev()
+          } else if (action === 'nexttrack') {
+            next()
+          } else if (action === 'stop') {
+            stop()
+          } else if (action === 'seekto' && typeof details.seekTime === 'number') {
+            seek(details.seekTime)
+          } else if (action === 'seekbackward' || action === 'seekforward') {
+            const audio = audioRef.current
+            if (!audio) return
+            const delta = details.seekOffset ?? 10
+            seek(audio.currentTime + (action === 'seekbackward' ? -delta : delta))
+          }
+        })
+      } catch {
+        // 某些动作不被当前平台支持时忽略
+      }
+    }
+    return () => {
+      for (const action of actions) {
+        try {
+          navigator.mediaSession.setActionHandler(action, null)
+        } catch {
+          // 忽略
+        }
+      }
+    }
+  }, [current, next, prev, seek, stop, toggle])
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return
+    navigator.mediaSession.playbackState = current ? (playing ? 'playing' : 'paused') : 'none'
+  }, [current, playing])
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator) || !current) return
+    if (!duration || !Number.isFinite(duration) || duration <= 0) return
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        playbackRate: audioRef.current?.playbackRate ?? 1,
+        position: Math.min(duration, Math.max(0, currentTime))
+      })
+    } catch {
+      // 忽略不支持 setPositionState 的环境
+    }
+  }, [current, currentTime, duration])
+
   useEffect(() => {
     const audio = ensureAudio()
     const onTime = (): void => {

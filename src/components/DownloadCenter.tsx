@@ -47,14 +47,19 @@ export function DownloadCenter({
   const confirm = async () => {
     if (!pending || busy) return
     setBusy(true)
-    const res = await window.laozheng.addDownload(pending)
-    setBusy(false)
-    setPending(null)
-    if (res.ok) {
-      onNotice('已加入下载队列，左下角可查看进度')
-      void refresh()
-    } else {
-      onNotice(`下载失败：${res.error ?? '未知错误'}`)
+    try {
+      const res = await window.laozheng.addDownload(pending)
+      setPending(null)
+      if (res.ok) {
+        onNotice('已加入下载队列，左下角可查看进度')
+        void refresh()
+      } else {
+        onNotice(`下载失败：${res.error ?? '未知错误'}`)
+      }
+    } catch (err) {
+      onNotice(`下载失败：${err instanceof Error ? err.message : '未知错误'}`)
+    } finally {
+      setBusy(false)
     }
   }
 

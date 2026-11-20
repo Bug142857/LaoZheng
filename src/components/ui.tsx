@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ChevronLeft, ChevronRight, Download, Heart } from 'lucide-react'
 import { tileGradient } from '../utils/data'
 import { isOwnerPassword } from '../shared/owner'
@@ -252,26 +252,98 @@ export function Pagination({
   )
 }
 
+const FOCUSABLE =
+  'input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
+
 export function Modal({
   title,
   children,
   onClose,
   footer,
-  className
+  className,
+  closeOnMask = true
 }: {
   title: string
   children?: ReactNode
   onClose: () => void
   footer: ReactNode
   className?: string
+  /** 表单类弹窗设为 false，避免误点遮罩丢掉已输入内容 */
+  closeOnMask?: boolean
 }) {
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    previousFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const dialog = dialogRef.current
+    if (dialog && !dialog.contains(document.activeElement)) {
+      const first = dialog.querySelector<HTMLElement>(FOCUSABLE)
+      if (first) first.focus()
+      else dialog.focus()
+    }
+    return () => {
+      const previous = previousFocusRef.current
+      if (previous?.isConnected) previous.focus()
+    }
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const dialog = dialogRef.current
+      if (!dialog) return
+      // 输入法按 Esc 取消候选词时不能关弹窗
+      if (event.isComposing) return
+      // 多个弹窗叠放（如详情弹窗上再弹确认框）时只让最上层响应，避免一次 Esc / Tab 关掉整串
+      const dialogs = document.querySelectorAll<HTMLElement>('.modal')
+      if (dialogs.length && dialogs[dialogs.length - 1] !== dialog) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        // 阻断底层页面的 Esc（如大图预览）一起触发
+        event.stopPropagation()
+        onClose()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const focusables = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+        (element) => element.offsetParent !== null
+      )
+      if (!focusables.length) {
+        event.preventDefault()
+        dialog.focus()
+        return
+      }
+      const first = focusables[0]
+      const last = focusables[focusables.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => document.removeEventListener('keydown', onKeyDown, true)
+  }, [onClose])
+
+  const onMaskClick = (): void => {
+    if (!closeOnMask) return
+    // 有输入框的弹窗误点遮罩会丢内容：只允许 Esc / 取消按钮关闭
+    if (dialogRef.current?.querySelector('input, textarea, select')) return
+    onClose()
+  }
+
   return (
-    <div className="modal-mask" onClick={onClose}>
+    <div className="modal-mask" onClick={onMaskClick}>
       <div
+        ref={dialogRef}
         className={`modal${className ? ` ${className}` : ''}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
         <h3>{title}</h3>
@@ -341,6 +413,7 @@ export function PromptDialog({
     <Modal
       title={title}
       onClose={onCancel}
+      closeOnMask={false}
       footer={
         <>
           <button className="btn ghost" onClick={onCancel}>
@@ -359,7 +432,6 @@ export function PromptDialog({
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') submit()
-          if (e.key === 'Escape') onCancel()
         }}
       />
     </Modal>
@@ -393,6 +465,7 @@ export function PasswordDialog({
     <Modal
       title={title}
       onClose={onCancel}
+      closeOnMask={false}
       footer={
         <>
           <button className="btn ghost" onClick={onCancel}>
@@ -415,7 +488,6 @@ export function PasswordDialog({
         }}
         onKeyDown={(event) => {
           if (event.key === 'Enter') submit()
-          if (event.key === 'Escape') onCancel()
         }}
       />
       {hint ? <p className="singing-hint">{hint}</p> : null}

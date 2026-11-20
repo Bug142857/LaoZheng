@@ -201,7 +201,8 @@ async function nameFromPage(platform: 'douyu' | 'douyin'): Promise<string> {
     height: 780,
     webPreferences: {
       partition: LIVE_PARTITION,
-      sandbox: false,
+      // 只做页面取昵称，无 preload / Node 依赖；远端页面统一开启 OS 沙箱
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false

@@ -3,11 +3,11 @@ import { join } from 'node:path'
 
 
 
-import { dataFilePath, exportToFile, importFromFile, loadData, saveData, saveDataSync } from '../store'
+import { exportToFile, importFromFile, loadData, saveData, saveDataSync } from '../store'
 import { lastDialogDir, rememberDialogDir, applySettingsSnapshot } from '../settings'
 
 
-import { createDataSnapshot, listDataSnapshots, readDataSnapshot } from '../snapshots'
+import { listDataSnapshots, readDataSnapshot, writeDataSnapshot } from '../snapshots'
 
 import { markBuiltinVodSources } from '../seed'
 
@@ -62,7 +62,7 @@ import { clearApiCache } from '../apiCache'
 
 
 
-import { normalizeData, type AppData } from '../../src/shared/types'
+import { mergeLocalPcFields, normalizeData, type AppData } from '../../src/shared/types'
 
 
 
@@ -102,12 +102,13 @@ export function registerDataIpc(): void {
   // 覆盖前快照：整体导入 / 云恢复前由渲染层调用，失败则中止覆盖
   ipcMain.handle('data:snapshot', async (_e, reason: unknown) => {
     try {
-      const info = await createDataSnapshot(
+      // 用与导出 / 云同步同一份完整备份做快照：data.json 之外单独存储的
+      // 电视源 / 下载记录 / 磁力源 / 本机设置也要能通过「恢复快照」回滚
+      const payload = await buildBackupPayload(await loadData())
+      const info = await writeDataSnapshot(
         snapshotsRoot(),
-        dataFilePath(),
         typeof reason === 'string' ? reason : 'manual',
-        // 快照生成前把主进程内存里的最新播放 / 阅读进度一起写进去
-        progress().peek()
+        payload
       )
       return { ok: true, snapshot: info }
     } catch (err) {
@@ -122,7 +123,9 @@ export function registerDataIpc(): void {
     if (typeof name !== 'string' || !name) return { ok: false, error: '快照名称无效' }
     try {
       const text = await readDataSnapshot(snapshotsRoot(), name)
-      return { ok: true, data: normalizeData(JSON.parse(text)) }
+      const raw = JSON.parse(text) as unknown
+      // 旧快照 / 不含 PC 扩展字段的快照：缺的字段保留本机现值，不能把本机数据清空
+      return { ok: true, data: mergeLocalPcFields(raw, normalizeData(raw), await loadData()) }
     } catch (err) {
       return { ok: false, error: (err as Error).message }
     }
@@ -142,6 +145,8 @@ export function registerDataIpc(): void {
   // 导入 / 云恢复：基础数据由渲染进程保存，这里补写电视源、下载记录与本机设置
   ipcMain.handle('data:applyExtras', async (_e, data: AppData) => {
     if (!data || typeof data !== 'object') return
+    // 先清接口缓存：导入后常驻模块会立即按新数据重新请求，清晚了可能命中导入前的列表
+    await clearApiCache()
     if (data.settings && typeof data.settings === 'object') {
       await applySettingsSnapshot(data.settings)
     }
@@ -154,12 +159,14 @@ export function registerDataIpc(): void {
     if (Array.isArray(data.downloads)) {
       await importDownloadRecords(data.downloads)
     }
-    // 导入 / 云恢复的播放进度写回独立存储
-    if (data.readProgress && typeof data.readProgress === 'object') {
+    // 导入 / 云恢复的播放进度写回独立存储；备份没带进度时保留本机进度
+    if (
+      data.readProgress &&
+      typeof data.readProgress === 'object' &&
+      Object.keys(data.readProgress).length > 0
+    ) {
       await progress().replaceAll(data.readProgress)
     }
-    // 旧数据可能已被导入的备份替换：清掉接口缓存，避免页面继续显示导入前的列表
-    await clearApiCache()
   })
 
 

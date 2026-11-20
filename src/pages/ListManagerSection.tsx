@@ -16,7 +16,7 @@ export function ListManagerSection({
   developerMode
 }: {
   onNotice: (text: string) => void
-  /** 开发者模式下才显示演唱添加 / 改名；密码在设置页右上角统一输入 */
+  /** 开发者模式下才显示演唱添加 / 改名；在「配置管理」标题连点 5 次并输入密码进入 */
   developerMode: boolean
 }) {
   const { data, update } = useData()
@@ -413,7 +413,7 @@ export function ListManagerSection({
           共 {data.singingVideos.length} 个视频。演唱视频随版本更新给用户，用户端不能删除，只能收藏；
           {developerMode
             ? '开发者模式已开启，添加与改名会同步写回默认种子，随下个版本发布。'
-            : '在设置页右上角进入开发者模式后，才能添加视频或改名。'}
+            : '在「配置管理」标题连点 5 次并输入密码进入开发者模式后，才能添加视频或改名。'}
         </p>
         {developerMode ? (
           <>
@@ -505,7 +505,7 @@ export function ListManagerSection({
             </div>
           </>
         ) : (
-          <div className="settings-hint">进入开发者模式后可在这里添加视频、搜索并改名。</div>
+          <div className="settings-hint">在「配置管理」标题连点 5 次并输入密码后，可在这里添加视频、搜索并改名。</div>
         )}
       </section>
 

@@ -113,6 +113,16 @@ export function LivePlayer({
 
     return () => {
       disposed = true
+      // 与点播播放器一致：销毁时强制静音，避免任何晚到的媒体流在后台出声
+      try {
+        art.video.autoplay = false
+        art.video.muted = true
+        art.video.pause()
+        art.video.removeAttribute('src')
+        art.video.load()
+      } catch {
+        // video 已被销毁时忽略
+      }
       art.destroy()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

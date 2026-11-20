@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AppWindow, FileText, FolderOpen, Pencil, Plus, Trash2 } from 'lucide-react'
 import type { LocalShortcut } from '../shared/types'
 import { useData } from '../state/DataContext'
@@ -10,14 +10,67 @@ const KIND_ICONS = {
   file: FileText
 } as const
 
+/** 本机图标按路径缓存（含读取失败），切换模块 / 重渲染不重复取 */
+const iconCache = new Map<string, string | null>()
+
+/** 优先用系统真实图标，取不到时回退到类型图标；文件夹图标系统返回不可靠（常变成盘符 / 空文件图标），统一用类型图标 */
+function ShortcutIcon({ item }: { item: LocalShortcut }) {
+  const [icon, setIcon] = useState<string | null>(() =>
+    item.kind === 'folder' ? null : (iconCache.get(item.path) ?? null)
+  )
+
+  useEffect(() => {
+    // 文件夹不走系统图标：Windows 下 app.getFileIcon 对目录经常返回盘符或空白文件图标
+    if (item.kind === 'folder') {
+      setIcon(null)
+      return
+    }
+    const cached = iconCache.get(item.path)
+    if (cached !== undefined) {
+      setIcon(cached)
+      return
+    }
+    let alive = true
+    setIcon(null)
+    void window.laozheng
+      .fileIcon(item.path)
+      .then((res) => {
+        const next = res.ok && res.icon ? res.icon : null
+        iconCache.set(item.path, next)
+        if (alive) setIcon(next)
+      })
+      .catch(() => {
+        iconCache.set(item.path, null)
+      })
+    return () => {
+      alive = false
+    }
+  }, [item.path, item.kind])
+
+  const Icon = KIND_ICONS[item.kind] ?? FolderOpen
+  return (
+    <span className={`local-shortcut-icon ${item.kind}${icon ? ' has-image' : ''}`}>
+      {icon ? <img src={icon} alt="" draggable={false} /> : <Icon size={26} />}
+    </span>
+  )
+}
+
 function baseName(target: string): string {
   return target.split(/[\\/]/).filter(Boolean).pop() ?? target
 }
 
+/** 可按应用方式打开的可执行 / 快捷方式后缀 */
+function isAppPath(target: string): boolean {
+  return /\.(exe|lnk|bat|cmd|msi|url|com|ps1)$/i.test(baseName(target))
+}
+
 function guessKind(target: string): LocalShortcut['kind'] {
-  const name = baseName(target)
-  if (/\.(exe|lnk|bat|cmd|msi|url)$/i.test(name)) return 'app'
-  return name.includes('.') ? 'file' : 'folder'
+  const trimmed = target.trim()
+  // 以分隔符结尾一定是文件夹
+  if (/[\\/]$/.test(trimmed)) return 'folder'
+  if (isAppPath(trimmed)) return 'app'
+  // 只有「点 + 2~8 位扩展名」才当文件；D:\项目\v1.2 这类带点的目录仍按文件夹处理
+  return /\.([A-Za-z0-9]{2,8})$/.test(baseName(trimmed)) ? 'file' : 'folder'
 }
 
 /**
@@ -66,7 +119,8 @@ export function LocalShortcutsSection({ onNotice }: { onNotice: (text: string) =
               ...prev,
               path: target,
               name: prev.name.trim() ? prev.name : baseName(target),
-              kind: mode === 'folder' ? 'folder' : guessKind(target)
+              // 用「选择应用或文件」时明确是文件，不能再按扩展名猜成文件夹（如无后缀文件）
+              kind: mode === 'folder' ? 'folder' : isAppPath(target) ? 'app' : 'file'
             }
           : prev
       )
@@ -129,48 +183,40 @@ export function LocalShortcutsSection({ onNotice }: { onNotice: (text: string) =
           </div>
         </div>
         {items.length ? (
-          <div className="tile-grid">
-            {items.map((item) => {
-              const Icon = KIND_ICONS[item.kind] ?? FolderOpen
-              return (
-                <div
-                  key={item.id}
-                  className="tile local-shortcut"
-                  title={item.path}
-                  onClick={() => void open(item)}
-                >
-                  <span className={`local-shortcut-icon ${item.kind}`}>
-                    <Icon size={20} />
-                  </span>
-                  <span style={{ minWidth: 0 }}>
-                    <div className="tile-name">{item.name}</div>
-                    <div className="tile-meta local-shortcut-path">{item.path}</div>
-                  </span>
-                  <div className="tile-actions">
-                    <button
-                      className="icon-btn"
-                      title="编辑"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        startEdit(item)
-                      }}
-                    >
-                      <Pencil size={14} />
-                    </button>
-                    <button
-                      className="icon-btn danger"
-                      title="删除"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setRemoving(item)
-                      }}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
+          <div className="local-shortcut-grid">
+            {items.map((item) => (
+              <div
+                key={item.id}
+                className="local-shortcut-item"
+                title={item.path}
+                onClick={() => void open(item)}
+              >
+                <ShortcutIcon item={item} />
+                <span className="local-shortcut-name">{item.name}</span>
+                <div className="local-shortcut-actions">
+                  <button
+                    className="icon-btn"
+                    title="编辑"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      startEdit(item)
+                    }}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                  <button
+                    className="icon-btn danger"
+                    title="删除"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setRemoving(item)
+                    }}
+                  >
+                    <Trash2 size={12} />
+                  </button>
                 </div>
-              )
-            })}
+              </div>
+            ))}
           </div>
         ) : (
           <div className="settings-hint">

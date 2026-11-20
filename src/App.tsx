@@ -56,8 +56,7 @@ import { syncUiSettings } from './utils/theme'
 import { clearCachePrefix } from './utils/cache'
 
 import type { InnerFav } from './shared/types'
-import type { UpdateProgress } from './shared/update'
-import { formatUpdateSpeed, type UpdateCheckResult } from './shared/update'
+import type { UpdateCheckResult } from './shared/update'
 import type { LivePlatformId, LiveRoomFocus } from './shared/livePlatform'
 import {
   isWallpaperSourceId,
@@ -380,7 +379,7 @@ const MODULE_SHORTCUTS: Record<string, ShortcutConfig> = {
 
 /** 点标题回到默认页时要清掉的模块本地缓存前缀 */
 const MODULE_CACHE_PREFIXES: Record<string, string[]> = {
-  watch: ['h1_', 'watch_'],
+  watch: ['watch_'],
   drama: ['drama'],
   shuangkan: ['shuangkan'],
   comic: ['comic'],
@@ -551,8 +550,6 @@ function Shell() {
   const { ready, data, update } = useData()
   const [stack, setStack] = useState<Route[]>([{ name: 'home' }])
   const [notice, setNotice] = useState<string | null>(null)
-  /** 更新包下载进度（启动时确认更新后由主进程广播） */
-  const [updateBar, setUpdateBar] = useState<UpdateProgress | null>(null)
   /** 启动时检查到的新版本：用应用内更新弹窗展示，确认后才下载 */
   const [startupUpdate, setStartupUpdate] = useState<UpdateCheckResult | null>(null)
   const [visited, setVisited] = useState<string[]>(['home'])
@@ -682,26 +679,6 @@ function Shell() {
     const timer = window.setTimeout(() => setNotice(null), 2800)
     return () => window.clearTimeout(timer)
   }, [notice])
-
-  /** 更新包下载进度：失败立即收起，下载完成后短暂停留再收起 */
-  useEffect(() => {
-    let hideTimer = 0
-    const off = window.laozheng.onUpdateProgress((progress) => {
-      window.clearTimeout(hideTimer)
-      if (progress.error) {
-        setUpdateBar(null)
-        return
-      }
-      setUpdateBar(progress)
-      if (progress.percent >= 1) {
-        hideTimer = window.setTimeout(() => setUpdateBar(null), 2500)
-      }
-    })
-    return () => {
-      window.clearTimeout(hideTimer)
-      off()
-    }
-  }, [])
 
   /** 启动时的更新提示：先订阅推送，再主动取一次，避免渲染层挂载晚于检查结果 */
   useEffect(() => {
@@ -1411,54 +1388,6 @@ function Shell() {
         onClose={() => setStartupUpdate(null)}
         onNotice={setNotice}
       />
-      {updateBar ? (
-        <div className="update-progress" role="status">
-          <div className="update-progress-text">
-            {updateBar.percent >= 1
-              ? '更新包下载完成'
-              : updateBar.paused
-                ? `已暂停 · ${Math.round(updateBar.percent * 100)}%`
-                : updateBar.phase === 'selecting'
-                  ? '正在测速选择最快线路…'
-                  : updateBar.total > 0
-                    ? `正在下载更新 · ${Math.round(updateBar.percent * 100)}%`
-                    : `正在下载更新 · ${Math.round(updateBar.received / 1024 / 1024)} MB`}
-            {updateBar.percent < 1 && updateBar.speed
-              ? ` · ${formatUpdateSpeed(updateBar.speed)}`
-              : ''}
-            {updateBar.percent < 1 && updateBar.line ? ` · 线路 ${updateBar.line}` : ''}
-          </div>
-          <div className="update-progress-track">
-            <div
-              className={`update-progress-fill${
-                !updateBar.paused && (updateBar.total > 0 || updateBar.percent >= 1)
-                  ? ''
-                  : updateBar.paused
-                    ? ' paused'
-                    : ' indeterminate'
-              }`}
-              style={{ width: `${Math.round((updateBar.percent || 0) * 100)}%` }}
-            />
-          </div>
-          {updateBar.percent < 1 ? (
-            <div className="update-progress-actions">
-              <button
-                className="btn ghost"
-                onClick={() => {
-                  void (updateBar.paused
-                    ? window.laozheng.resumeUpdate()
-                    : window.laozheng.pauseUpdate())
-                }}
-              >
-                {updateBar.paused ? '继续' : '暂停'}
-              </button>
-              <button className="btn ghost" onClick={() => void window.laozheng.cancelUpdate()}>
-                取消
-              </button>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
       {notice ? <div className="toast">{notice}</div> : null}
     </div>
   )

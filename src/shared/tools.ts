@@ -33,20 +33,28 @@ export const TOOL_ITEMS: ToolItem[] = [
     desc: '绿色免安装的硬件检测合集，集成 CPU-Z、GPU-Z、AIDA64、CrystalDiskInfo、DiskMark 等常用工具。装机验机、查参数、测硬盘一站搞定。'
   },
   {
-    id: 'huorong',
-    name: '火绒安全',
-    url: 'https://www.huorong.cn/',
-    category: '系统安全',
-    icon: 'ShieldCheck',
-    desc: '轻量国产安全软件，主打安静、低占用、无弹窗广告。提供病毒查杀、实时防护、弹窗拦截和家长控制，适合替代臃肿的安全卫士。'
-  },
-  {
     id: 'weishi360',
     name: '360安全卫士极速版',
     url: 'https://weishi.360.cn',
     category: '系统安全',
     icon: 'Shield',
     desc: '360 安全卫士的轻量版本，保留木马查杀、系统清理、优化加速等核心功能，去掉了大部分广告与推广模块。'
+  },
+  {
+    id: 'heukms',
+    name: 'HEU_KMS_Activator',
+    url: 'https://github.com/zbezj/HEU_KMS_Activator',
+    category: '系统安全',
+    icon: 'KeyRound',
+    desc: '本地离线的 Windows / Office 激活工具，支持数字许可证、KMS38 与 KMS 在线激活，单文件绿色运行，无需安装常驻。'
+  },
+  {
+    id: 'winhance',
+    name: 'Winhance',
+    url: 'https://github.com/memstechtips/Winhance',
+    category: '系统安全',
+    icon: 'SlidersHorizontal',
+    desc: '开源 Windows 优化工具，可卸载预装应用、关闭遥测与广告推荐、调整系统服务与隐私项，按需勾选后一键应用。'
   },
   {
     id: 'browser360x',
@@ -79,14 +87,6 @@ export const TOOL_ITEMS: ToolItem[] = [
     category: '网络传输',
     icon: 'Network',
     desc: '小强（XQ）注册与客户端下载入口，含邀请链接；原域名失效时可从地址发布页获取最新地址。'
-  },
-  {
-    id: 'fastgithub',
-    name: 'FastGithub',
-    url: 'https://github.com/creazyboyone/FastGithub',
-    category: '网络传输',
-    icon: 'Rocket',
-    desc: '开源 GitHub 访问加速工具，通过本地 DNS 与代理优化 GitHub 网页、Release 下载和 raw 文件的连接速度。'
   },
   {
     id: 'todesk',
@@ -267,9 +267,81 @@ export const TOOL_ITEMS: ToolItem[] = [
   {
     id: 'weflow',
     name: 'WeFlow',
-    url: 'https://github.com/hicccc77/WeFlow',
-    category: '通讯社交',
+    url: 'https://weflow.top/',
+    category: '其他应用',
     icon: 'Workflow',
     desc: '完全本地的微信聊天记录查看、分析与导出工具，支持实时查看、防撤回、朋友圈解密、年度报告，以及导出 HTML / JSON / Excel 等格式。'
+  },
+  {
+    id: 'fastgithub',
+    name: 'FastGithub',
+    url: 'https://github.com/creazyboyone/FastGithub',
+    category: '其他应用',
+    icon: 'Rocket',
+    desc: '开源 GitHub 访问加速工具，通过本地 DNS 与代理优化 GitHub 网页、Release 下载和 raw 文件的连接速度。'
+  },
+  {
+    id: 'clashverge',
+    name: 'Clash Verge Rev',
+    url: 'https://github.com/clash-verge-rev/clash-verge-rev',
+    category: '其他应用',
+    icon: 'Network',
+    desc: '开源跨平台 Clash / Mihomo 图形客户端，支持订阅导入、规则分流、TUN 模式、节点测速与配置切换。'
+  },
+  {
+    id: 'apkstart',
+    name: 'ApkStart',
+    url: 'https://github.com/RoutineMiku/apkstart',
+    category: '其他应用',
+    icon: 'Smartphone',
+    desc: 'Windows 安卓应用运行器，双击 APK 即可安装并以独立窗口运行，不用先启动完整模拟器界面。'
+  },
+  {
+    id: 'upscayl',
+    name: 'Upscayl',
+    url: 'https://github.com/upscayl/upscayl',
+    category: '其他应用',
+    icon: 'Image',
+    desc: '开源 AI 图片放大工具，基于 Real-ESRGAN 等模型把低分辨率图片放大，支持批量处理与多种放大模型。'
+  },
+  {
+    id: 'winmerge',
+    name: 'WinMerge',
+    url: 'https://winmerge.org/',
+    category: '其他应用',
+    icon: 'FileCog',
+    desc: 'Windows 文件和文件夹对比 / 合并工具，并排显示差异，支持三路合并与补丁生成，适合代码、配置和文档比对。'
+  },
+  {
+    id: 'freefilesync',
+    name: 'FreeFileSync',
+    url: 'https://freefilesync.org/download.php',
+    category: '其他应用',
+    icon: 'FolderSync',
+    desc: '开源文件夹比较与同步工具，支持双向 / 镜像同步、实时监控、版本清理和批处理任务，适合备份与多盘同步。'
+  },
+  {
+    id: 'deskflow',
+    name: 'Deskflow',
+    url: 'https://github.com/deskflow/deskflow',
+    category: '其他应用',
+    icon: 'MonitorSmartphone',
+    desc: '开源跨平台键鼠共享（KVM）工具，一套键盘鼠标控制多台电脑，支持剪贴板共享与跨屏切换。'
+  },
+  {
+    id: 'obsstudio',
+    name: 'OBS Studio',
+    url: 'https://github.com/obsproject/obs-studio',
+    category: '其他应用',
+    icon: 'Video',
+    desc: '开源直播与录屏软件，支持多场景切换、窗口 / 游戏采集、混音、推流与本地录制，插件生态丰富。'
+  },
+  {
+    id: 'audacity',
+    name: 'Audacity',
+    url: 'https://github.com/audacity/audacity',
+    category: '其他应用',
+    icon: 'Music',
+    desc: '开源音频编辑与录音软件，支持多轨编辑、降噪、变声、格式转换和批量处理，适合播客与音频后期。'
   }
 ]

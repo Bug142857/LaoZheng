@@ -30,6 +30,8 @@ export interface CacheInfo {
   imageBytes: number
   /** 接口缓存占用（字节） */
   apiBytes: number
+  /** Chromium persist:* 分区的 HTTP / Code 缓存占用（字节），不含 Cookie 与 IndexedDB */
+  partitionBytes: number
   /** 下载目录里残留的 .part 临时文件数量 */
   parts: number
   /** 当前缓存根目录（图片 / 接口缓存都放在这里） */

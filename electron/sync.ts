@@ -1,13 +1,18 @@
 import { app, safeStorage } from 'electron'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
   SyncActionResult,
   SyncConfigInput,
   SyncConfigView
 } from '../src/shared/sync'
+import {
+  parseWebDavLastModified,
+  shouldWarnUploadConflict
+} from '../src/shared/sync'
 import type { AppData } from '../src/shared/types'
-import { normalizeData, stripNullFields } from '../src/shared/types'
+import { mergeLocalPcFields, normalizeData, stripNullFields } from '../src/shared/types'
+import { dataFilePath, loadData } from './store'
 
 /**
  * WebDAV 云同步（坚果云等）：手动上传 / 下载 data.json。
@@ -160,6 +165,37 @@ async function propfind(url: string, config: StoredSyncConfig): Promise<number> 
   return res.status
 }
 
+/** 取云端 data.json 的最后修改时间；拿不到时返回 null，不阻止正常上传 */
+async function remoteFileModifiedAt(
+  url: string,
+  config: StoredSyncConfig
+): Promise<number | null> {
+  try {
+    const res = await fetch(url, {
+      method: 'PROPFIND',
+      headers: {
+        ...(await authHeader(config)),
+        Depth: '0',
+        'Content-Type': 'application/xml; charset=utf-8'
+      },
+      body: '<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:getlastmodified/></d:prop></d:propfind>',
+      signal: AbortSignal.timeout(15_000)
+    })
+    if (res.status !== 207 && res.status !== 200) return null
+    return parseWebDavLastModified(await res.text())
+  } catch {
+    return null
+  }
+}
+
+/** 本机 data.json 最后保存时间；用于和云端修改时间比较 */
+async function localDataModifiedAt(): Promise<number> {
+  return stat(dataFilePath()).then(
+    (info) => info.mtimeMs,
+    () => 0
+  )
+}
+
 /** 逐级 MKCOL；已存在（405 / 301 / 409 且父级已建）时跳过 */
 async function mkcolChain(base: string, config: StoredSyncConfig): Promise<void> {
   const parsed = new URL(base)
@@ -212,11 +248,26 @@ export async function testSync(): Promise<SyncActionResult> {
   }
 }
 
-export async function uploadSync(data: AppData): Promise<SyncActionResult> {
+export async function uploadSync(
+  data: AppData,
+  options: { force?: boolean } = {}
+): Promise<SyncActionResult> {
   try {
     const config = await requireConfig()
     const base = await ensureRemoteDir(config)
     const url = fileUrl(config.url)
+    if (!options.force) {
+      // 多台电脑共用云端时，避免用较旧的本机数据覆盖云端更新的备份
+      const remoteAt = await remoteFileModifiedAt(url, config)
+      if (shouldWarnUploadConflict(remoteAt, await localDataModifiedAt())) {
+        return {
+          ok: false,
+          conflict: true,
+          remoteAt,
+          message: `云端备份比本机新（${new Date(remoteAt).toLocaleString()}），请确认是否覆盖`
+        }
+      }
+    }
     const send = async (): Promise<Response> =>
       fetch(url, {
         method: 'PUT',
@@ -275,7 +326,8 @@ export async function downloadSync(): Promise<SyncActionResult> {
       return {
         ok: true,
         message: candidate === url ? '已下载云端备份' : '已下载云端备份（旧版根目录）',
-        data: normalizeData(raw)
+        // 手机端 / 旧版备份缺的 PC 扩展字段保留本机现值
+        data: mergeLocalPcFields(raw, normalizeData(raw), await loadData())
       }
     }
     return {

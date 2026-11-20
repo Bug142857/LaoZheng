@@ -6,6 +6,7 @@ import { readFile, stat, writeFile } from 'node:fs/promises'
 import { writeJsonAtomic } from '../store'
 import { downloadRoot, lastDialogDir, rememberDialogDir, setUiSettings, uiSettings } from '../settings'
 import { cacheInfo, chooseCacheDir, clearCache } from '../cacheManager'
+import { appendLog } from '../logFile'
 
 
 
@@ -93,6 +94,11 @@ import {
 
 import { buildBackupPayload, saveImageToFile, stamp, TRAINER_CACHE_VERSION } from './shared'
 
+/** 主页「本地」真实图标：进程内缓存 + 同路径并发合并，避免每次渲染重复取图标 */
+const localIconCache = new Map<string, string>()
+const localIconPending = new Map<string, Promise<{ ok: boolean; icon?: string; error?: string }>>()
+const LOCAL_ICON_CACHE_MAX = 160
+
 export function registerSystemIpc(): void {
   ipcMain.handle('downloads:list', () => listDownloads())
 
@@ -171,6 +177,20 @@ export function registerSystemIpc(): void {
   ipcMain.handle('app:cacheInfo', () => cacheInfo())
   ipcMain.handle('app:clearCache', () => clearCache())
   ipcMain.handle('app:chooseCacheDir', () => chooseCacheDir())
+
+  // 渲染层错误：写到 userData/renderer-errors.log，只收模块名 / 消息 / 堆栈，长度受限
+  ipcMain.handle('app:reportError', async (_e, input: unknown) => {
+    if (!input || typeof input !== 'object') return
+    const value = input as { label?: unknown; message?: unknown; stack?: unknown }
+    const label = typeof value.label === 'string' ? value.label.slice(0, 80) : 'renderer'
+    const message = typeof value.message === 'string' ? value.message.slice(0, 2000) : ''
+    const stack = typeof value.stack === 'string' ? value.stack.slice(0, 8000) : ''
+    if (!message && !stack) return
+    const line = `[${new Date().toISOString()}] ${label} ${message}${
+      stack ? `\n${stack}` : ''
+    }\n`
+    await appendLog(join(app.getPath('userData'), 'renderer-errors.log'), line)
+  })
 
   // 用户点标题 / 刷新按钮时，让对应模块的接口缓存短时间失效，直接拉最新数据
   const FORCE_REFRESH_PREFIXES: Record<string, string[]> = {
@@ -337,6 +357,44 @@ export function registerSystemIpc(): void {
     return err ? { ok: false, error: err } : { ok: true }
   })
 
+  // 主页「本地」：读取应用 / 文件夹 / 文件在系统里的真实图标
+  ipcMain.handle('app:fileIcon', async (_e, input: unknown) => {
+    if (typeof input !== 'string' || !input.trim() || input.length > 2048) {
+      return { ok: false, error: '路径无效' }
+    }
+    const target = input.trim()
+    if (!/^[a-zA-Z]:[\\/]/.test(target) && !/^\\\\/.test(target)) {
+      return { ok: false, error: '路径无效' }
+    }
+    if (target.includes('\0')) return { ok: false, error: '路径无效' }
+    const abs = resolve(target)
+    const cached = localIconCache.get(abs)
+    if (cached) return { ok: true, icon: cached }
+    const pending = localIconPending.get(abs)
+    if (pending) return pending
+    const task = (async () => {
+      try {
+        const info = await stat(abs)
+        if (!info.isFile() && !info.isDirectory()) return { ok: false, error: '路径无效' }
+        const image = await app.getFileIcon(abs, { size: 'large' })
+        if (image.isEmpty()) return { ok: false, error: '无法读取图标' }
+        const icon = `data:image/png;base64,${image.toPNG().toString('base64')}`
+        if (localIconCache.size >= LOCAL_ICON_CACHE_MAX) {
+          const oldest = localIconCache.keys().next().value
+          if (oldest) localIconCache.delete(oldest)
+        }
+        localIconCache.set(abs, icon)
+        return { ok: true, icon }
+      } catch {
+        return { ok: false, error: '无法读取图标' }
+      } finally {
+        localIconPending.delete(abs)
+      }
+    })()
+    localIconPending.set(abs, task)
+    return task
+  })
+
   ipcMain.handle('app:saveImage', (_e, url: string) => {
     if (
       typeof url !== 'string' ||
@@ -380,9 +438,11 @@ export function registerSystemIpc(): void {
   )
 
   ipcMain.handle('sync:test', () => testSync())
-  ipcMain.handle('sync:upload', async (_e, data: AppData) =>
-    uploadSync(await buildBackupPayload(data))
-  )
+  ipcMain.handle('sync:upload', async (_e, data: AppData, options: unknown) => {
+    // force 只接受布尔真值；其余参数一律忽略，避免渲染层传入奇怪的对象
+    const force = !!options && typeof options === 'object' && (options as { force?: unknown }).force === true
+    return uploadSync(await buildBackupPayload(data), { force })
+  })
   ipcMain.handle('sync:download', async () => {
     const result = await downloadSync()
     // 备份里的影视源补上内置标记：默认源不可删除

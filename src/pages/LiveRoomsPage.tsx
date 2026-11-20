@@ -129,6 +129,8 @@ export function LiveRoomsPage({
   const searchSeenRef = useRef<string[]>([])
   /** 昵称后台补取的轮询定时器，页面卸载时清掉 */
   const nameTimerRef = useRef<number | null>(null)
+  /** 页面是否仍挂载：轮询请求返回后不能再 setState / 继续排定时器 */
+  const aliveRef = useRef(true)
   const viewCache = useRef<Map<LivePlatformId, LiveViewSnapshot>>(new Map())
   const focusKeyRef = useRef('')
 
@@ -161,6 +163,7 @@ export function LiveRoomsPage({
     let left = rounds
     const tick = async (): Promise<void> => {
       const next = await refreshStatuses().catch(() => null)
+      if (!aliveRef.current) return
       left -= 1
       if (!next) return
       const missing = Object.values(next).some((status) => status?.loggedIn && !status.name)
@@ -173,6 +176,7 @@ export function LiveRoomsPage({
   }
 
   useEffect(() => {
+    aliveRef.current = true
     void refreshStatuses()
       .then((next) => {
         if (Object.values(next).some((status) => status?.loggedIn && !status.name)) {
@@ -181,6 +185,7 @@ export function LiveRoomsPage({
       })
       .catch(() => undefined)
     return () => {
+      aliveRef.current = false
       if (nameTimerRef.current) window.clearTimeout(nameTimerRef.current)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

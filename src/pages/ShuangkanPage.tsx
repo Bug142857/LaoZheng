@@ -221,6 +221,11 @@ export function ShuangkanPage({
     setInput('')
     setPage(1)
     void openDetail(source, focus.content, { id: focus.id, title: focus.title }, true)
+    // StrictMode 会 mount 后立刻 cleanup 再 mount：释放已处理的标记，
+    // 否则第二次 effect 直接跳过，而 reset effect 已把详情清空
+    return () => {
+      if (handledFocusRef.current === key) handledFocusRef.current = ''
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.sourceId, focus?.content, focus?.id, focus?.title])
 

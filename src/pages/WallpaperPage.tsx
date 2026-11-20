@@ -292,8 +292,10 @@ export function WallpaperPage({
   }, [focus?.at])
 
   useEffect(() => {
-    if (resetSignal === undefined) return
+    // 从收藏进入时不能被 reset 清掉预览；真正点侧栏返回时 focus 已为空
+    if (resetSignal === undefined || focus) return
     setPreview(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetSignal])
 
   // 路由离开收藏详情后清掉残留的预览，避免返回到旧页面时又弹出图片
