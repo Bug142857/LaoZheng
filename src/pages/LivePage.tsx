@@ -299,19 +299,22 @@ export function LivePage({
             }}
             refreshing={!!loadingId}
             leading={
-              <select
-                className="select-inline"
-                value={selectedId}
-                title="电视源"
-                onChange={(e) => changeSource(e.target.value)}
-              >
-                <option value={ALL_SOURCES_ID}>全部源（{enabledSources.length}）</option>
-                {enabledSources.map((source) => (
-                  <option key={source.id} value={source.id}>
-                    {source.name}
-                  </option>
-                ))}
-              </select>
+              // 只有一个电视源时不显示源下拉，避免占位；添加第二个源后自动出现
+              enabledSources.length > 1 ? (
+                <select
+                  className="select-inline"
+                  value={selectedId}
+                  title="电视源"
+                  onChange={(e) => changeSource(e.target.value)}
+                >
+                  <option value={ALL_SOURCES_ID}>全部源（{enabledSources.length}）</option>
+                  {enabledSources.map((source) => (
+                    <option key={source.id} value={source.id}>
+                      {source.name}
+                    </option>
+                  ))}
+                </select>
+              ) : undefined
             }
             extra={
               query ? (
