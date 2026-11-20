@@ -1,7 +1,7 @@
 import { app, dialog, ipcMain, shell } from 'electron'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, stat, writeFile } from 'node:fs/promises'
 
 import { writeJsonAtomic } from '../store'
 import { downloadRoot, lastDialogDir, rememberDialogDir, setUiSettings, uiSettings } from '../settings'
@@ -300,6 +300,41 @@ export function registerSystemIpc(): void {
   ipcMain.handle('app:openExternal', async (_e, url: string) => {
     if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) throw new Error('URL 无效')
     await shell.openExternal(url)
+  })
+
+  // 主页「本地」：选择应用 / 文件夹
+  ipcMain.handle('app:pickLocalPath', async (_e, mode: unknown) => {
+    const folder = mode === 'folder'
+    const picked = await dialog.showOpenDialog({
+      title: folder ? '选择文件夹' : '选择应用或文件',
+      defaultPath: lastDialogDir('localShortcut', app.getPath('home')),
+      properties: [folder ? 'openDirectory' : 'openFile'],
+      ...(folder ? {} : { filters: [{ name: '所有文件', extensions: ['*'] }] })
+    })
+    if (picked.canceled || picked.filePaths.length === 0) return { canceled: true }
+    const target = picked.filePaths[0]
+    await rememberDialogDir('localShortcut', target, folder)
+    return { canceled: false, path: target }
+  })
+
+  // 主页「本地」：用系统默认方式打开（应用 / 文件夹 / 文件）
+  ipcMain.handle('app:openLocalPath', async (_e, input: unknown) => {
+    if (typeof input !== 'string' || !input.trim() || input.length > 2048) {
+      return { ok: false, error: '路径无效' }
+    }
+    const target = input.trim()
+    if (!/^[a-zA-Z]:[\\/]/.test(target) && !/^\\\\/.test(target)) {
+      return { ok: false, error: '请填写本机绝对路径（如 C:\\Program Files\\…）' }
+    }
+    if (target.includes('\0')) return { ok: false, error: '路径无效' }
+    const abs = resolve(target)
+    try {
+      await stat(abs)
+    } catch {
+      return { ok: false, error: '路径不存在或已被移动' }
+    }
+    const err = await shell.openPath(abs)
+    return err ? { ok: false, error: err } : { ok: true }
   })
 
   ipcMain.handle('app:saveImage', (_e, url: string) => {

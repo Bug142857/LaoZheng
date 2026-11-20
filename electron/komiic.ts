@@ -235,11 +235,16 @@ function parseComic(value: unknown): KomiicComic | null {
   if (!o) return null
   const id = str(o.id)
   if (!id) return null
+  // API 已回退到 komiic.cc 时，封面也优先走镜像域，避免先等 public.komiic.com 超时
+  const imageUrl =
+    activeHostIdx === 1
+      ? str(o.imageUrl).replace('://public.komiic.com/', '://public.komiic.cc/')
+      : str(o.imageUrl)
   return {
     id,
     title: str(o.title) || '无标题',
     status: str(o.status),
-    imageUrl: str(o.imageUrl),
+    imageUrl,
     authors: asArr(o.authors)
       .map((a) => asObj(a))
       .filter((a): a is Json => !!a)

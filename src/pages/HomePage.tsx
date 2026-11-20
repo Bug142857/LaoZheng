@@ -3,6 +3,7 @@ import { Heart, ListChecks, RefreshCw } from 'lucide-react'
 import { useData } from '../state/DataContext'
 import { EmptyState, ListCoverMosaic } from '../components/ui'
 import { SearchBar } from '../components/SearchBar'
+import { LocalShortcutsSection } from '../components/LocalShortcuts'
 import { MusicPlayerBar, songFromFav, useMusicPlayer } from '../components/MusicPlayer'
 import { countItems, favModuleLabel, formatTime, listCovers, rootLists } from '../utils/data'
 import type { InnerFav } from '../shared/types'
@@ -354,6 +355,8 @@ export function HomePage({
         submitLabel="搜索"
         disabled={!allFavs.length}
       />
+
+      <LocalShortcutsSection onNotice={onNotice} />
 
       <section className="tool-group">
         <div className="tool-group-head">

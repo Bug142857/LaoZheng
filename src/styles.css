@@ -569,6 +569,64 @@ button:disabled {
   color: var(--danger);
 }
 
+/* ---------- 主页 · 本地快捷方式 ---------- */
+.local-shortcut {
+  cursor: pointer;
+}
+
+.local-shortcut-icon {
+  width: 52px;
+  height: 52px;
+  flex: 0 0 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: rgba(139, 124, 255, 0.14);
+  color: var(--brand);
+}
+
+.local-shortcut-icon.folder {
+  background: rgba(255, 184, 76, 0.16);
+  color: #e8a23a;
+}
+
+.local-shortcut-icon.file {
+  background: rgba(79, 209, 165, 0.14);
+  color: var(--ok);
+}
+
+.local-shortcut-path {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-shortcut-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.local-shortcut-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+.local-shortcut-picks {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.local-shortcut-error {
+  font-size: 12.5px;
+  color: var(--danger);
+}
+
 /* ---------- 行列表 ---------- */
 .rows {
   display: flex;

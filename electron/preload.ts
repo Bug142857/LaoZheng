@@ -225,6 +225,8 @@ const api: LaozhengApi = {
   },
   pendingUpdate: () => ipcRenderer.invoke('app:pendingUpdate'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
+  pickLocalPath: (mode) => ipcRenderer.invoke('app:pickLocalPath', mode),
+  openLocalPath: (path) => ipcRenderer.invoke('app:openLocalPath', path),
   saveNoteFile: (name, dataUrl) => ipcRenderer.invoke('app:saveNoteFile', name, dataUrl),
   saveToolNoteDefault: (toolId, html) =>
     ipcRenderer.invoke('app:saveToolNoteDefault', toolId, html) as Promise<boolean>,

@@ -322,6 +322,10 @@ function applyRequestHeaders(
         headers['Cookie'] = auth.cookie
         headers['Referer'] = auth.referer
         headers['User-Agent'] = KOMIIC_UA
+      } else if (/(^|\.)public\.komiic\.(com|cc)$/.test(host)) {
+        // 封面图床部分节点校验来源页 / 浏览器 UA，缺了会 403
+        headers['Referer'] = 'https://komiic.com/'
+        headers['User-Agent'] = KOMIIC_UA
       }
     } catch {
       // 非法 URL 交给默认处理

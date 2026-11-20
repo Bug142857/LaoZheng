@@ -311,6 +311,24 @@ export interface InnerFav {
   payload: string | null
 }
 
+/** 主页「本地」快捷入口：本机应用 / 文件夹 / 文件路径 */
+export interface LocalShortcut {
+  id: string
+  name: string
+  path: string
+  kind: 'app' | 'folder' | 'file'
+}
+
+export interface LocalPickResult {
+  canceled: boolean
+  path?: string
+}
+
+export interface LocalOpenResult {
+  ok: boolean
+  error?: string
+}
+
 /** 本机设置快照（PC 端备份扩展；手机端会忽略） */
 export interface BackupSettings {
   theme?: string
@@ -375,6 +393,8 @@ export interface AppData {
   toolNotes: Record<string, string>
   /** 演唱模块：手动添加的 B站视频条目（按分类整理），随备份与云同步一起走 */
   singingVideos: SingingVideo[]
+  /** 主页「本地」快捷入口（应用 / 文件夹 / 文件路径），随备份与云同步一起走 */
+  localShortcuts: LocalShortcut[]
 }
 
 export interface ImportResult {
@@ -872,6 +892,10 @@ export interface LaozhengApi {
   onUpdateAvailable: (callback: (info: UpdateCheckResult) => void) => () => void
   pendingUpdate: () => Promise<UpdateCheckResult | null>
   openExternal: (url: string) => Promise<void>
+  /** 主页「本地」快捷方式：选择本机应用 / 文件夹 / 文件 */
+  pickLocalPath: (mode: 'file' | 'folder') => Promise<LocalPickResult>
+  /** 主页「本地」快捷方式：用系统默认方式打开应用 / 文件夹 / 文件 */
+  openLocalPath: (path: string) => Promise<LocalOpenResult>
   saveNoteFile: (
     name: string,
     dataUrl: string
@@ -1064,7 +1088,8 @@ export const EMPTY_DATA: AppData = {
   meituSources: DEFAULT_MEITU_SOURCES,
   shuangkanSources: DEFAULT_SHUANGKAN_SOURCES,
   toolNotes: {},
-  singingVideos: []
+  singingVideos: [],
+  localShortcuts: []
 }
 
 /**
@@ -1094,6 +1119,26 @@ function normalizeToolNotes(raw: unknown): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (typeof value === 'string' && value.trim()) out[key] = value
+  }
+  return out
+}
+
+/** 本地快捷方式兜底：丢掉缺 id / 名称 / 路径的坏条目，kind 非法回退为文件夹 */
+function normalizeLocalShortcuts(raw: unknown): LocalShortcut[] {
+  if (!Array.isArray(raw)) return []
+  const out: LocalShortcut[] = []
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue
+    const value = entry as Partial<LocalShortcut>
+    const id = typeof value.id === 'string' ? value.id.trim() : ''
+    const name = typeof value.name === 'string' ? value.name.trim() : ''
+    const path = typeof value.path === 'string' ? value.path.trim() : ''
+    if (!id || !name || !path) continue
+    const kind =
+      value.kind === 'app' || value.kind === 'folder' || value.kind === 'file'
+        ? value.kind
+        : 'folder'
+    out.push({ id, name, path, kind })
   }
   return out
 }
@@ -1141,7 +1186,9 @@ export function normalizeData(raw: unknown): AppData {
     // 软件模块的使用经验笔记；缺失时为空
     toolNotes: normalizeToolNotes(o.toolNotes),
     // 演唱模块：手动添加的 B站视频条目
-    singingVideos: normalizeSingingVideos(o.singingVideos)
+    singingVideos: normalizeSingingVideos(o.singingVideos),
+    // 主页「本地」快捷入口；旧备份 / 手机端备份缺失时为空
+    localShortcuts: normalizeLocalShortcuts(o.localShortcuts)
   }
   // 2026-11-04 v0.85：按用户要求暂时下线「无损音乐」默认源，
   // 老数据里由 v0.83 自动补进来的内置 hi 源在这里移除（手动添加的同地址源 id 不同，不受影响）

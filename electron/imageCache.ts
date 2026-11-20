@@ -204,6 +204,46 @@ async function fetchImage(target: string, headerFor: (url: string) => Record<str
   throw lastError ?? new Error('图片请求失败')
 }
 
+/**
+ * 同一张图的镜像域名：Komiic 封面固定给 public.komiic.com，
+ * 部分外网 / 代理环境只放行另一条线路（API 已能自动切 komiic.cc），
+ * 图片请求按同样思路换镜像再试一次。
+ */
+const MIRROR_HOSTS: Record<string, string> = {
+  'public.komiic.com': 'public.komiic.cc',
+  'public.komiic.cc': 'public.komiic.com'
+}
+
+function mirrorTarget(target: string): string {
+  try {
+    const url = new URL(target)
+    const mirror = MIRROR_HOSTS[url.hostname.toLowerCase()]
+    if (!mirror) return ''
+    url.hostname = mirror
+    return url.toString()
+  } catch {
+    return ''
+  }
+}
+
+/** 先按原地址取图；失败或非 2xx 时换镜像域名再试，仍失败才放弃 */
+async function fetchImageWithMirror(
+  target: string,
+  headerFor: (url: string) => Record<string, string>
+): Promise<Response> {
+  try {
+    const res = await fetchImage(target, headerFor)
+    if (res.ok) return res
+    const mirror = mirrorTarget(target)
+    if (!mirror) return res
+    return await fetchImage(mirror, headerFor).catch(() => res)
+  } catch (err) {
+    const mirror = mirrorTarget(target)
+    if (!mirror) throw err
+    return fetchImage(mirror, headerFor)
+  }
+}
+
 export function registerImageCacheScheme(): void {
   protocol.registerSchemesAsPrivileged([
     {
@@ -308,7 +348,7 @@ export function setupImageCacheHandler(headerFor: (url: string) => Record<string
       // 未缓存，走网络
     }
     try {
-      const res = await fetchImage(target, headerFor)
+      const res = await fetchImageWithMirror(target, headerFor)
       // 源站可能返回 4xx 自定义状态（如 472），统一折成 404/502，避免 Chromium 报未知状态
       if (!res.ok) return new Response(null, { status: res.status >= 500 ? 502 : 404 })
       let data: Buffer = Buffer.from(await res.arrayBuffer())

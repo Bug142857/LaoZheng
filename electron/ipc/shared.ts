@@ -138,6 +138,9 @@ export function imageHeaders(url: string): Record<string, string> {
         headers['Cookie'] = auth.cookie
         headers['Referer'] = auth.referer
         headers['User-Agent'] = KOMIIC_UA
+      } else if (/(^|\.)public\.komiic\.(com|cc)$/.test(host)) {
+        headers['Referer'] = 'https://komiic.com/'
+        headers['User-Agent'] = KOMIIC_UA
       }
     } catch {
       // 非法 URL 用默认头
