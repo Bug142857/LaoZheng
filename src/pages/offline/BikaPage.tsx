@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, Download, Heart } from 'lucide-react'
-import { useData, useProgressValue } from '../state/DataContext'
-import { EmptyState, LoadingBlock, ConfirmDialog, ModuleShortcuts, Pagination } from '../components/ui'
-import { SearchBar } from '../components/SearchBar'
-import { ComicReader } from '../components/ComicReader'
-import { loadCache, saveCache } from '../utils/cache'
-import { useDetailScrollRestore } from '../utils/scroll'
-import type { BikaCategory, BikaChapter, BikaComic } from '../shared/bika'
+import { useData, useProgressValue } from '../../state/DataContext'
+import { EmptyState, LoadingBlock, ConfirmDialog, ModuleShortcuts, Pagination } from '../../components/ui'
+import { SearchBar } from '../../components/SearchBar'
+import { ComicReader } from '../../components/ComicReader'
+import { loadCache, saveCache } from '../../utils/cache'
+import { useDetailScrollRestore } from '../../utils/scroll'
+import type { BikaCategory, BikaChapter, BikaComic } from '../../shared/bika'
 
 interface ListCache {
   category: string

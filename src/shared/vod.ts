@@ -62,7 +62,7 @@ export interface VodCategoriesResponse {
   error?: string
 }
 
-/** 番号模块的整站浏览结果（关键词 / 分类 / 页码） */
+/** 整站浏览结果（关键词 / 分类 / 页码） */
 export interface VodListResponse {
   ok: boolean
   items?: VodItem[]

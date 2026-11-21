@@ -49,7 +49,11 @@ function ShortcutIcon({ item }: { item: LocalShortcut }) {
 
   const Icon = KIND_ICONS[item.kind] ?? FolderOpen
   return (
-    <span className={`local-shortcut-icon ${item.kind}${icon ? ' has-image' : ''}`}>
+    <span
+      className={`local-shortcut-icon ${
+        item.kind === 'app' ? 'kind-app' : item.kind
+      }${icon ? ' has-image' : ''}`}
+    >
       {icon ? <img src={icon} alt="" draggable={false} /> : <Icon size={26} />}
     </span>
   )

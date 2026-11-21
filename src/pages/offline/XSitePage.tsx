@@ -1,18 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, Download, Heart } from 'lucide-react'
-import { useData } from '../state/DataContext'
-import { EmptyState, LoadingBlock, ModuleShortcuts, Pagination } from '../components/ui'
-import { SearchBar } from '../components/SearchBar'
-import { VideoPlayer } from '../components/VideoPlayer'
-import { loadCache, saveCache } from '../utils/cache'
-import { useDetailScrollRestore } from '../utils/scroll'
-import { requestDownload } from '../utils/download'
+import { useData } from '../../state/DataContext'
+import { EmptyState, LoadingBlock, ModuleShortcuts, Pagination } from '../../components/ui'
+import { SearchBar } from '../../components/SearchBar'
+import { VideoPlayer } from '../../components/VideoPlayer'
+import { loadCache, saveCache } from '../../utils/cache'
+import { useDetailScrollRestore } from '../../utils/scroll'
+import { requestDownload } from '../../utils/download'
 import {
   formatCount,
   formatDuration,
   type XCategory,
   type XPost
-} from '../shared/xsite'
+} from '../../shared/xsite'
 
 interface XCache {
   range: string

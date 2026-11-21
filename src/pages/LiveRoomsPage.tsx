@@ -44,6 +44,10 @@ interface LiveViewSnapshot {
   error: string
 }
 
+/** 直播列表按平台缓存：切模块 / KeepAlive 轮换卸载后再进来，也先显示上次的平台与列表 */
+const viewCache = new Map<LivePlatformId, LiveViewSnapshot>()
+let lastPlatform: LivePlatformId = 'bilibili'
+
 function isRoomInput(value: string): boolean {
   const text = value.trim()
   if (!text) return false
@@ -94,20 +98,21 @@ export function LiveRoomsPage({
   active?: boolean
 }) {
   const { data, update } = useData()
-  const [platform, setPlatform] = useState<LivePlatformId>('bilibili')
-  const [mode, setMode] = useState<Mode>('hot')
-  const [rooms, setRooms] = useState<LiveRoom[]>([])
-  const [page, setPage] = useState(1)
-  const [hasMore, setHasMore] = useState(false)
+  const initialView = viewCache.get(lastPlatform)
+  const [platform, setPlatform] = useState<LivePlatformId>(lastPlatform)
+  const [mode, setMode] = useState<Mode>(initialView?.mode ?? 'hot')
+  const [rooms, setRooms] = useState<LiveRoom[]>(initialView?.rooms ?? [])
+  const [page, setPage] = useState(initialView?.page ?? 1)
+  const [hasMore, setHasMore] = useState(initialView?.hasMore ?? false)
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState(initialView?.error ?? '')
   const [reloadToken, setReloadToken] = useState(0)
-  const [input, setInput] = useState('')
-  const [query, setQuery] = useState('')
-  const [categories, setCategories] = useState<LiveCategoryGroup[]>([])
-  const [groupPicker, setGroupPicker] = useState('')
-  const [areaPicker, setAreaPicker] = useState('')
+  const [input, setInput] = useState(initialView?.input ?? '')
+  const [query, setQuery] = useState(initialView?.query ?? '')
+  const [categories, setCategories] = useState<LiveCategoryGroup[]>(initialView?.categories ?? [])
+  const [groupPicker, setGroupPicker] = useState(initialView?.groupPicker ?? '')
+  const [areaPicker, setAreaPicker] = useState(initialView?.areaPicker ?? '')
   const [playing, setPlaying] = useState<{ input: string; room?: LiveRoom } | null>(null)
   useDetailScrollRestore(!!playing, 'liveRooms')
   const [playback, setPlayback] = useState<LiveRoomPlayback | null>(null)
@@ -123,7 +128,11 @@ export function LiveRoomsPage({
   const playRequestRef = useRef(0)
   const listRequestRef = useRef(0)
   /** 当前 rooms 对应的平台 / 模式 / 分类 / 搜索词，用于区分刷新和切换范围 */
-  const roomsScopeRef = useRef('')
+  const roomsScopeRef = useRef(
+    initialView
+      ? `${lastPlatform}|${initialView.mode}|${initialView.query}|${initialView.groupPicker}|${initialView.areaPicker}`
+      : ''
+  )
   const skipLoadRef = useRef(false)
   /** 抖音搜索是滚动加载：记录已展示的房间，翻页时让主进程跳过 */
   const searchSeenRef = useRef<string[]>([])
@@ -131,7 +140,6 @@ export function LiveRoomsPage({
   const nameTimerRef = useRef<number | null>(null)
   /** 页面是否仍挂载：轮询请求返回后不能再 setState / 继续排定时器 */
   const aliveRef = useRef(true)
-  const viewCache = useRef<Map<LivePlatformId, LiveViewSnapshot>>(new Map())
   const focusKeyRef = useRef('')
 
   const favorites = data.liveFavorites
@@ -270,7 +278,7 @@ export function LiveRoomsPage({
   }
 
   useEffect(() => {
-    viewCache.current.set(platform, {
+    viewCache.set(platform, {
       mode,
       input,
       query,
@@ -282,6 +290,7 @@ export function LiveRoomsPage({
       hasMore,
       error
     })
+    lastPlatform = platform
   }, [platform, mode, input, query, groupPicker, areaPicker, categories, rooms, page, hasMore, error])
 
   useEffect(() => {
@@ -304,7 +313,7 @@ export function LiveRoomsPage({
 
   useEffect(() => {
     if (!enabledPlatforms.includes(platform)) return
-    if (viewCache.current.get(platform)?.categories.length) return
+    if (viewCache.get(platform)?.categories.length) return
     let alive = true
     withRequestTimeout(
       window.laozheng.livePlatformCategories(platform),
@@ -329,19 +338,15 @@ export function LiveRoomsPage({
     playRequestRef.current += 1
     listRequestRef.current += 1
     skipLoadRef.current = false
-    viewCache.current.clear()
     setPlaying(null)
     setPlayback(null)
     setPlaybackError('')
-    setInput('')
-    setQuery('')
-    setMode('hot')
-    setAreaPicker('')
-    setGroupPicker('')
-    setRooms([])
-    setPage(1)
+    setPlaybackLoading(false)
     setLoading(false)
-    setReloadToken((value) => value + 1)
+    setLoadingMore(false)
+    // 抖音抓列表较慢：切模块再回来先显示上次平台 / 列表，不重新拉取；
+    // 只有上次没加载出内容时才补一次加载，手动更新走右上角刷新或页面标题。
+    if (!rooms.length) setReloadToken((value) => value + 1)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetSignal])
 
@@ -581,7 +586,7 @@ export function LiveRoomsPage({
     setQrHint('')
     listRequestRef.current += 1
     setLoading(false)
-    const saved = viewCache.current.get(next)
+    const saved = viewCache.get(next)
     if (saved) {
       skipLoadRef.current = true
       setPlatform(next)
