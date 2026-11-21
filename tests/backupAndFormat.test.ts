@@ -35,6 +35,20 @@ describe('normalizeData（备份 / data.json 兜底）', () => {
     expect(data.innerFavs[0].durationSec).toBe(0)
   })
 
+  it('影视源归一化：同一地址可保留国内 / 代理两条，重复 id 只留第一条', () => {
+    const data = normalizeData({
+      vodSources: [
+        { id: 'a', name: '源A-国内', baseUrl: 'https://a.test' },
+        { id: 'b', name: '源B-代理', baseUrl: 'https://a.test', region: 'proxy' },
+        { id: 'a', name: '重复 id', baseUrl: 'https://c.test' },
+        { id: '', name: '没有 id', baseUrl: 'https://d.test' },
+        { id: 'e', name: '没有地址', baseUrl: '' }
+      ]
+    })
+    expect(data.vodSources.map((source) => source.id)).toEqual(['a', 'b'])
+    expect(data.vodSources[1].region).toBe('proxy')
+  })
+
   it('导入手机端 / 旧版备份时，缺失的 PC 扩展字段保留本机现值', () => {
     const current = normalizeData({
       localShortcuts: [

@@ -4,11 +4,17 @@ import type { MusicQueueItem } from './music'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type MusicPlayMode = 'single' | 'order' | 'shuffle'
+/** 毛玻璃效果：off 关闭 / on 开启（开启后可调透明度） */
+export type GlassEffect = 'off' | 'on'
 
 export interface UiSettings {
   theme: ThemeMode
   /** 主题色 key，见渲染进程 src/utils/theme.ts 的 ACCENT_OPTIONS */
   accent: string
+  /** 毛玻璃效果强度，随备份 / 云同步走 */
+  glassEffect: GlassEffect
+  /** 毛玻璃透明度 0~100（越大越通透），随备份 / 云同步走 */
+  glassTransparency: number
   /** 音乐播放器音量（0~1），记住上次值并随备份 / 云同步走 */
   musicVolume?: number
   /** 音乐播放器是否静音 */

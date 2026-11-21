@@ -11,8 +11,16 @@ import {
   shouldWarnUploadConflict
 } from '../src/shared/sync'
 import type { AppData } from '../src/shared/types'
-import { mergeLocalPcFields, normalizeData, stripNullFields } from '../src/shared/types'
-import { dataFilePath, loadData } from './store'
+import {
+  mergeLocalPcFields,
+  missingLocalPcFields,
+  normalizeData,
+  stripNullFields
+} from '../src/shared/types'
+import { loadData } from './store'
+
+/** 云端备份体积上限：超过直接拒绝，避免整份读进内存把主进程撑爆 */
+const MAX_SYNC_BYTES = 200 * 1024 * 1024
 
 /**
  * WebDAV 云同步（坚果云等）：手动上传 / 下载 data.json。
@@ -188,12 +196,25 @@ async function remoteFileModifiedAt(
   }
 }
 
-/** 本机 data.json 最后保存时间；用于和云端修改时间比较 */
+/**
+ * 备份里包含的本机状态文件：只有用户主动编辑的数据 / 源配置算「本机修改」。
+ * 播放进度与设置文件在播放时高频重写（音乐每 10 秒写 settings.json、视频持续写 read-progress.json），
+ * 纳入比较会让本机时间永远最新，云端较新的二次确认形同虚设；下载记录同样不计入。
+ */
+const LOCAL_STATE_FILES = ['data.json', 'live-sources.json', 'magnet-sources.json']
+
+/** 本机备份相关文件的最后修改时间（取最大值）；用于和云端修改时间比较 */
 async function localDataModifiedAt(): Promise<number> {
-  return stat(dataFilePath()).then(
-    (info) => info.mtimeMs,
-    () => 0
-  )
+  const root = app.getPath('userData')
+  let latest = 0
+  for (const name of LOCAL_STATE_FILES) {
+    const at = await stat(join(root, name)).then(
+      (info) => info.mtimeMs,
+      () => 0
+    )
+    if (at > latest) latest = at
+  }
+  return latest
 }
 
 /** 逐级 MKCOL；已存在（405 / 301 / 409 且父级已建）时跳过 */
@@ -299,6 +320,37 @@ export async function uploadSync(
   }
 }
 
+/**
+ * 流式读取响应并按字节数限流：服务端不给 content-length（chunked）时，
+ * 超过上限立即中止，不会先把整份备份读进内存再判断。
+ */
+async function readTextLimited(res: Response, limit: number): Promise<string | null> {
+  if (!res.body) return ''
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value || !value.byteLength) continue
+      total += value.byteLength
+      if (total > limit) {
+        await reader.cancel().catch(() => undefined)
+        return null
+      }
+      chunks.push(value)
+    }
+  } finally {
+    try {
+      reader.releaseLock()
+    } catch {
+      // 流已关闭 / 已被取消
+    }
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
 export async function downloadSync(): Promise<SyncActionResult> {
   try {
     const config = await requireConfig()
@@ -316,7 +368,16 @@ export async function downloadSync(): Promise<SyncActionResult> {
       if (res.status === 404) continue
       if (res.status === 401) return { ok: false, message: '认证失败：账号或密码不对' }
       if (!res.ok) return { ok: false, message: `下载失败：HTTP ${res.status}` }
-      const raw = (await res.json()) as Record<string, unknown>
+      const length = Number(res.headers.get('content-length') ?? 0)
+      if (Number.isFinite(length) && length > MAX_SYNC_BYTES) {
+        await res.body?.cancel().catch(() => undefined)
+        return { ok: false, message: '云端备份超过 200MB，已拒绝下载' }
+      }
+      const text = await readTextLimited(res, MAX_SYNC_BYTES)
+      if (text === null) {
+        return { ok: false, message: '云端备份超过 200MB，已拒绝下载' }
+      }
+      const raw = JSON.parse(text) as Record<string, unknown>
       if (!Array.isArray(raw.items) || !Array.isArray(raw.lists) || !Array.isArray(raw.listItems)) {
         return {
           ok: false,
@@ -327,7 +388,9 @@ export async function downloadSync(): Promise<SyncActionResult> {
         ok: true,
         message: candidate === url ? '已下载云端备份' : '已下载云端备份（旧版根目录）',
         // 手机端 / 旧版备份缺的 PC 扩展字段保留本机现值
-        data: mergeLocalPcFields(raw, normalizeData(raw), await loadData())
+        data: mergeLocalPcFields(raw, normalizeData(raw), await loadData()),
+        // 确认覆盖时再用渲染层最新数据补一次，避免选文件后改的内容被覆盖
+        missingLocalFields: missingLocalPcFields(raw)
       }
     }
     return {

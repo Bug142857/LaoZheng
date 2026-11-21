@@ -1,4 +1,4 @@
-import type { ThemeMode, UiSettings } from '../shared/settings'
+import type { GlassEffect, ThemeMode, UiSettings } from '../shared/settings'
 
 /** 主题色（与手机端一致的一组强调色，默认紫） */
 export const ACCENT_OPTIONS: { key: string; label: string; color: string }[] = [
@@ -16,7 +16,42 @@ export const THEME_OPTIONS: { key: ThemeMode; label: string }[] = [
   { key: 'dark', label: '深色' }
 ]
 
-export const DEFAULT_UI_SETTINGS: UiSettings = { theme: 'system', accent: 'purple' }
+/** 毛玻璃开关（开启后由透明度滑杆控制通透度） */
+export const GLASS_OPTIONS: { key: GlassEffect; label: string }[] = [
+  { key: 'on', label: '开' },
+  { key: 'off', label: '关' }
+]
+
+/** 兼容测试版本写入的 soft / standard：除 off 外一律按开启处理 */
+function normalizeGlassEffect(value: unknown): GlassEffect {
+  return value === 'off' ? 'off' : 'on'
+}
+
+/** 透明度滑杆默认值：数值越大越通透 */
+export const DEFAULT_GLASS_TRANSPARENCY = 50
+
+/** 把 0~100 的透明度换算成玻璃表面实际 alpha（0 → 实色，100 → 很通透） */
+export function glassAlphaValue(transparency: number): number {
+  const value = Number.isFinite(transparency)
+    ? Math.min(100, Math.max(0, transparency))
+    : DEFAULT_GLASS_TRANSPARENCY
+  return Number((1 - (value / 100) * 0.72).toFixed(3))
+}
+
+/** 窗口底板 alpha：比面板更不透明一点，保证正文可读；100 时仍能明显透出桌面 */
+export function windowAlphaValue(transparency: number): number {
+  const value = Number.isFinite(transparency)
+    ? Math.min(100, Math.max(0, transparency))
+    : DEFAULT_GLASS_TRANSPARENCY
+  return Number((1 - (value / 100) * 0.62).toFixed(3))
+}
+
+export const DEFAULT_UI_SETTINGS: UiSettings = {
+  theme: 'system',
+  accent: 'purple',
+  glassEffect: 'on',
+  glassTransparency: DEFAULT_GLASS_TRANSPARENCY
+}
 
 const CACHE_KEY = 'laozheng-ui-settings'
 
@@ -27,11 +62,22 @@ function resolveTheme(mode: ThemeMode): 'light' | 'dark' {
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
 }
 
-/** 立即把主题写到 <html> 上（data-theme = light/dark，data-accent = 主题色） */
+/** 立即把主题写到 <html> 上（data-theme = light/dark，data-accent = 主题色，data-glass = 毛玻璃档位） */
 export function applyUiSettings(settings: UiSettings): void {
   const root = document.documentElement
   root.dataset.accent = settings.accent
   root.dataset.theme = resolveTheme(settings.theme)
+  // 主进程还是旧版本 / 旧缓存没有该字段时按开启处理，避免 data-glass="undefined" 让开关失效
+  root.dataset.glass = normalizeGlassEffect(settings.glassEffect)
+  const transparency = Number.isFinite(settings.glassTransparency)
+    ? settings.glassTransparency
+    : DEFAULT_GLASS_TRANSPARENCY
+  root.style.setProperty('--glass-alpha', String(glassAlphaValue(transparency)))
+  // 关闭毛玻璃时窗口底板保持实色，避免出现「能看到桌面但没有模糊」的割裂效果
+  root.style.setProperty(
+    '--window-alpha',
+    String(root.dataset.glass === 'off' ? 1 : windowAlphaValue(transparency))
+  )
 
   mediaCleanup?.()
   mediaCleanup = null
@@ -64,6 +110,12 @@ export function applyCachedUiSettings(): UiSettings {
       if (typeof parsed.accent === 'string' && ACCENT_OPTIONS.some((a) => a.key === parsed.accent)) {
         settings = { ...settings, accent: parsed.accent }
       }
+      if (typeof parsed.glassEffect === 'string') {
+        settings = { ...settings, glassEffect: normalizeGlassEffect(parsed.glassEffect) }
+      }
+      if (typeof parsed.glassTransparency === 'number' && Number.isFinite(parsed.glassTransparency)) {
+        settings = { ...settings, glassTransparency: parsed.glassTransparency }
+      }
     }
   } catch {
     // 缓存损坏时用默认值
@@ -72,10 +124,22 @@ export function applyCachedUiSettings(): UiSettings {
   return settings
 }
 
+/** 兜底归一化：旧主进程 / 旧缓存缺少新字段时不让 UI 拿到 undefined */
+function normalizeUiSettings(input: UiSettings): UiSettings {
+  const transparency = Number.isFinite(input.glassTransparency)
+    ? Math.min(100, Math.max(0, Math.round(input.glassTransparency)))
+    : DEFAULT_GLASS_TRANSPARENCY
+  return {
+    ...input,
+    glassEffect: normalizeGlassEffect(input.glassEffect),
+    glassTransparency: transparency
+  }
+}
+
 /** 从主进程读取本机设置并应用；失败时沿用缓存值 */
 export async function syncUiSettings(): Promise<UiSettings> {
   try {
-    const settings = await window.laozheng.getUiSettings()
+    const settings = normalizeUiSettings(await window.laozheng.getUiSettings())
     applyUiSettings(settings)
     return settings
   } catch {
@@ -84,7 +148,7 @@ export async function syncUiSettings(): Promise<UiSettings> {
 }
 
 export async function saveUiSettings(input: Partial<UiSettings>): Promise<UiSettings> {
-  const next = await window.laozheng.setUiSettings(input)
+  const next = normalizeUiSettings(await window.laozheng.setUiSettings(input))
   applyUiSettings(next)
   return next
 }

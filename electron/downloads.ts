@@ -1,6 +1,14 @@
 import { app, BrowserWindow, nativeImage, Notification, session, shell } from 'electron'
-import { existsSync, createReadStream, createWriteStream } from 'node:fs'
-import { cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import {
+  existsSync,
+  createReadStream,
+  createWriteStream,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
+import { cp, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, type ServerResponse } from 'node:http'
 import { basename, dirname, extname, join, parse, relative, resolve, sep } from 'node:path'
 import { Readable, Transform } from 'node:stream'
@@ -112,6 +120,10 @@ let items: StoredItem[] = []
 let libraryPromise: Promise<void> | null = null
 let meituDirMigrated = false
 const tasks = new Map<string, DownloadTask>()
+/** 外部模块下载任务：只用于下载页展示进度，不进入并发队列、不写 download-tasks.json */
+const externalTasks = new Map<string, DownloadTask>()
+const externalCancels = new Map<string, () => boolean>()
+const externalSamples = new Map<string, { at: number; bytes: number }>()
 const controllers = new Map<string, AbortController>()
 /** 每个任务当前这一轮的标识：暂停后重新开始会换新标识，避免旧一轮的收尾误删新任务 */
 const runs = new Map<string, symbol>()
@@ -406,12 +418,20 @@ async function migrateMeituDir(): Promise<void> {
   if (changed) await saveLibrary()
 }
 
+/** 下载记录写入串行化：并发完成时避免旧快照后落盘，把新记录覆盖掉 */
+let libraryWriteChain: Promise<void> = Promise.resolve()
+
 async function saveLibrary(): Promise<void> {
-  const path = libraryPath()
-  await mkdir(app.getPath('userData'), { recursive: true })
-  const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
-  await writeFile(tmp, JSON.stringify(items, null, 2), 'utf8')
-  await rename(tmp, path)
+  const run = async (): Promise<void> => {
+    const path = libraryPath()
+    await mkdir(app.getPath('userData'), { recursive: true })
+    const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
+    // 序列化放在队列内部：轮到本次写入时再取最新 items，避免生成过期快照
+    await writeFile(tmp, JSON.stringify(items, null, 2), 'utf8')
+    await rename(tmp, path)
+  }
+  libraryWriteChain = libraryWriteChain.catch(() => undefined).then(run)
+  return libraryWriteChain
 }
 
 interface DeletedDownload {
@@ -554,10 +574,81 @@ function toPublicItem(item: StoredItem): DownloadItem {
 
 /** 是否有未结束的下载任务（暂停也算，避免迁移下载目录时断开续传文件） */
 export function hasRunningDownloads(): boolean {
+  if (externalTasks.size > 0) return true
   for (const task of tasks.values()) {
     if (task.state !== 'failed') return true
   }
   return false
+}
+
+/* ---------------- 外部模块下载进度（Z-Library 等） ---------------- */
+
+/**
+ * Z-Library 图书下载由 Electron 下载器直接写盘，不经过 addDownload 队列。
+ * 这里登记一个临时任务让下载页能显示进度 / 取消；完成后由 registerLocalFile 登记文件。
+ */
+export function beginExternalDownload(input: {
+  title: string
+  kind: DownloadKind
+  sourceUrl?: string
+  sourceName?: string
+  coverUrl?: string
+}): string {
+  const id = `ext_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  externalTasks.set(id, {
+    id,
+    title: input.title.slice(0, 160) || '未命名下载',
+    kind: input.kind,
+    url: input.sourceUrl ?? '',
+    sourceName: input.sourceName ?? '',
+    coverUrl: input.coverUrl ?? '',
+    state: 'running',
+    progress: -1,
+    bytes: 0,
+    totalBytes: 0,
+    external: true
+  })
+  notify()
+  return id
+}
+
+/** 拿到真实 DownloadItem 后登记取消回调；返回 false 表示已下载完、取消不生效 */
+export function setExternalDownloadCancel(id: string, cancel: () => boolean): void {
+  if (externalTasks.has(id)) externalCancels.set(id, cancel)
+}
+
+/** 下载器 updated 事件：更新字节数 / 百分比 / 速度 */
+export function updateExternalDownloadProgress(id: string, received: number, total: number): void {
+  const task = externalTasks.get(id)
+  if (!task) return
+  const bytes = Math.max(0, received)
+  const totalBytes = Math.max(0, total)
+  task.bytes = bytes
+  task.totalBytes = totalBytes
+  task.progress = totalBytes > 0 ? Math.min(1, bytes / totalBytes) : -1
+  const now = Date.now()
+  const prev = externalSamples.get(id)
+  if (!prev) {
+    externalSamples.set(id, { at: now, bytes })
+  } else if (now - prev.at >= 400) {
+    const instant = ((bytes - prev.bytes) / (now - prev.at)) * 1000
+    if (instant >= 0) {
+      task.speed = task.speed ? task.speed * 0.7 + instant * 0.3 : instant
+      if (task.speed > 0 && totalBytes > bytes) {
+        task.eta = Math.ceil((totalBytes - bytes) / task.speed)
+      }
+    }
+    externalSamples.set(id, { at: now, bytes })
+  }
+  notify()
+}
+
+/** 完成 / 失败 / 取消后移除临时任务 */
+export function finishExternalDownload(id: string): void {
+  if (!externalTasks.delete(id)) return
+  externalCancels.delete(id)
+  externalSamples.delete(id)
+  notify()
 }
 
 export async function listDownloads(): Promise<DownloadListResponse> {
@@ -577,7 +668,9 @@ export async function listDownloads(): Promise<DownloadListResponse> {
   void repairLegacyHls()
   return {
     items: [...items].sort((a, b) => b.createdAt - a.createdAt).map(toPublicItem),
-    tasks: [...tasks.values()].sort((a, b) => a.title.localeCompare(b.title)),
+    tasks: [...tasks.values(), ...externalTasks.values()].sort((a, b) =>
+      a.title.localeCompare(b.title)
+    ),
     dir: downloadsRoot()
   }
 }
@@ -653,17 +746,42 @@ function normalizeRecord(raw: unknown): DownloadRecord | null {
   }
 }
 
-/** 备份导入：按相对路径去重合并，保留本机已有的下载记录（本机文件通常更新） */
-export async function importDownloadRecords(raw: unknown): Promise<void> {
+/**
+ * 备份导入：默认按相对路径去重合并，保留本机已有的下载记录（本机文件通常更新）。
+ * replace = true 时用于「恢复本地快照」：整体替换为快照里的记录，才能回滚快照之后的下载。
+ */
+export async function importDownloadRecords(
+  raw: unknown,
+  options: { replace?: boolean } = {}
+): Promise<void> {
   await loadLibrary()
   if (!Array.isArray(raw)) return
-  const seen = new Set(items.map((item) => item.playPath))
-  let changed = false
+  const incoming: StoredItem[] = []
+  const seen = new Set<string>()
   for (const row of raw.slice(0, 5000)) {
     const record = normalizeRecord(row)
     if (!record || seen.has(record.playPath)) continue
-    items.push(record)
+    incoming.push(record)
     seen.add(record.playPath)
+  }
+  if (options.replace) {
+    items = incoming
+    await saveLibrary().catch((err) => {
+      console.error('[downloads] 恢复下载记录失败', err)
+    })
+    notify()
+    return
+  }
+  const existing = new Set(items.map((item) => item.playPath))
+  const root = resolve(downloadsRoot())
+  let changed = false
+  for (const record of incoming) {
+    if (existing.has(record.playPath)) continue
+    // 换机导入时备份里的文件通常不在本机：只合并磁盘上真实存在的记录，避免下载页全是打不开的条目
+    const abs = resolve(root, record.playPath)
+    if (!abs.startsWith(root + sep) || !existsSync(abs)) continue
+    items.push(record)
+    existing.add(record.playPath)
     changed = true
   }
   if (changed) {
@@ -792,6 +910,8 @@ interface TaskJob {
   comic?: ComicBatchDownloadInput
   /** 直链断点续传：目标文件与 .part，暂停后继续用 Range 续传 */
   direct?: { target: string; tmp: string }
+  /** 已尝试过壁纸多线程分段，避免回退时反复进入 */
+  rangedTried?: boolean
 }
 
 const jobs = new Map<string, TaskJob>()
@@ -901,7 +1021,7 @@ function sanitizePersistedJob(job: TaskJob): TaskJob | null {
   return next
 }
 
-async function persistTasks(): Promise<void> {
+function buildPersistedTasks(): PersistedTask[] {
   const payload: PersistedTask[] = []
   for (const task of tasks.values()) {
     if (task.state === 'failed') continue
@@ -926,6 +1046,23 @@ async function persistTasks(): Promise<void> {
       job: safeJob
     })
   }
+  return payload
+}
+
+/** 串行写盘：防抖触发多次时，避免较旧的快照后落盘覆盖新快照 */
+let persistChain: Promise<void> = Promise.resolve()
+/** 退出前已同步落盘后，未完成的异步写盘一律跳过 */
+let taskStoreFrozen = false
+
+async function persistTasks(): Promise<void> {
+  if (taskStoreFrozen) return
+  const payload = buildPersistedTasks()
+  persistChain = persistChain.then(() => writeTaskStore(payload))
+  return persistChain
+}
+
+async function writeTaskStore(payload: PersistedTask[]): Promise<void> {
+  if (taskStoreFrozen) return
   const target = taskStorePath()
   try {
     if (!payload.length) {
@@ -943,6 +1080,31 @@ async function persistTasks(): Promise<void> {
     await rename(tmp, target)
   } catch (err) {
     console.error('[downloads] 保存未完成任务失败', err)
+  }
+}
+
+/** 退出前同步落盘：600ms 防抖可能还没触发，避免暂停 / 取消后的状态丢失 */
+export function flushPersistTasksSync(): void {
+  if (persistTasksTimer) {
+    clearTimeout(persistTasksTimer)
+    persistTasksTimer = null
+  }
+  taskStoreFrozen = true
+  const payload = buildPersistedTasks()
+  const target = taskStorePath()
+  try {
+    if (!payload.length) {
+      rmSync(target, { force: true })
+      return
+    }
+    const text = JSON.stringify(payload)
+    if (text.length > TASK_STORE_LIMIT_CHARS) return
+    mkdirSync(app.getPath('userData'), { recursive: true })
+    const tmp = `${target}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`
+    writeFileSync(tmp, text, 'utf8')
+    renameSync(tmp, target)
+  } catch (err) {
+    console.error('[downloads] 退出前保存未完成任务失败', err)
   }
 }
 
@@ -1197,7 +1359,10 @@ function startTask(task: DownloadTask, job: TaskJob): void {
       } else {
         items.push(item)
       }
-      await saveLibrary()
+      // 文件已经落盘：记录保存失败只记日志，不能把任务标成失败或删除文件
+      await saveLibrary().catch((err) => {
+        console.error('[downloads] 保存下载记录失败，文件已保留', err)
+      })
       notifyDownloadFinished(task, true)
       tasks.delete(task.id)
       markTaskStateChanged()
@@ -2006,7 +2171,18 @@ export async function removeDownload(
   return { ok: true }
 }
 
-export async function cancelTask(id: string): Promise<void> {
+export async function cancelTask(id: string): Promise<boolean> {
+  if (externalTasks.has(id)) {
+    // 外部任务：回调返回 false 表示文件已经下完，取消不生效，保留任务等完成登记
+    let accepted = true
+    try {
+      accepted = externalCancels.get(id)?.() ?? true
+    } catch {
+      // 下载器已结束时忽略
+    }
+    if (accepted) finishExternalDownload(id)
+    return accepted
+  }
   removeFromWaiting(id)
   runs.delete(id)
   controllers.get(id)?.abort()
@@ -2018,10 +2194,11 @@ export async function cancelTask(id: string): Promise<void> {
   // 等一小会儿让写文件的流退出，再清掉本次产生的半成品
   await new Promise((resolveDelay) => setTimeout(resolveDelay, 120))
   // 任务 id 由下载地址哈希得到：这期间重新下载同一地址会复用 id，不能把新任务的产物删掉
-  if (tasks.has(id) || runs.has(id)) return
+  if (tasks.has(id) || runs.has(id)) return true
   await cleanupArtifacts(id)
   notify()
   pumpQueue()
+  return true
 }
 
 /** 打开下载目录：带 kind 时直接打开对应子目录（视频 / 音乐 / 漫画 / 图书 / 小说 / 修改器） */
@@ -2193,6 +2370,115 @@ async function uniqueDir(dir: string, base: string): Promise<string> {
   }
 }
 
+/**
+ * 壁纸 / 套图原图多线程分段：壁纸站（Wallspic 等）单连接通常只有 300~500KB/s，
+ * 大图分成 2~4 段并行能明显提速；服务端不支持 Range 时回退单连接。
+ */
+async function downloadRanged(
+  input: DownloadAddInput,
+  task: DownloadTask,
+  signal: AbortSignal,
+  dirName: string,
+  dir: string,
+  ext: string,
+  total: number
+): Promise<StoredItem | null> {
+  // Chromium 的 session.fetch 不暴露 accept-ranges，这里先用 1 字节 Range 探一次；
+  // 不支持分段（返回 200）时交回单连接下载
+  const probeRequest = linkRequestSignal(signal)
+  try {
+    const probeHeaders = downloadHeaders(input.url, input.referer)
+    probeHeaders.Range = 'bytes=0-0'
+    const probe = await netFetchWithFallback(input.url, probeHeaders, probeRequest.signal)
+    const supported = probe.status === 206
+    await probe.body?.cancel().catch(() => undefined)
+    if (!supported) return null
+  } catch (err) {
+    // 探测阶段网络异常（超时 / 连接重置）：交回单连接再试一次，不直接判整单失败
+    if (signal.aborted) throw err
+    return null
+  } finally {
+    probeRequest.done()
+  }
+  // 目标名已占位：成功 / 失败都必须释放，否则同名文件会被追加无意义的 (2)
+  const target = await uniqueTarget(dir, safeName(input.title), ext)
+  try {
+    const tmp = `${target}.part`
+    artifactsOf(task.id).files.add(tmp)
+    const parts = total >= 8 * 1024 * 1024 ? 4 : 2
+    const size = Math.ceil(total / parts)
+    task.bytes = 0
+    task.totalBytes = total
+    task.progress = 0
+    const handle = await open(tmp, 'w')
+    // 同一 FileHandle 的并发 write 在 Node 下不保证安全：用队列串行写不同分段
+    let writeChain: Promise<void> = Promise.resolve()
+    const writeAt = (chunk: Buffer, position: number): Promise<void> => {
+      const task = writeChain.then(async () => {
+        await handle.write(chunk, 0, chunk.length, position)
+      })
+      writeChain = task.catch(() => undefined)
+      return task
+    }
+    try {
+      await Promise.all(
+        Array.from({ length: parts }, async (_item, index) => {
+          const start = index * size
+          if (start >= total) return
+          const end = Math.min(total - 1, start + size - 1)
+          const request = linkRequestSignal(signal)
+          try {
+            const headers = downloadHeaders(input.url, input.referer)
+            headers.Range = `bytes=${start}-${end}`
+            const res = await netFetchWithFallback(input.url, headers, request.signal)
+            if (res.status !== 206 || !res.body) throw new Error(`分段下载失败 HTTP ${res.status}`)
+            const reader = res.body.getReader()
+            let offset = start
+            for (;;) {
+              const { done, value } = await reader.read()
+              if (done) break
+              if (!value?.length) continue
+              await writeAt(Buffer.from(value), offset)
+              offset += value.length
+              task.bytes += value.length
+              task.progress = Math.min(1, task.bytes / total)
+              notify()
+            }
+            if (offset !== end + 1) throw new Error('分段下载不完整')
+          } finally {
+            request.done()
+          }
+        })
+      )
+      await handle.close()
+      await rename(tmp, target)
+      const sizeBytes = (await stat(target)).size
+      const playPath = join(dirName, target.slice(dir.length + 1)).replace(/\\/g, '/')
+      return {
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        title: input.title.trim() || '未命名下载',
+        kind: input.kind,
+        sourceUrl: input.url,
+        playPath,
+        displayPath: playPath,
+        sizeBytes,
+        createdAt: Date.now(),
+        coverUrl: input.coverUrl ?? '',
+        sourceName: input.sourceName ?? '',
+        hls: false,
+        durationSec: input.durationSec,
+        referer: input.referer
+      }
+    } catch (err) {
+      await handle.close().catch(() => undefined)
+      await rm(tmp, { force: true }).catch(() => undefined)
+      throw err
+    }
+  } finally {
+    releaseTarget(target)
+  }
+}
+
 async function downloadDirect(
   input: DownloadAddInput,
   task: DownloadTask,
@@ -2255,12 +2541,32 @@ async function downloadDirect(
             ? '.webm'
             : guessImageExt(input.url, contentType)
         : guessExt(input.url, input.kind)
+    const total = Number(res.headers.get('content-length') ?? 0)
+    const canRange =
+      (input.kind === 'wallpaper' || input.kind === 'meitu') &&
+      !job.rangedTried &&
+      Number.isFinite(total) &&
+      total >= 2 * 1024 * 1024
+    if (canRange) {
+      job.rangedTried = true
+      await res.body?.cancel().catch(() => undefined)
+      try {
+        const ranged = await downloadRanged(input, task, signal, dirName, dir, ext, total)
+        if (ranged) return ranged
+      } catch (err) {
+        // 用户暂停 / 取消：保持原行为，不再启动新一轮请求
+        if (signal.aborted) throw err
+        // 分段失败（节点不支持并发 Range / 鉴权跳动）：丢掉半成品，回退单连接重下
+        console.warn('[downloads] 分段下载失败，回退单连接', err)
+      }
+      // 服务端不支持 Range 或分段失败：重新按单连接下载
+      return downloadDirect(input, task, signal, job)
+    }
     target = await uniqueTarget(dir, safeName(input.title), ext)
     allocatedTarget = target
     tmp = `${target}.part`
     artifactsOf(task.id).files.add(tmp)
     job.direct = { target, tmp }
-    const total = Number(res.headers.get('content-length') ?? 0)
     task.bytes = 0
     task.totalBytes = Number.isFinite(total) ? total : 0
   }
@@ -2409,23 +2715,54 @@ function parseMediaPlaylist(text: string, baseUrl: string): MediaPlaylist {
   return { segments, mapUri, targetDuration }
 }
 
+/** 单次请求超时：肉视频网关偶尔把分片挂住，不设超时会让一个 worker 卡死很久 */
+const REQUEST_TIMEOUT_MS = 40_000
+
+/** 把外层任务取消信号和单次请求超时合并成局部信号 */
+function linkRequestSignal(signal: AbortSignal): {
+  signal: AbortSignal
+  done: () => void
+} {
+  const controller = new AbortController()
+  const onAbort = (): void => controller.abort()
+  // 外层信号可能在进来前就已取消（暂停与新建请求之间），already-aborted 的 signal 不会再触发事件
+  if (signal.aborted) controller.abort()
+  else signal.addEventListener('abort', onAbort, { once: true })
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  return {
+    signal: controller.signal,
+    done: () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+    }
+  }
+}
+
 async function fetchText(url: string, signal: AbortSignal, referer?: string): Promise<string> {
-  const res = await netFetchWithFallback(url, downloadHeaders(url, referer), signal)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.text()
+  const request = linkRequestSignal(signal)
+  try {
+    const res = await netFetchWithFallback(url, downloadHeaders(url, referer), request.signal)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.text()
+  } finally {
+    request.done()
+  }
 }
 
 async function fetchBuffer(url: string, signal: AbortSignal, referer?: string): Promise<Buffer> {
   let last: unknown
   for (let i = 0; i < 3; i++) {
+    const request = linkRequestSignal(signal)
     try {
-      const res = await netFetchWithFallback(url, downloadHeaders(url, referer), signal)
+      const res = await netFetchWithFallback(url, downloadHeaders(url, referer), request.signal)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       return Buffer.from(await res.arrayBuffer())
     } catch (err) {
       last = err
       if (signal.aborted) throw err
       await new Promise((r) => setTimeout(r, 500 * (i + 1)))
+    } finally {
+      request.done()
     }
   }
   throw last instanceof Error ? last : new Error('下载失败')
@@ -2493,7 +2830,9 @@ async function downloadHls(
     }
   }
 
-  const concurrency = 5
+  // 肉视频每个分片都在不同的 CDN 边缘节点上，单连接只有几十 KB/s；
+  // 并发越高总吞吐越好（实测 5 → 12 约提升 40%），普通 HLS 保持 8 避免给站点压力
+  const concurrency = /\/api\/hls\//i.test(input.url) ? 12 : 8
   let cursor = 0
   /** 长视频下载到后段时签名 / token 可能过期，整条线路 403：重新拉一次播放列表换新地址 */
   let segments = playlist.segments

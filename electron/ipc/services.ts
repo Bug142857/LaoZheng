@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, session } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { join } from 'node:path'
 
 
@@ -79,10 +79,6 @@ import { cachedResponse } from '../apiCache'
 
 
 
-
-
-
-import { VOD_UA } from '../userAgents'
 
 
 
@@ -343,26 +339,6 @@ export function registerServicesIpc(): void {
       }
     }
     return { ok: false, measured: false, mirrors: [], error: '该漫画源没有镜像地址' }
-  })
-
-  // 片源管理测延迟：只等到响应头就返回（不读正文），避免把整页 / 整图下载完
-  ipcMain.handle('sources:latency', async (_e, rawUrl: unknown) => {
-    if (typeof rawUrl !== 'string' || !/^https?:\/\//i.test(rawUrl)) return null
-    const started = Date.now()
-    try {
-      const res = await session.defaultSession.fetch(rawUrl, {
-        method: 'GET',
-        headers: { 'User-Agent': VOD_UA, Accept: '*/*' },
-        redirect: 'follow',
-        cache: 'no-store',
-        signal: AbortSignal.timeout(6000)
-      })
-      const ms = Date.now() - started
-      void res.body?.cancel().catch(() => undefined)
-      return ms
-    } catch {
-      return null
-    }
   })
 
   // 导出皇片源为 JSON

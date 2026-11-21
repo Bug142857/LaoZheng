@@ -64,8 +64,14 @@ export function DownloadCenter({
   }
 
   const cancel = async (task: DownloadTask) => {
-    await window.laozheng.cancelDownload(task.id)
-    onNotice(task.state === 'failed' ? '已清除失败的下载' : '已取消下载')
+    const accepted = await window.laozheng.cancelDownload(task.id)
+    onNotice(
+      task.state === 'failed'
+        ? '已清除失败的下载'
+        : accepted
+          ? '已取消下载'
+          : '文件已下载完成，任务会继续登记'
+    )
     void refresh()
   }
 
@@ -155,12 +161,12 @@ export function DownloadCenter({
                       />
                     </div>
                   ) : null}
-                  {task.state === 'running' || task.state === 'queued' ? (
+                  {!task.external && (task.state === 'running' || task.state === 'queued') ? (
                     <button className="icon-btn" title="暂停下载" onClick={() => void pause(task)}>
                       <Pause size={13} />
                     </button>
                   ) : null}
-                  {task.state === 'paused' ? (
+                  {!task.external && task.state === 'paused' ? (
                     <button className="icon-btn" title="继续下载" onClick={() => void resume(task)}>
                       <Play size={13} />
                     </button>

@@ -19,7 +19,8 @@ const api: LaozhengApi = {
   snapshotData: (reason) => ipcRenderer.invoke('data:snapshot', reason),
   listSnapshots: () => ipcRenderer.invoke('data:snapshots'),
   restoreSnapshot: (name) => ipcRenderer.invoke('data:restoreSnapshot', name),
-  applyBackupExtras: (data) => ipcRenderer.invoke('data:applyExtras', data) as Promise<void>,
+  applyBackupExtras: (data, options) =>
+    ipcRenderer.invoke('data:applyExtras', data, options) as Promise<void>,
   importData: () => ipcRenderer.invoke('data:import') as Promise<ImportResult>,
   exportData: (data) => ipcRenderer.invoke('data:export', data) as Promise<ExportResult>,
   exportLists: (bundle) => ipcRenderer.invoke('lists:export', bundle),
@@ -120,7 +121,16 @@ const api: LaozhengApi = {
     ),
   testMusicSource: (source) => ipcRenderer.invoke('music:testSource', source),
   exportMusicSources: (sources) => ipcRenderer.invoke('music:exportSources', sources),
+  musicLyric: (songId) => ipcRenderer.invoke('music:lyric', { songId }),
   saveMusicLyrics: (input) => ipcRenderer.invoke('music:saveLyrics', input),
+  trayMusic: (command) => ipcRenderer.send('tray:music', command),
+  trayPopupHover: (inside) => ipcRenderer.send('tray:hover', !!inside),
+  trayMusicState: (playing) => ipcRenderer.send('tray:musicState', !!playing),
+  onTrayMusicState: (callback) => {
+    const handler = (_e: unknown, playing: unknown): void => callback(playing === true)
+    ipcRenderer.on('tray:musicState', handler)
+    return () => ipcRenderer.removeListener('tray:musicState', handler)
+  },
   listDownloads: () => ipcRenderer.invoke('downloads:list'),
   refreshDownloads: () => ipcRenderer.invoke('downloads:refresh'),
   addDownload: (input) => ipcRenderer.invoke('downloads:add', input),
@@ -135,6 +145,8 @@ const api: LaozhengApi = {
   cacheInfo: () => ipcRenderer.invoke('app:cacheInfo'),
   clearCache: () => ipcRenderer.invoke('app:clearCache'),
   forceRefresh: (scope) => ipcRenderer.invoke('cache:forceRefresh', scope),
+  beginSourceTest: (prefixes) =>
+    ipcRenderer.invoke('cache:beginTest', prefixes) as Promise<{ ok: boolean }>,
   chooseCacheDir: () => ipcRenderer.invoke('app:chooseCacheDir'),
   getUiSettings: () => ipcRenderer.invoke('settings:getUi'),
   setUiSettings: (input) => ipcRenderer.invoke('settings:setUi', input),
@@ -178,7 +190,6 @@ const api: LaozhengApi = {
     ipcRenderer.invoke('shuangkan:mirrors', adapter, measure),
   comicMirrors: (template, measure) =>
     ipcRenderer.invoke('comic:mirrors', template, measure),
-  probeSourceLatency: (url) => ipcRenderer.invoke('sources:latency', url),
   trackShuangkanImages: (urls, baseUrl) =>
     ipcRenderer.invoke('shuangkan:trackImages', urls, baseUrl),
   exportShuangkanSources: (sources) =>

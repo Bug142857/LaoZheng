@@ -56,7 +56,7 @@ import { genSourceId, parseSourceImport, type VodSourceImport, type VodSourceInp
 import type { LiveSource } from '../shared/live'
 import type { VodSource } from '../shared/types'
 import { readMirrorLatency, writeMirrorLatency } from './sourceSettings/mirrorLatency'
-import { probeLatency, testMsgText, withMs } from './sourceSettings/sourceTest'
+import { runSourceTest, testMsgText, withMs } from './sourceSettings/sourceTest'
 export function WallpaperSourceModal({
   source,
   onClose,
@@ -1162,14 +1162,18 @@ export function MusicSourceModal({
     setTesting(true)
     const results = await Promise.all(
       backupOptions.map(async (line) => {
-        const latency = probeLatency(line.baseUrl)
+        const started = Date.now()
         try {
-          const res = await window.laozheng.testMusicSource({
-            id: line.id,
-            name: line.name,
-            baseUrl: line.baseUrl
-          })
-          const ms = await latency
+          const { result: res, ms } = await runSourceTest(
+            () =>
+              window.laozheng.testMusicSource({
+                id: line.id,
+                name: line.name,
+                baseUrl: line.baseUrl
+              }),
+            (result) => result.ok,
+            'music'
+          )
           return [
             line.baseUrl,
             {
@@ -1179,7 +1183,7 @@ export function MusicSourceModal({
             }
           ] as [string, MusicLineStatus]
         } catch (err) {
-          const ms = await latency
+          const ms = Date.now() - started
           return [
             line.baseUrl,
             {

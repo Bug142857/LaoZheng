@@ -46,11 +46,17 @@ export function loadCache<T>(key: string, fallback: T): T {
   }
 }
 
+/** 缓存写入失败只提示一次，避免每个列表都刷日志 */
+let saveCacheWarned = false
+
 export function saveCache<T>(key: string, value: T): void {
   try {
     window.localStorage.setItem(PREFIX + key, JSON.stringify(value))
-  } catch {
-    // 存储空间不足 / 隐私模式时静默跳过
+  } catch (err) {
+    if (!saveCacheWarned) {
+      saveCacheWarned = true
+      console.warn('[cache] 模块列表缓存写入失败（localStorage 可能已满）', err)
+    }
   }
 }
 

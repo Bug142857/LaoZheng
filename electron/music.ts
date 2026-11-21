@@ -768,6 +768,21 @@ async function requestPlay(
   }
 }
 
+/** 只取歌词不重新解析音频：fish 等洛雪音源在「同时下载歌词」时不再二次解析直链 */
+export async function fetchMusicLyric(
+  songId: string
+): Promise<{ ok: boolean; lrc?: string; error?: string }> {
+  const lxSong = decodeLxSongId(songId)
+  if (!lxSong) return { ok: false, error: '该音源不支持单独获取歌词' }
+  try {
+    const lrc = await fetchLxLyric(lxSong.platform, lxSong.musicInfo)
+    if (!lrc) return { ok: false, error: '这首歌没有歌词' }
+    return { ok: true, lrc }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : '歌词解析失败' }
+  }
+}
+
 export async function resolveMusic(
   songId: string,
   platform = 'mvmp3',

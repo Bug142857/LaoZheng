@@ -271,19 +271,24 @@ export function MelonPage({
   }
 
   const downloadVideo = (block: Extract<MelonBlock, { type: 'video' }>, post: MelonDetail) => {
+    // 文章封面缺失时用正文第一张图，下载中心里视频才有一致的封面
+    const fallbackCover = post.blocks.find((item) => item.type === 'image')?.url ?? ''
     requestDownload({
       title: `${post.title} ${block.title}`.trim().slice(0, 120),
       url: block.url,
       kind: 'video',
-      coverUrl: post.cover ?? '',
+      coverUrl: post.cover || fallbackCover,
       sourceName: '吃瓜'
     })
   }
 
   if (detail || detailLoading || detailError) {
-    const videos = (detail?.blocks ?? []).filter(
-      (b): b is Extract<MelonBlock, { type: 'video' }> => b.type === 'video'
-    )
+    const videoEntries = (detail?.blocks ?? [])
+      .map((block, index) => ({ block, index }))
+      .filter(
+        (entry): entry is { block: Extract<MelonBlock, { type: 'video' }>; index: number } =>
+          entry.block.type === 'video'
+      )
     const fav = detail ? favOf(detail.id) : undefined
     return (
       <>
@@ -306,7 +311,7 @@ export function MelonPage({
           </h1>
           {detail ? (
             <div className="page-actions">
-              <button className="btn" onClick={() => toggleFav(detail, videos[0]?.url)}>
+              <button className="btn" onClick={() => toggleFav(detail, videoEntries[0]?.block.url)}>
                 <Heart size={15} fill={fav ? 'currentColor' : 'none'} /> {fav ? '已收藏' : '收藏'}
               </button>
             </div>
@@ -322,7 +327,60 @@ export function MelonPage({
             <div className="page-desc" style={{ marginBottom: 12 }}>
               {[detail.author, detail.date, detail.categories.join(', ')].filter(Boolean).join(' · ')}
             </div>
+            {videoEntries.length ? (
+              <div className="melon-video-top">
+                {videoEntries.map(({ block, index: i }) => (
+                  <div key={i} className="melon-video-block">
+                    <div className="melon-video">
+                      <button
+                        className="btn primary"
+                        onClick={() =>
+                          setPlaying({ url: block.url, title: block.title, blockIndex: i })
+                        }
+                      >
+                        <Play size={15} /> 播放视频
+                      </button>
+                      <button className="btn" onClick={() => void downloadVideo(block, detail)}>
+                        <Download size={14} /> 下载
+                      </button>
+                      {durations[i] ? (
+                        <span className="melon-video-duration">时长 {durations[i]}</span>
+                      ) : null}
+                    </div>
+                    {playing?.blockIndex === i ? (
+                      <div className="melon-video-player">
+                        <div className="melon-video-player-head">
+                          <button
+                            className="icon-btn"
+                            title="关闭播放"
+                            onClick={() => setPlaying(null)}
+                          >
+                            <X size={15} />
+                          </button>
+                        </div>
+                        <VideoPlayer
+                          src={playing.url}
+                          resumeKey={`melon|${detail.id}|${playing.title}`}
+                          onEnded={() => {
+                            // 找下一个视频类型的 block 自动播
+                            const blocks = detail.blocks
+                            for (let j = playing.blockIndex + 1; j < blocks.length; j++) {
+                              const b = blocks[j]
+                              if (b.type === 'video') {
+                                setPlaying({ url: b.url, title: b.title, blockIndex: j })
+                                return
+                              }
+                            }
+                          }}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {detail.blocks.map((block, i) => {
+              if (block.type === 'video') return null
               if (block.type === 'image') {
                 return <MelonImage key={i} className="melon-image" url={block.url} />
               }
@@ -340,54 +398,7 @@ export function MelonPage({
                   </p>
                 )
               }
-              return (
-                <div key={i} className="melon-video-block">
-                  <div className="melon-video">
-                    <button
-                      className="btn primary"
-                      onClick={() =>
-                        setPlaying({ url: block.url, title: block.title, blockIndex: i })
-                      }
-                    >
-                      <Play size={15} /> 播放视频
-                    </button>
-                    <button className="btn" onClick={() => void downloadVideo(block, detail)}>
-                      <Download size={14} /> 下载
-                    </button>
-                    {durations[i] ? (
-                      <span className="melon-video-duration">时长 {durations[i]}</span>
-                    ) : null}
-                  </div>
-                  {playing?.blockIndex === i ? (
-                    <div className="melon-video-player">
-                      <div className="melon-video-player-head">
-                        <button
-                          className="icon-btn"
-                          title="关闭播放"
-                          onClick={() => setPlaying(null)}
-                        >
-                          <X size={15} />
-                        </button>
-                      </div>
-                      <VideoPlayer
-                        src={playing.url}
-                        resumeKey={`melon|${detail.id}|${playing.title}`}
-                        onEnded={() => {
-                          // 找下一个视频类型的 block 自动播
-                          const blocks = detail.blocks
-                          for (let j = playing.blockIndex + 1; j < blocks.length; j++) {
-                            const b = blocks[j]
-                            if (b.type === 'video') {
-                              setPlaying({ url: b.url, title: b.title, blockIndex: j })
-                              return
-                            }
-                          }
-                        }}
-                      />
-                    </div>
-                  ) : null}
-                </div>
-              )
+              return null
             })}
 
           </article>

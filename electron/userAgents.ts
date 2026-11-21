@@ -7,4 +7,7 @@ export const VOD_UA =
 export const KOMIIC_UA =
   'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36'
 export const BIKA_UA = 'okhttp/3.8.1'
+/** Z-Library 封面 CDN 校验桌面浏览器 UA 与站点 Referer */
+export const ZLIB_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 /** 公开更新清单：私有仓库的 Releases 匿名 API 不可见，这里只公开版本号与发布页地址 */

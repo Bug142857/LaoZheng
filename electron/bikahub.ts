@@ -53,6 +53,33 @@ type Json = Record<string, unknown>
 
 class BikahubNetworkError extends Error {}
 
+/** 章节阅读页 / 图片页限速：连续快速翻页 / 整本下载时站点会回 429 */
+const READER_GAP_MS = 400
+const RETRY_DELAYS = [800, 1600, 2400]
+let readerChain: Promise<void> = Promise.resolve()
+let lastReaderAt = 0
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms))
+
+/** 阅读页串行排队，每次请求之间至少间隔 READER_GAP_MS */
+function scheduleReader<T>(run: () => Promise<T>): Promise<T> {
+  const task = readerChain.then(async () => {
+    const wait = READER_GAP_MS - (Date.now() - lastReaderAt)
+    if (wait > 0) await delay(wait)
+    try {
+      return await run()
+    } finally {
+      lastReaderAt = Date.now()
+    }
+  })
+  readerChain = task.then(
+    () => undefined,
+    () => undefined
+  )
+  return task
+}
+
 const asObj = (value: unknown): Json | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as Json) : null
 const asArr = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
@@ -207,21 +234,33 @@ const resolving = new Map<string, Promise<string>>()
 const pageCache = new Map<string, { data: Json; at: number }>()
 
 async function fetchText(url: string, referer?: string, timeout = TIMEOUT_MS): Promise<string> {
-  let res: Response
-  try {
-    res = await session.defaultSession.fetch(url, {
-      headers: {
-        'User-Agent': UA,
-        Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9',
-        ...(referer ? { Referer: referer } : {})
-      },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(timeout)
-    })
-  } catch {
-    throw new BikahubNetworkError('连不上哔咔站点')
+  let res: Response | null = null
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await session.defaultSession.fetch(url, {
+        headers: {
+          'User-Agent': UA,
+          Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'zh-CN,zh;q=0.9',
+          ...(referer ? { Referer: referer } : {})
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(timeout)
+      })
+    } catch {
+      throw new BikahubNetworkError('连不上哔咔站点')
+    }
+    if (res.status !== 429 || attempt >= RETRY_DELAYS.length) break
+    // 429 = 触发站点限流：优先按 Retry-After 等待，没有就按递增间隔重试
+    const retryAfter = Number(res.headers.get('retry-after') ?? 0)
+    await res.body?.cancel().catch(() => undefined)
+    await delay(
+      Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(retryAfter * 1000, 5000)
+        : RETRY_DELAYS[attempt]
+    )
   }
+  if (!res) throw new BikahubNetworkError('连不上哔咔站点')
   if (res.status >= 500 || res.status === 429) {
     throw new BikahubNetworkError(`哔咔站点返回 HTTP ${res.status}`)
   }
@@ -314,10 +353,12 @@ async function withSite<T>(preferred: string | undefined, run: (base: string) =>
   }
 }
 
-async function fetchData(url: string, base: string, cache = true): Promise<Json> {
+async function fetchData(url: string, base: string, cache = true, reader = false): Promise<Json> {
   const cached = pageCache.get(url)
   if (cache && cached && Date.now() - cached.at < PAGE_CACHE_TTL) return cached.data
-  const html = await fetchText(url, `${base}/`)
+  const html = reader
+    ? await scheduleReader(() => fetchText(url, `${base}/`))
+    : await fetchText(url, `${base}/`)
   const data = decodeNuxtData(html)
   if (!data) throw new BikahubNetworkError('站点返回了无法解析的页面')
   if (cache) pageCache.set(url, { data, at: Date.now() })
@@ -512,7 +553,9 @@ export async function bikahubNovelChapter(
   }
   try {
     const html = await withSite(baseUrl, (base) =>
-      fetchText(`${base}/novel/read/${bookId}/${chapterId}`, `${base}/novel/${bookId}`)
+      scheduleReader(() =>
+        fetchText(`${base}/novel/read/${bookId}/${chapterId}`, `${base}/novel/${bookId}`)
+      )
     )
     const root = parse(html)
     const paragraphs = root
@@ -710,7 +753,7 @@ export async function bikahubComicImages(
   }
   try {
     const data = await withSite(baseUrl, (base) =>
-      fetchData(`${base}/reader/${slug}/${chapterId}`, base)
+      fetchData(`${base}/reader/${slug}/${chapterId}`, base, true, true)
     )
     const entry =
       payloadEntry(data, `comic-reader-${slug}-${chapterId}`) ?? payloadEntry(data, 'comic-reader')

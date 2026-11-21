@@ -178,10 +178,17 @@ export function PersonDetail({
           </section>
 
           <section className="detail-section">
-            <h3 className="melon-heading">获奖情况</h3>
+            <div className="detail-section-head">
+              <h3 className="melon-heading">获奖情况</h3>
+              {awards.length > 5 ? (
+                <button className="btn section-more" onClick={() => toggle('awards')}>
+                  {expanded.awards ? '收起' : `查看全部（${awards.length}）`}
+                </button>
+              ) : null}
+            </div>
             {awards.length ? (
               <div className="person-awards">
-                {awards.map((award, index) => (
+                {(expanded.awards ? awards : awards.slice(0, 5)).map((award, index) => (
                   <div key={`${award.year}-${award.ceremony}-${award.category}-${index}`} className="person-award">
                     <span className="person-award-year">{award.year || '—'}</span>
                     <span className="person-award-main">

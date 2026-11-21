@@ -36,6 +36,10 @@ export function BookPage({
   const [detail, setDetail] = useState<{ book: ZlibBook | null; loading: boolean; error: string | null } | null>(null)
   useDetailScrollRestore(!!detail, 'book')
   const [downloading, setDownloading] = useState(false)
+  const [downloadingBookId, setDownloadingBookId] = useState('')
+  const [downloadingTitle, setDownloadingTitle] = useState('')
+  const [downloadingDl, setDownloadingDl] = useState('')
+  const [downloadPercent, setDownloadPercent] = useState<number | null>(null)
   const [pending, setPending] = useState<ZlibBook | null>(null)
   const seqRef = useRef(0)
   /** 只应用最后一次详情请求，避免返回列表后旧详情又把详情页打开 */
@@ -46,6 +50,38 @@ export function BookPage({
     detailSeq.current += 1
     setDetail(null)
   }, [resetSignal])
+
+  // 下载由主进程下载器完成：从下载中心的 external 任务里读实时百分比
+  useEffect(() => {
+    if (!downloading) {
+      setDownloadPercent(null)
+      return
+    }
+    let alive = true
+    const sync = async (): Promise<void> => {
+      try {
+        const res = await window.laozheng.listDownloads()
+        // 优先按站点下载入口匹配（同名 / 空标题也不会认错），拿不到再退回标题
+        const task = res.tasks.find(
+          (entry) =>
+            entry.external &&
+            entry.kind === 'book' &&
+            ((downloadingDl && entry.url.includes(downloadingDl)) ||
+              entry.title === downloadingTitle.slice(0, 160))
+        )
+        if (!alive) return
+        setDownloadPercent(task && task.progress >= 0 ? Math.round(task.progress * 100) : null)
+      } catch {
+        // 下载服务尚未就绪时忽略
+      }
+    }
+    void sync()
+    const timer = window.setInterval(() => void sync(), 800)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
+  }, [downloading, downloadingTitle, downloadingDl])
 
   const refreshStatus = async () => {
     const next = await window.laozheng.zlibStatus()
@@ -139,19 +175,30 @@ export function BookPage({
   }
 
   const download = async () => {
-    if (!pending) return
+    if (!pending || downloading) return
     const book = pending
     setPending(null)
     setDownloading(true)
-    onNotice('正在下载，完成后可在「下载」页查看…')
-    const res = await window.laozheng.zlibDownload(book.id, book.hash, book.title)
-    setDownloading(false)
-    if (!res.ok) {
-      onNotice(`下载失败：${res.error ?? '未知错误'}`)
-      return
+    setDownloadingBookId(book.id)
+    setDownloadingTitle(book.title)
+    setDownloadingDl(book.dl ?? '')
+    onNotice('正在下载，可在「下载」页查看进度…')
+    try {
+      const res = await window.laozheng.zlibDownload(book.id, book.hash, book.title)
+      if (!res.ok) {
+        onNotice(`下载失败：${res.error ?? '未知错误'}`)
+        return
+      }
+      onNotice(`已下载到「图书」目录：${res.name ?? ''}`)
+      void refreshStatus()
+    } catch (err) {
+      onNotice(`下载失败：${(err as Error).message}`)
+    } finally {
+      setDownloading(false)
+      setDownloadingBookId('')
+      setDownloadingTitle('')
+      setDownloadingDl('')
     }
-    onNotice(`已下载到「图书」目录：${res.name ?? ''}`)
-    void refreshStatus()
   }
 
   const quotaText = (() => {
@@ -191,7 +238,12 @@ export function BookPage({
                 disabled={downloading}
                 onClick={() => setPending(book)}
               >
-                <Download size={14} /> {downloading ? '下载中…' : '下载'}
+                <Download size={14} />{' '}
+                {downloading
+                  ? downloadingBookId === book.id && downloadPercent !== null
+                    ? `下载中 ${downloadPercent}%`
+                    : '下载中…'
+                  : '下载'}
               </button>
             </div>
           ) : null}

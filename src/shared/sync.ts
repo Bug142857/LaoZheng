@@ -18,6 +18,8 @@ export interface SyncActionResult {
   message: string
   /** 下载同步时返回导入数据 */
   data?: unknown
+  /** 备份里缺失的本机 PC 扩展字段；确认覆盖前用渲染层最新数据补齐 */
+  missingLocalFields?: string[]
   /** 上传前发现云端备份比本机新，需要用户确认是否覆盖 */
   conflict?: boolean
   /** 云端文件最后修改时间（毫秒） */

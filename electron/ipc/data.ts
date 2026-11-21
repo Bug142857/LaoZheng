@@ -62,7 +62,12 @@ import { clearApiCache } from '../apiCache'
 
 
 
-import { mergeLocalPcFields, normalizeData, type AppData } from '../../src/shared/types'
+import {
+  mergeLocalPcFields,
+  missingLocalPcFields,
+  normalizeData,
+  type AppData
+} from '../../src/shared/types'
 
 
 
@@ -125,7 +130,11 @@ export function registerDataIpc(): void {
       const text = await readDataSnapshot(snapshotsRoot(), name)
       const raw = JSON.parse(text) as unknown
       // 旧快照 / 不含 PC 扩展字段的快照：缺的字段保留本机现值，不能把本机数据清空
-      return { ok: true, data: mergeLocalPcFields(raw, normalizeData(raw), await loadData()) }
+      return {
+        ok: true,
+        data: mergeLocalPcFields(raw, normalizeData(raw), await loadData()),
+        missingLocalFields: missingLocalPcFields(raw)
+      }
     } catch (err) {
       return { ok: false, error: (err as Error).message }
     }
@@ -143,31 +152,42 @@ export function registerDataIpc(): void {
   })
 
   // 导入 / 云恢复：基础数据由渲染进程保存，这里补写电视源、下载记录与本机设置
-  ipcMain.handle('data:applyExtras', async (_e, data: AppData) => {
-    if (!data || typeof data !== 'object') return
-    // 先清接口缓存：导入后常驻模块会立即按新数据重新请求，清晚了可能命中导入前的列表
-    await clearApiCache()
-    if (data.settings && typeof data.settings === 'object') {
-      await applySettingsSnapshot(data.settings)
+  ipcMain.handle(
+    'data:applyExtras',
+    async (
+      _e,
+      data: AppData,
+      options?: { replaceDownloads?: boolean; skipDownloads?: boolean }
+    ) => {
+      if (!data || typeof data !== 'object') return
+      // 先清接口缓存：导入后常驻模块会立即按新数据重新请求，清晚了可能命中导入前的列表
+      await clearApiCache()
+      if (data.settings && typeof data.settings === 'object') {
+        await applySettingsSnapshot(data.settings)
+      }
+      if (Array.isArray(data.liveSources)) {
+        await saveLiveSources(normalizeLiveSources(data.liveSources))
+      }
+      if (Array.isArray(data.magnetSources)) {
+        await saveMagnetSources(data.magnetSources)
+      }
+      // 换机导入 / 云恢复不需要备份里的下载记录：记录跟着本机文件走
+      // 只有「恢复本地快照」才处理下载记录，且整体替换才能回滚快照后的下载
+      if (!options?.skipDownloads && Array.isArray(data.downloads)) {
+        await importDownloadRecords(data.downloads, {
+          replace: options?.replaceDownloads === true
+        })
+      }
+      // 导入 / 云恢复的播放进度写回独立存储；备份没带进度时保留本机进度
+      if (
+        data.readProgress &&
+        typeof data.readProgress === 'object' &&
+        Object.keys(data.readProgress).length > 0
+      ) {
+        await progress().replaceAll(data.readProgress)
+      }
     }
-    if (Array.isArray(data.liveSources)) {
-      await saveLiveSources(normalizeLiveSources(data.liveSources))
-    }
-    if (Array.isArray(data.magnetSources)) {
-      await saveMagnetSources(data.magnetSources)
-    }
-    if (Array.isArray(data.downloads)) {
-      await importDownloadRecords(data.downloads)
-    }
-    // 导入 / 云恢复的播放进度写回独立存储；备份没带进度时保留本机进度
-    if (
-      data.readProgress &&
-      typeof data.readProgress === 'object' &&
-      Object.keys(data.readProgress).length > 0
-    ) {
-      await progress().replaceAll(data.readProgress)
-    }
-  })
+  )
 
 
   ipcMain.handle('data:save', async (_e, data: AppData) => {
@@ -197,10 +217,10 @@ export function registerDataIpc(): void {
     if (picked.canceled || picked.filePaths.length === 0) return { canceled: true }
     await rememberDialogDir('data', picked.filePaths[0])
     try {
-      const data = await importFromFile(picked.filePaths[0])
+      const { data, missingLocalFields } = await importFromFile(picked.filePaths[0])
       // 备份里的影视源补上内置标记：默认源不可删除
       await markBuiltinVodSources(data)
-      return { canceled: false, data }
+      return { canceled: false, data, missingLocalFields }
     } catch (err) {
       return { canceled: false, error: (err as Error).message }
     }

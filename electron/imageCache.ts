@@ -74,6 +74,35 @@ async function scanImageCache(): Promise<number> {
   }
 }
 
+/**
+ * 启动时清理中断写入留下的图片临时文件。
+ * 统计 / 淘汰都会跳过 .tmp，不主动清理会一直占磁盘；只删超过 maxAgeMs 的。
+ */
+export async function cleanupStaleImageTemps(maxAgeMs = 60 * 60_000): Promise<number> {
+  let removed = 0
+  const dir = imageCacheDir()
+  let entries
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return 0
+  }
+  const now = Date.now()
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.tmp')) continue
+    const path = join(dir, entry.name)
+    const info = await stat(path).catch(() => null)
+    if (!info || now - info.mtimeMs < maxAgeMs) continue
+    try {
+      await rm(path, { force: true })
+      removed += 1
+    } catch {
+      // 文件正被占用时跳过
+    }
+  }
+  return removed
+}
+
 /** 命中缓存时更新 mtime（LRU 依据），同一文件 6 小时内只写一次 */
 function touchCacheFile(file: string): void {
   const now = Date.now()
@@ -328,7 +357,11 @@ function decryptBanshanrenImage(url: string, data: Buffer): Buffer | null {
  * 注册 lzimg:// 处理器。headerFor 由主进程提供（Referer / UA / Cookie 规则），
  * 缓存未命中时按同一套头去源站取图，成功后落盘。
  */
-export function setupImageCacheHandler(headerFor: (url: string) => Record<string, string>): void {
+export function setupImageCacheHandler(
+  headerFor: (url: string) => Record<string, string>,
+  /** 特殊图床（如 Z-Library）改走自己的会话 / 多线路，返回 null 时回落到通用取图 */
+  specialFetch?: (url: string) => Promise<Response | null>
+): void {
   const respond = async (target: string): Promise<Response> => {
     // 缓存目录可以在设置里更换，这里每次请求都重新取
     const dir = imageCacheDir()
@@ -348,7 +381,15 @@ export function setupImageCacheHandler(headerFor: (url: string) => Record<string
       // 未缓存，走网络
     }
     try {
-      const res = await fetchImageWithMirror(target, headerFor)
+      let special: Response | null = null
+      if (specialFetch) {
+        try {
+          special = await specialFetch(target)
+        } catch {
+          special = null
+        }
+      }
+      const res = special ?? (await fetchImageWithMirror(target, headerFor))
       // 源站可能返回 4xx 自定义状态（如 472），统一折成 404/502，避免 Chromium 报未知状态
       if (!res.ok) return new Response(null, { status: res.status >= 500 ? 502 : 404 })
       let data: Buffer = Buffer.from(await res.arrayBuffer())

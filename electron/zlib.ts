@@ -1,7 +1,14 @@
 import { app, BrowserWindow, session } from 'electron'
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
-import { downloadsRoot, registerLocalFile } from './downloads'
+import {
+  beginExternalDownload,
+  downloadsRoot,
+  finishExternalDownload,
+  registerLocalFile,
+  setExternalDownloadCancel,
+  updateExternalDownloadProgress
+} from './downloads'
 import { decryptSecret, encryptSecret } from './secureStorage'
 import type {
   ZlibBook,
@@ -45,7 +52,102 @@ function zlibSession() {
 
 function isZlibHost(host: string): boolean {
   const h = host.toLowerCase()
+  // 站点线路：z-lib.sk / zh.z-lib.sk / zlib.*；getzlib.com 的每日线路页不算站点
   return h.includes('z-lib') || h.startsWith('zlib.') || h.includes('.zlib.')
+}
+
+/** 封面图床：站点域名 + s3proxy.cdn-zlib.sk / covers.z-lib.sk 等 CDN */
+function isZlibImageHost(host: string): boolean {
+  const h = host.toLowerCase()
+  return isZlibHost(h) || h.includes('cdn-zlib') || /(^|\.)covers\.z-lib\./.test(h)
+}
+
+/** 封面相对地址补全：协议相对 / 站内路径统一补成当前线路的绝对地址 */
+function absoluteCover(raw: string): string {
+  if (!raw) return ''
+  if (/^(https?:|data:|blob:)/i.test(raw)) return raw
+  if (raw.startsWith('//')) return `https:${raw}`
+  const host = loadedHost || FALLBACK_HOSTS[0]
+  return `https://${host}${raw.startsWith('/') ? '' : '/'}${raw}`
+}
+
+/** 封面线路候选：同一路径依次换 CDN 后缀 / 主站，全部走 zlib 分区（带反爬 Cookie 和 UA） */
+function coverCandidates(original: URL): string[] {
+  const list = [original.toString()]
+  const host = original.hostname.toLowerCase()
+  const site = loadedHost || FALLBACK_HOSTS[0]
+  const withHost = (hostname: string): void => {
+    const url = new URL(original.toString())
+    url.hostname = hostname
+    list.push(url.toString())
+  }
+  if (/^s3proxy\.cdn-zlib\./i.test(host)) {
+    for (const tld of ['sk', 'se', 'org']) withHost(`s3proxy.cdn-zlib.${tld}`)
+    withHost(site)
+  } else if (/^covers\.z-lib\./i.test(host)) {
+    withHost('s3proxy.cdn-zlib.sk')
+    withHost(site)
+  }
+  return [...new Set(list)].slice(0, 5)
+}
+
+/**
+ * 图书封面：走 persist:zlib 的 Chromium 网络栈（与站点同一份 Cookie / UA），
+ * 封面 CDN 部分线路会回 521 / 403，按同路径换线路再试；全部失败返回 null 让取图层走原逻辑。
+ */
+export async function zlibImageFetch(rawUrl: string): Promise<Response | null> {
+  let parsed: URL
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+  if (!isZlibImageHost(parsed.hostname)) return null
+  const ses = zlibSession()
+  // Chromium fetch 不允许直接设置 Referer（会 ERR_BLOCKED_BY_CLIENT），用 referrer 选项 + 会话 UA
+  const referrer = `https://${loadedHost || FALLBACK_HOSTS[0]}/`
+  const candidates = coverCandidates(parsed)
+  // 先试原始地址：正常封面一次就回来，坏线路再并行试备选，避免每张图都打多条线路
+  try {
+    const res = await ses.fetch(candidates[0], {
+      referrer,
+      signal: AbortSignal.timeout(7000)
+    })
+    if (res.ok) return res
+    await res.body?.cancel().catch(() => undefined)
+  } catch {
+    // 换备选线路
+  }
+  const rest = candidates.slice(1)
+  if (!rest.length) return null
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 8000)
+  try {
+    const results = await Promise.allSettled(
+      rest.map(async (candidate) => {
+        const res = await ses.fetch(candidate, { referrer, signal: controller.signal })
+        if (!res.ok) {
+          await res.body?.cancel().catch(() => undefined)
+          throw new Error('封面线路不可用')
+        }
+        return res
+      })
+    )
+    const hit = results.find(
+      (item): item is PromiseFulfilledResult<Response> => item.status === 'fulfilled'
+    )
+    for (const item of results) {
+      if (item.status === 'fulfilled' && item !== hit) {
+        void item.value.body?.cancel().catch(() => undefined)
+      }
+    }
+    return hit?.value ?? null
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /** 站点每日换域名：优先用 getzlib.com 当日列表，失败时回退内置地址 */
@@ -367,7 +469,7 @@ function toBook(raw: unknown): ZlibBook | null {
     hash: typeof o.hash === 'number' ? String(o.hash) : asString(o.hash),
     title: asString(o.title) || '（无标题）',
     author: asString(o.author) || null,
-    cover: asString(o.cover) || null,
+    cover: absoluteCover(asString(o.cover)) || null,
     year: typeof o.year === 'number' ? String(o.year) : asString(o.year) || null,
     language: asString(o.language) || null,
     extension: asString(o.extension) || null,
@@ -814,8 +916,32 @@ async function uniquePath(dir: string, name: string): Promise<string> {
   }
 }
 
+/**
+ * 图书下载串行执行：will-download 是会话级监听，两个任务同时挂会互相串
+ * （后注册的把 save path 覆盖掉、done 回调重复挂）。排队后一次只跑一本。
+ */
+let downloadQueue: Promise<unknown> = Promise.resolve()
+
 /** 下载书籍：走站点 /dl/{token}，由 Electron 下载器写入「图书」目录 */
-export async function zlibDownloadBook(id: string, hash: string, title: string): Promise<ZlibDownloadResponse> {
+export function zlibDownloadBook(
+  id: string,
+  hash: string,
+  title: string
+): Promise<ZlibDownloadResponse> {
+  const run = (): Promise<ZlibDownloadResponse> => runDownloadBook(id, hash, title)
+  const task = downloadQueue.then(run, run)
+  downloadQueue = task.then(
+    () => undefined,
+    () => undefined
+  )
+  return task
+}
+
+async function runDownloadBook(
+  id: string,
+  hash: string,
+  title: string
+): Promise<ZlibDownloadResponse> {
   const detail = await zlibDetail(id, hash)
   if (!detail.ok || !detail.book) return { ok: false, error: detail.error ?? '获取图书信息失败' }
   const book = detail.book
@@ -831,29 +957,111 @@ export async function zlibDownloadBook(id: string, hash: string, title: string):
   const fallback = `${safeName(title || book.title)}${ext}`
   const target = await uniquePath(dir, fallback)
   const ses = zlibSession()
+  // 下载页立即出现任务，后续由 will-download 的进度事件更新
+  const taskId = beginExternalDownload({
+    title: title || book.title,
+    kind: 'book',
+    sourceName: 'Z-Library',
+    sourceUrl: `https://${host}${book.dl}`,
+    coverUrl: book.cover ?? ''
+  })
 
   return new Promise<ZlibDownloadResponse>((resolve) => {
     let settled = false
     let started = false
-    const finish = (result: ZlibDownloadResponse): void => {
+    let canceled = false
+    /** 下载器已报完成：此后取消不再生效，避免删掉完整文件 */
+    let completed = false
+    let activeItem: Electron.DownloadItem | null = null
+    let timer: NodeJS.Timeout | null = null
+
+    function finish(result: ZlibDownloadResponse): void {
       if (settled) return
       settled = true
-      clearTimeout(timer)
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
       ses.removeListener('will-download', onWillDownload)
+      finishExternalDownload(taskId)
       resolve(result)
     }
 
+    /** 超时按「多久没有新进度」计算：大文件慢速下载不会被固定总时长误杀 */
+    function armTimeout(): void {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = null
+        // 已下载完成时取消不生效，交给 done 回调正常登记
+        if (!cancelDownload()) return
+        finish({ ok: false, error: '下载超时（180 秒没有新进度）' })
+      }, 180_000)
+    }
+
+    /**
+     * 取消时同时中止下载器和隐藏窗口导航，避免晚到的下载落到默认目录。
+     * 返回 false 表示文件已经下完（或已收尾），取消不生效，让完成路径继续登记。
+     */
+    function cancelDownload(): boolean {
+      if (settled || canceled || completed) return false
+      if (activeItem) {
+        const total = activeItem.getTotalBytes()
+        const received = activeItem.getReceivedBytes()
+        // done 事件可能还没到，但字节数已满：同样按完成处理，不删完整文件
+        if (total > 0 && received >= total) return false
+      }
+      canceled = true
+      try {
+        activeItem?.cancel()
+      } catch {
+        // 下载已结束
+      }
+      if (!started && !win.isDestroyed()) {
+        try {
+          win.webContents.stop()
+        } catch {
+          // 窗口可能已销毁
+        }
+      }
+      return true
+    }
+
     // setSavePath 必须在 will-download 里同步调用，否则下载器会用默认目录
-    const onWillDownload = (_event: Electron.Event, item: Electron.DownloadItem): void => {
+    function onWillDownload(_event: Electron.Event, item: Electron.DownloadItem): void {
+      activeItem = item
+      if (canceled) {
+        try {
+          item.cancel()
+        } catch {
+          // 已结束
+        }
+        finish({ ok: false, error: '下载已取消' })
+        return
+      }
       started = true
+      armTimeout()
       try {
         item.setSavePath(target)
       } catch (err) {
+        try {
+          item.cancel()
+        } catch {
+          // 已结束
+        }
         finish({ ok: false, error: (err as Error).message })
         return
       }
+      setExternalDownloadCancel(taskId, cancelDownload)
+      item.on('updated', (_e, state) => {
+        if (state === 'progressing') {
+          armTimeout()
+          updateExternalDownloadProgress(taskId, item.getReceivedBytes(), item.getTotalBytes())
+        }
+      })
       item.once('done', async (_e, state) => {
         if (state === 'completed') {
+          // 完成事件已到：完成优先，用户在此刻点取消也不删完整文件
+          completed = true
           try {
             await registerLocalFile({
               title: title || book.title,
@@ -867,17 +1075,18 @@ export async function zlibDownloadBook(id: string, hash: string, title: string):
             finish({ ok: false, error: `已下载但登记失败：${(err as Error).message}` })
           }
         } else {
-          // 失败 / 取消时清掉写了一半的文件，避免留下打不开的残缺图书
+          // 失败 / 取消 / 已超时：清掉写了一半的文件，避免留下打不开的残缺图书
           await rm(target, { force: true }).catch(() => undefined)
-          finish({ ok: false, error: state === 'cancelled' ? '下载已取消' : '下载失败' })
+          finish({
+            ok: false,
+            error: canceled || state === 'cancelled' ? '下载已取消' : '下载失败'
+          })
         }
       })
     }
 
-    const timer = setTimeout(() => {
-      finish({ ok: false, error: '下载超时（站点未返回文件，可能额度已用完或被反爬拦截）' })
-    }, 180_000)
-
+    setExternalDownloadCancel(taskId, cancelDownload)
+    armTimeout()
     ses.on('will-download', onWillDownload)
 
     void (async () => {
@@ -886,9 +1095,13 @@ export async function zlibDownloadBook(id: string, hash: string, title: string):
       } catch {
         // 下载页可能直接触发下载并中断导航，忽略
       }
+      if (canceled) {
+        finish({ ok: false, error: '下载已取消' })
+        return
+      }
       // 有些线路需要点一下站点下载按钮
       await sleep(3000)
-      if (!settled && !started) {
+      if (!settled && !canceled && !started) {
         try {
           await win.webContents.executeJavaScript(`(() => {
             const a = document.querySelector('a.addDownloadedBook,a.dlButton,a[href*="/dl/"],button.dlDropdownBtn')
@@ -899,7 +1112,12 @@ export async function zlibDownloadBook(id: string, hash: string, title: string):
           // 忽略
         }
         await sleep(3000)
-        if (!settled && !started) {
+        if (settled) return
+        if (canceled) {
+          finish({ ok: false, error: '下载已取消' })
+          return
+        }
+        if (!started) {
           try {
             const body = (await win.webContents.executeJavaScript(
               "(document.body && document.body.innerText || '').slice(0, 600)"

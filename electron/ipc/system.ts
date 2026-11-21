@@ -66,7 +66,7 @@ import type { ComicBatchDownloadInput, DownloadAddInput, DownloadKind } from '..
 
 
 import { downloadSync, getSyncConfig, saveSyncConfig, testSync, uploadSync } from '../sync'
-import { cachedResponse, forceApiCache } from '../apiCache'
+import { beginApiCacheBypass, cachedResponse, forceApiCache } from '../apiCache'
 
 import type { SyncConfigInput } from '../../src/shared/sync'
 
@@ -217,6 +217,17 @@ export function registerSystemIpc(): void {
   ipcMain.handle('cache:forceRefresh', (_e, scope: unknown) => {
     const prefixes = typeof scope === 'string' ? FORCE_REFRESH_PREFIXES[scope] : undefined
     if (prefixes?.length) forceApiCache(prefixes)
+    return { ok: true }
+  })
+
+  // 源测试前调用：短时间绕过接口缓存，保证测到站点真实状态；传前缀时只影响被测模块
+  ipcMain.handle('cache:beginTest', (_e, rawPrefixes: unknown) => {
+    const prefixes = Array.isArray(rawPrefixes)
+      ? rawPrefixes
+          .filter((item): item is string => typeof item === 'string' && item.length > 0 && item.length <= 40)
+          .slice(0, 20)
+      : []
+    beginApiCacheBypass(15_000, prefixes)
     return { ok: true }
   })
 

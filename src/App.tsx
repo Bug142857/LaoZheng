@@ -604,6 +604,18 @@ function Shell() {
   /** 当前路由的页面必须立刻出现，不能等 effect 补 visited（否则会闪一帧空白） */
   const shownKeys = visited.includes(activeKey) ? visited : [...visited, activeKey]
 
+  // 吸顶页头静止时完全透明；只在内容滚动后加模糊 / 淡底，避免顶部与正文出现色差
+  useEffect(() => {
+    const el = contentRef.current
+    if (!el) return
+    const update = (): void => {
+      el.dataset.scrolled = el.scrollTop > 6 ? 'true' : 'false'
+    }
+    update()
+    el.addEventListener('scroll', update, { passive: true })
+    return () => el.removeEventListener('scroll', update)
+  }, [ready])
+
   useEffect(() => {
     void syncUiSettings()
   }, [])
@@ -701,6 +713,7 @@ function Shell() {
   if (!ready) {
     return (
       <div className="app">
+        <div className="app-titlebar" />
         <main className="content">
           <EmptyState title="正在加载本地数据…" />
         </main>
@@ -1046,6 +1059,7 @@ function Shell() {
 
   return (
     <div className="app">
+      <div className="app-titlebar" />
       <aside className="sidebar">
         <button
           className="sidebar-brand"

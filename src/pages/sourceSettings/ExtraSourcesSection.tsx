@@ -25,7 +25,7 @@ import {
   WallpaperSourceModal
 } from '../SourceSettingsModals'
 import { PreferredSortButton, SourceCard, byPreferredOrder, sourceSummary } from './shared'
-import { probeLatency, testMsgText, withMs } from './sourceTest'
+import { runSourceTest, testMsgText, withMs } from './sourceTest'
 
 interface TestResult {
   status: 'ok' | 'bad'
@@ -203,18 +203,22 @@ export function ExtraSourcesSection({ onNotice }: { onNotice: (text: string) => 
   }
 
   const runWallpaperTest = async (source: WallpaperSource): Promise<TestResult> => {
-    const latency = probeLatency(source.baseUrl)
+    const started = Date.now()
     try {
-      const res = await window.laozheng.wallpaperCategories(toWallpaperSourceRef(source), 'pc')
+      const { result: res, ms } = await runSourceTest(
+        () => window.laozheng.wallpaperCategories(toWallpaperSourceRef(source), 'pc'),
+        (result) => result.ok,
+        'wallpaper'
+      )
       const status: 'ok' | 'bad' = res.ok ? 'ok' : 'bad'
       const msg = withMs(
         res.ok ? `可用 · ${res.categories?.length ?? 0} 个分类` : res.error ?? '不可用',
-        await latency
+        ms
       )
       patchWallpaper(source.id, { testStatus: status, testMsg: msg, testAt: Date.now() })
       return { status, msg }
     } catch (err) {
-      const msg = withMs((err as Error).message || '测试失败', await latency)
+      const msg = withMs((err as Error).message || '测试失败', Date.now() - started)
       patchWallpaper(source.id, { testStatus: 'bad', testMsg: msg, testAt: Date.now() })
       return { status: 'bad', msg }
     }
@@ -231,14 +235,20 @@ export function ExtraSourcesSection({ onNotice }: { onNotice: (text: string) => 
   const testAllWallpaper = async (): Promise<void> => {
     if (testingWallpaperAll || data.wallpaperSources.length === 0) return
     setTestingWallpaperAll(true)
+    const queue = [...data.wallpaperSources]
     let ok = 0
     let bad = 0
-    for (const entry of data.wallpaperSources) {
-      setTestingWallpaperId(entry.id)
-      const res = await runWallpaperTest(entry)
-      if (res.status === 'ok') ok += 1
-      else bad += 1
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const entry = queue.shift()
+        if (!entry) return
+        setTestingWallpaperId(entry.id)
+        const res = await runWallpaperTest(entry)
+        if (res.status === 'ok') ok += 1
+        else bad += 1
+      }
     }
+    await Promise.all(Array.from({ length: Math.min(3, queue.length) }, worker))
     setTestingWallpaperId(null)
     setTestingWallpaperAll(false)
     onNotice(`壁纸源测试完成：可用 ${ok} 个 · 不可用 ${bad} 个`)
@@ -403,20 +413,24 @@ export function ExtraSourcesSection({ onNotice }: { onNotice: (text: string) => 
   }
 
   const runMeituTest = async (source: MeituSource): Promise<TestResult> => {
-    const latency = probeLatency(source.baseUrl)
+    const started = Date.now()
     try {
-      const res = await window.laozheng.meituCategories(toMeituSourceRef(source))
+      const { result: res, ms } = await runSourceTest(
+        () => window.laozheng.meituCategories(toMeituSourceRef(source)),
+        (result) => result.ok,
+        'meitu'
+      )
       const status: 'ok' | 'bad' = res.ok ? 'ok' : 'bad'
       const msg = withMs(
         res.ok
           ? `可用 · ${res.categories?.filter((entry) => entry.id).length ?? 0} 个分类`
           : res.error ?? '不可用',
-        await latency
+        ms
       )
       patchMeitu(source.id, { testStatus: status, testMsg: msg, testAt: Date.now() })
       return { status, msg }
     } catch (err) {
-      const msg = withMs((err as Error).message || '测试失败', await latency)
+      const msg = withMs((err as Error).message || '测试失败', Date.now() - started)
       patchMeitu(source.id, { testStatus: 'bad', testMsg: msg, testAt: Date.now() })
       return { status: 'bad', msg }
     }
@@ -433,14 +447,20 @@ export function ExtraSourcesSection({ onNotice }: { onNotice: (text: string) => 
   const testAllMeitu = async (): Promise<void> => {
     if (testingMeituAll || data.meituSources.length === 0) return
     setTestingMeituAll(true)
+    const queue = [...data.meituSources]
     let ok = 0
     let bad = 0
-    for (const entry of data.meituSources) {
-      setTestingMeituId(entry.id)
-      const res = await runMeituTest(entry)
-      if (res.status === 'ok') ok += 1
-      else bad += 1
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const entry = queue.shift()
+        if (!entry) return
+        setTestingMeituId(entry.id)
+        const res = await runMeituTest(entry)
+        if (res.status === 'ok') ok += 1
+        else bad += 1
+      }
     }
+    await Promise.all(Array.from({ length: Math.min(3, queue.length) }, worker))
     setTestingMeituId(null)
     setTestingMeituAll(false)
     onNotice(`套图源测试完成：可用 ${ok} 个 · 不可用 ${bad} 个`)
@@ -605,23 +625,22 @@ export function ExtraSourcesSection({ onNotice }: { onNotice: (text: string) => 
   }
 
   const runShuangkanTest = async (source: ShuangkanSource): Promise<TestResult> => {
-    const latency = probeLatency(source.baseUrl)
+    const started = Date.now()
     try {
-      const res = await window.laozheng.shuangkanCatalog(
-        toShuangkanSourceRef(source),
-        'video',
-        '',
-        1
+      const { result: res, ms } = await runSourceTest(
+        () => window.laozheng.shuangkanCatalog(toShuangkanSourceRef(source), 'video', '', 1),
+        (result) => result.ok,
+        'shuangkan'
       )
       const status: 'ok' | 'bad' = res.ok ? 'ok' : 'bad'
       const msg = withMs(
         res.ok ? `可用 · 首页 ${res.items.length} 条` : res.error ?? '不可用',
-        await latency
+        ms
       )
       patchShuangkan(source.id, { testStatus: status, testMsg: msg, testAt: Date.now() })
       return { status, msg }
     } catch (err) {
-      const msg = withMs((err as Error).message || '测试失败', await latency)
+      const msg = withMs((err as Error).message || '测试失败', Date.now() - started)
       patchShuangkan(source.id, { testStatus: 'bad', testMsg: msg, testAt: Date.now() })
       return { status: 'bad', msg }
     }
@@ -638,14 +657,20 @@ export function ExtraSourcesSection({ onNotice }: { onNotice: (text: string) => 
   const testAllShuangkan = async (): Promise<void> => {
     if (testingShuangkanAll || data.shuangkanSources.length === 0) return
     setTestingShuangkanAll(true)
+    const queue = [...data.shuangkanSources]
     let ok = 0
     let bad = 0
-    for (const entry of data.shuangkanSources) {
-      setTestingShuangkanId(entry.id)
-      const res = await runShuangkanTest(entry)
-      if (res.status === 'ok') ok += 1
-      else bad += 1
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const entry = queue.shift()
+        if (!entry) return
+        setTestingShuangkanId(entry.id)
+        const res = await runShuangkanTest(entry)
+        if (res.status === 'ok') ok += 1
+        else bad += 1
+      }
     }
+    await Promise.all(Array.from({ length: Math.min(3, queue.length) }, worker))
     setTestingShuangkanId(null)
     setTestingShuangkanAll(false)
     onNotice(`皇片源测试完成：可用 ${ok} 个 · 不可用 ${bad} 个`)

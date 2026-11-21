@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { normalizeMusicQueue } from '../src/shared/music'
-import type { MusicPlayMode, ThemeMode, UiSettings } from '../src/shared/settings'
+import type { GlassEffect, MusicPlayMode, ThemeMode, UiSettings } from '../src/shared/settings'
 import type { BackupSettings } from '../src/shared/types'
 
 /**
@@ -16,6 +16,10 @@ interface AppSettings {
   cacheRoot: string
   theme: ThemeMode
   accent: string
+  /** 毛玻璃效果强度：off 关闭 / on 开启 */
+  glassEffect: GlassEffect
+  /** 毛玻璃透明度 0~100（越大越通透） */
+  glassTransparency: number
   /** 音乐播放器音量（0~1）与静音状态，记住上次值 */
   musicVolume?: number
   musicMuted?: boolean
@@ -36,6 +40,20 @@ interface AppSettings {
 const THEME_MODES: ThemeMode[] = ['system', 'light', 'dark']
 const ACCENT_KEYS = ['purple', 'green', 'blue', 'cyan', 'orange', 'pink']
 const PLAY_MODES: MusicPlayMode[] = ['single', 'order', 'shuffle']
+
+/** 兼容测试版本写入的 soft / standard：除 off 外一律按开启处理 */
+function normalizeGlassEffect(value: unknown): GlassEffect | null {
+  if (value === 'off') return 'off'
+  if (value === 'on' || value === 'soft' || value === 'standard') return 'on'
+  return null
+}
+
+/** 0~100 的透明度；非法值返回 null，保持当前设置 */
+function normalizeGlassTransparency(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(100, Math.max(0, Math.round(value)))
+    : null
+}
 
 function isPlayMode(value: unknown): value is MusicPlayMode {
   return typeof value === 'string' && PLAY_MODES.includes(value as MusicPlayMode)
@@ -104,7 +122,9 @@ let current: AppSettings = {
   downloadRoot: defaultDownloadRoot(),
   cacheRoot: app.getPath('userData'),
   theme: 'system',
-  accent: 'purple'
+  accent: 'purple',
+  glassEffect: 'on',
+  glassTransparency: 50
 }
 
 export function downloadRoot(): string {
@@ -127,6 +147,8 @@ export function uiSettings(): UiSettings {
   return {
     theme: current.theme,
     accent: current.accent,
+    glassEffect: current.glassEffect,
+    glassTransparency: current.glassTransparency,
     musicVolume: current.musicVolume,
     musicMuted: current.musicMuted,
     musicQueue: current.musicQueue ? [...current.musicQueue] : undefined,
@@ -163,6 +185,8 @@ export function settingsSnapshot(): BackupSettings {
   return {
     theme: current.theme,
     accent: current.accent,
+    glassEffect: current.glassEffect,
+    glassTransparency: current.glassTransparency,
     downloadRoot: current.downloadRoot,
     lastImageDir: current.lastDirs?.image,
     lastDirs: current.lastDirs ? { ...current.lastDirs } : undefined,
@@ -184,6 +208,16 @@ export async function applySettingsSnapshot(input: BackupSettings): Promise<void
   }
   if (typeof input.accent === 'string' && ACCENT_KEYS.includes(input.accent)) {
     current.accent = input.accent
+    changed = true
+  }
+  const glass = normalizeGlassEffect(input.glassEffect)
+  if (glass) {
+    current.glassEffect = glass
+    changed = true
+  }
+  const transparency = normalizeGlassTransparency(input.glassTransparency)
+  if (transparency !== null) {
+    current.glassTransparency = transparency
     changed = true
   }
   if (typeof input.downloadRoot === 'string' && input.downloadRoot.trim()) {
@@ -249,6 +283,10 @@ export async function initSettings(): Promise<void> {
     if (typeof raw.accent === 'string' && ACCENT_KEYS.includes(raw.accent)) {
       current.accent = raw.accent
     }
+    const glass = normalizeGlassEffect(raw.glassEffect)
+    if (glass) current.glassEffect = glass
+    const transparency = normalizeGlassTransparency(raw.glassTransparency)
+    if (transparency !== null) current.glassTransparency = transparency
     if (typeof raw.musicVolume === 'number' && Number.isFinite(raw.musicVolume)) {
       current.musicVolume = Math.min(1, Math.max(0, raw.musicVolume))
     }
@@ -300,6 +338,10 @@ export async function setUiSettings(input: Partial<UiSettings>): Promise<UiSetti
   if (typeof input.accent === 'string' && ACCENT_KEYS.includes(input.accent)) {
     current.accent = input.accent
   }
+  const glass = normalizeGlassEffect(input.glassEffect)
+  if (glass) current.glassEffect = glass
+  const transparency = normalizeGlassTransparency(input.glassTransparency)
+  if (transparency !== null) current.glassTransparency = transparency
   if (typeof input.musicVolume === 'number' && Number.isFinite(input.musicVolume)) {
     current.musicVolume = Math.min(1, Math.max(0, input.musicVolume))
   }

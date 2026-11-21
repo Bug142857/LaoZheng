@@ -2,10 +2,12 @@ import {
   app,
   BrowserWindow,
   dialog,
+  ipcMain,
   Menu,
   nativeImage,
   powerMonitor,
   powerSaveBlocker,
+  screen,
   session,
   shell,
   Tray
@@ -16,7 +18,7 @@ import { appendLogSync } from './logFile'
 
 import { dataFilePath, loadData } from './store'
 import { initSettings } from './settings'
-import { cleanupUpdatesDir } from './cacheManager'
+import { cleanupStaleUserDataFiles, cleanupUpdatesDir } from './cacheManager'
 
 import { loadWindowState, saveWindowState, type WindowState } from './windowState'
 import { scheduleIdleAccountChecks } from './idleTasks'
@@ -29,7 +31,7 @@ import { initLiveAuth } from './livePlatform/auth'
 import { BILI_UA, DOUYU_UA, DOUYIN_UA } from './livePlatform/common'
 import { bilibiliMediaAuth } from './singing'
 
-import { startMediaServer } from './downloads'
+import { flushPersistTasksSync, startMediaServer } from './downloads'
 
 import { melonImageAuth } from './melon'
 
@@ -38,6 +40,7 @@ import { noteShuangkanMediaRedirect, shuangkanImageAuth, shuangkanMediaAuth } fr
 import { initAccounts } from './accounts'
 
 import { komiicImageAuth } from './komiic'
+import { zlibImageFetch } from './zlib'
 
 import {
   registerImageCacheScheme,
@@ -45,15 +48,26 @@ import {
   setupImageRequestRedirect
 } from './imageCache'
 
-import { IMAGE_REFERER, IMAGE_UA, VOD_UA, KOMIIC_UA, BIKA_UA } from './userAgents'
+import { IMAGE_REFERER, IMAGE_UA, VOD_UA, KOMIIC_UA, BIKA_UA, ZLIB_UA } from './userAgents'
 import { flushProgressSync, progress } from './progress'
 import { autoUpdateCheck } from './updateManager'
 import { registerIpc } from './ipc'
 import { buildBackupPayload } from './ipc/shared'
+import { installSystemProxyFetch } from './systemProxy'
 
 // Electron 45 的 app.isPackaged 在 `electron .` 启动时也返回 true（与 process.defaultApp 矛盾），
 // 继续用 !app.isPackaged 会把 dev 误判成打包态，导致 electron-vite dev 加载 out/renderer 的旧构建、HMR 失效。
 const isDev = process.defaultApp === true
+
+// 最小化 / 被其他软件遮挡时保持播放器解码与定时器：
+// - 不把渲染进程降到后台优先级
+// - 关闭 Windows 原生遮挡检测，避免 Chromium 把窗口标记为隐藏后暂停视频
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-background-timer-throttling')
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+
+// 主进程全局 fetch 跟随 Windows 系统代理（只开系统代理、没有 TUN 时也能联网）
+installSystemProxyFetch()
 
 // 图片缓存用的自定义协议必须在 app ready 之前注册
 registerImageCacheScheme()
@@ -121,6 +135,7 @@ function trayIconPath(): string | null {
 function showMainWindow(): void {
   const win = mainWindow
   if (!win || win.isDestroyed()) return
+  if (trayMusicWindow && !trayMusicWindow.isDestroyed()) trayMusicWindow.hide()
   if (win.isMinimized()) win.restore()
   win.show()
   win.focus()
@@ -132,6 +147,184 @@ function sendMusicCommand(command: 'toggle' | 'prev' | 'next'): void {
   if (!win || win.isDestroyed()) return
   win.webContents.send('music:command', command)
 }
+
+/* ---------------- 托盘悬停音乐浮窗 ---------------- */
+
+let trayMusicWindow: BrowserWindow | null = null
+let trayHideTimer: NodeJS.Timeout | null = null
+let trayPopupHovered = false
+/** 当前音乐播放状态；托盘浮窗按它切换播放 / 暂停图标 */
+let trayMusicPlaying = false
+
+const TRAY_POPUP_HTML = `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { padding: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; -webkit-user-select: none; user-select: none; }
+  .card {
+    height: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: rgba(22, 21, 28, .97); border: 1px solid rgba(255, 255, 255, .14);
+    border-radius: 14px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08); padding: 0 10px;
+  }
+  button {
+    width: 38px; height: 38px; border: 0; border-radius: 50%; background: transparent;
+    color: #d9d6ea; display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: background .15s ease, color .15s ease, transform .1s ease;
+  }
+  button:hover { background: rgba(139, 124, 255, .22); color: #fff; }
+  button:active { transform: scale(.93); }
+  button.main { width: 44px; height: 44px; background: #8b7cff; color: #fff; }
+  button.main:hover { background: #9c8fff; }
+  svg { pointer-events: none; }
+</style>
+</head>
+<body>
+<div class="card" id="card">
+  <button title="上一曲" aria-label="上一曲" data-cmd="prev">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg>
+  </button>
+  <button class="main" id="mainBtn" title="播放" aria-label="播放" data-cmd="toggle">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+  </button>
+  <button title="下一曲" aria-label="下一曲" data-cmd="next">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg>
+  </button>
+</div>
+<script>
+  for (const button of document.querySelectorAll('button[data-cmd]')) {
+    button.addEventListener('click', () => window.laozheng.trayMusic(button.dataset.cmd))
+  }
+  const setHover = (inside) => window.laozheng.trayPopupHover(inside)
+  document.body.addEventListener('mouseenter', () => setHover(true))
+  document.body.addEventListener('mouseleave', () => setHover(false))
+  const mainButton = document.getElementById('mainBtn')
+  const ICONS = {
+    playing: '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5h3v14H8zM13 5h3v14h-3z"/></svg>',
+    paused: '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>'
+  }
+  const setPlaying = (playing) => {
+    if (!mainButton) return
+    mainButton.innerHTML = playing ? ICONS.playing : ICONS.paused
+    mainButton.title = playing ? '暂停' : '播放'
+    mainButton.setAttribute('aria-label', mainButton.title)
+  }
+  if (window.laozheng.onTrayMusicState) window.laozheng.onTrayMusicState(setPlaying)
+</script>
+</body>
+</html>`
+
+function ensureTrayMusicWindow(): BrowserWindow | null {
+  if (trayMusicWindow && !trayMusicWindow.isDestroyed()) return trayMusicWindow
+  const win = new BrowserWindow({
+    width: 224,
+    height: 58,
+    show: false,
+    frame: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    focusable: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: false,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  })
+  win.setAlwaysOnTop(true, 'pop-up-menu')
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  // 浮窗只允许加载内置的 data: 页面，禁止被页面内容导航到远程地址（远程页会继承 preload）
+  win.webContents.on('will-navigate', (event) => event.preventDefault())
+  win.on('closed', () => {
+    if (trayMusicWindow === win) trayMusicWindow = null
+  })
+  win.webContents.once('did-finish-load', () => {
+    if (!win.isDestroyed()) win.webContents.send('tray:musicState', trayMusicPlaying)
+  })
+  void win.loadURL(
+    `data:text/html;charset=utf-8,${encodeURIComponent(TRAY_POPUP_HTML)}`
+  )
+  trayMusicWindow = win
+  return win
+}
+
+/** 浮窗贴在任务栏上方、跟着托盘图标水平居中 */
+function showTrayMusicWindow(): void {
+  if (trayHideTimer) {
+    clearTimeout(trayHideTimer)
+    trayHideTimer = null
+  }
+  // 悬停托盘时系统会弹出「老郑分享」名字气泡，和音乐控制窗重叠：浮窗显示期间先清空提示
+  tray?.setToolTip('')
+  const win = ensureTrayMusicWindow()
+  if (!win || win.isDestroyed()) return
+  const cursor = screen.getCursorScreenPoint()
+  const area = screen.getDisplayNearestPoint(cursor).workArea
+  const [width, height] = win.getSize()
+  const x = Math.round(
+    Math.min(Math.max(area.x + 8, cursor.x - width / 2), area.x + area.width - width - 8)
+  )
+  const y = Math.round(area.y + area.height - height - 6)
+  win.setBounds({ x, y, width, height })
+  if (!win.isVisible()) win.showInactive()
+  else win.moveTop()
+  // 页面已加载时同步一次状态，防止浮窗长时间隐藏期间错过播放状态变化
+  win.webContents.send('tray:musicState', trayMusicPlaying)
+}
+
+function scheduleHideTrayMusic(): void {
+  if (trayHideTimer) clearTimeout(trayHideTimer)
+  trayHideTimer = setTimeout(() => {
+    trayHideTimer = null
+    if (trayPopupHovered) return
+    if (trayMusicWindow && !trayMusicWindow.isDestroyed() && trayMusicWindow.isVisible()) {
+      trayMusicWindow.hide()
+      // 浮窗收起后恢复托盘名称提示
+      tray?.setToolTip('老郑分享')
+    }
+  }, 320)
+}
+
+// 浮窗里的按钮 / 鼠标进入状态：只接受浮窗自己的渲染进程发来的消息
+ipcMain.on('tray:music', (event, command: unknown) => {
+  if (!trayMusicWindow || event.sender !== trayMusicWindow.webContents) return
+  if (command !== 'toggle' && command !== 'prev' && command !== 'next') return
+  sendMusicCommand(command)
+  trayMusicWindow.hide()
+})
+
+ipcMain.on('tray:musicState', (event, playing: unknown) => {
+  // 主窗口的播放器是唯一状态源；浮窗自己的 preload 也暴露了该方法，这里要挡住
+  if (!mainWindow || event.sender !== mainWindow.webContents) return
+  trayMusicPlaying = playing === true
+  if (trayMusicWindow && !trayMusicWindow.isDestroyed()) {
+    trayMusicWindow.webContents.send('tray:musicState', trayMusicPlaying)
+  }
+})
+
+ipcMain.on('tray:hover', (event, inside: unknown) => {
+  if (!trayMusicWindow || event.sender !== trayMusicWindow.webContents) return
+  trayPopupHovered = inside === true
+  if (trayPopupHovered) {
+    if (trayHideTimer) {
+      clearTimeout(trayHideTimer)
+      trayHideTimer = null
+    }
+  } else {
+    scheduleHideTrayMusic()
+  }
+})
 
 /** 关闭按钮改为隐藏到右下角托盘，保证下载 / 播放不被误关；托盘菜单里可真正退出 */
 function ensureTray(): void {
@@ -148,15 +341,6 @@ function ensureTray(): void {
       { label: '隐藏到托盘', click: () => mainWindow?.hide() },
       { type: 'separator' },
       {
-        label: '音乐',
-        submenu: [
-          { label: '播放 / 暂停', click: () => sendMusicCommand('toggle') },
-          { label: '上一首', click: () => sendMusicCommand('prev') },
-          { label: '下一首', click: () => sendMusicCommand('next') }
-        ]
-      },
-      { type: 'separator' },
-      {
         label: '退出老郑分享',
         click: () => {
           quitting = true
@@ -167,6 +351,9 @@ function ensureTray(): void {
   )
   tray.on('click', () => showMainWindow())
   tray.on('double-click', () => showMainWindow())
+  // 鼠标移入托盘图标时弹出音乐浮窗，移出后自动收起
+  tray.on('mouse-enter', () => showTrayMusicWindow())
+  tray.on('mouse-leave', () => scheduleHideTrayMusic())
 }
 
 function hideToTray(): void {
@@ -190,9 +377,17 @@ function windowStateFile(): string {
 /** 启动时读取到的窗口位置 / 最大化状态；createWindow 同步使用 */
 let startupWindowState: WindowState = {}
 
+/** Windows 11 22H2（build 22621）起系统才支持 Acrylic 背景，旧系统继续用纯色窗口 */
+function supportsAcrylicBackground(): boolean {
+  if (process.platform !== 'win32') return false
+  const build = Number(process.getSystemVersion().split('.')[2] ?? 0)
+  return Number.isFinite(build) && build >= 22621
+}
+
 function createWindow(): BrowserWindow {
   const iconPath = trayIconPath()
   const restored = startupWindowState.bounds
+  const acrylic = supportsAcrylicBackground()
   const win = new BrowserWindow({
     ...(restored
       ? { x: restored.x, y: restored.y, width: restored.width, height: restored.height }
@@ -200,7 +395,21 @@ function createWindow(): BrowserWindow {
     minWidth: 960,
     minHeight: 640,
     show: false,
-    backgroundColor: '#141318',
+    // 支持 Acrylic 时让 Windows 在窗口后面绘制系统级毛玻璃，页面半透明处可透出桌面
+    ...(acrylic
+      ? { backgroundMaterial: 'acrylic' as const, backgroundColor: '#00000000' }
+      : { backgroundColor: '#141318' }),
+    // 隐藏系统标题栏，改用页面内的玻璃标题条；原生最小化 / 最大化 / 关闭按钮保留
+    ...(process.platform === 'win32'
+      ? {
+          titleBarStyle: 'hidden' as const,
+          titleBarOverlay: {
+            color: '#00000000',
+            symbolColor: '#8b7cff',
+            height: 34
+          }
+        }
+      : {}),
     title: '老郑分享',
     ...(iconPath ? { icon: iconPath } : {}),
     webPreferences: {
@@ -208,6 +417,8 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // 最小化 / 切到其他软件时视频与音频继续播放，不进入后台节流
+      backgroundThrottling: false,
       // 应用内阅读 PDF 需要 Chromium 内置 PDF 查看器
       plugins: true
     }
@@ -384,6 +595,10 @@ function applyRequestHeaders(
     } catch {
       // 非法 URL 交给默认处理
     }
+  } else if (/cdn-zlib\.|(^|\.)covers\.z-lib\.|(^|\.)z-lib\./.test(host)) {
+    // Z-Library 封面 CDN：补桌面 UA 与站点 Referer，部分节点缺了会回 403 / 521
+    headers['Referer'] = 'https://z-lib.sk/'
+    headers['User-Agent'] = ZLIB_UA
   } else if (/(^|\.)picacomic\.com$|(^|\.)go2778\.com$/.test(host)) {
     // 哔咔图床只校验 UA（不需要 token）
     headers['User-Agent'] = BIKA_UA
@@ -527,10 +742,18 @@ if (!gotLock) {
   app.on('will-quit', () => {
     // 播放进度独立存储：真正退出前同步落盘，避免最后一次进度丢失
     flushProgressSync()
+    // 未完成下载队列有 600ms 防抖：退出前同步落盘，暂停 / 取消状态才不会回滚
+    flushPersistTasksSync()
     if (mediaPowerBlockerId !== null) {
       powerSaveBlocker.stop(mediaPowerBlockerId)
       mediaPowerBlockerId = null
     }
+    if (trayHideTimer) {
+      clearTimeout(trayHideTimer)
+      trayHideTimer = null
+    }
+    if (trayMusicWindow && !trayMusicWindow.isDestroyed()) trayMusicWindow.destroy()
+    trayMusicWindow = null
     tray?.destroy()
     tray = null
   })
@@ -553,15 +776,18 @@ if (!gotLock) {
     await initLiveAuth()
     await initDoubanAuth()
     setupRequestRules()
-    setupImageCacheHandler((url) => {
-      // 兜底 UA 必须带上：部分图床（如 chaoxing）对没有 UA 的请求直接 403 / 404
-      const headers: Record<string, string> = {
-        Accept: 'image/*,*/*;q=0.8',
-        'User-Agent': VOD_UA
-      }
-      applyRequestHeaders(url, 'image', headers)
-      return headers
-    })
+    setupImageCacheHandler(
+      (url) => {
+        // 兜底 UA 必须带上：部分图床（如 chaoxing）对没有 UA 的请求直接 403 / 404
+        const headers: Record<string, string> = {
+          Accept: 'image/*,*/*;q=0.8',
+          'User-Agent': VOD_UA
+        }
+        applyRequestHeaders(url, 'image', headers)
+        return headers
+      },
+      (url) => zlibImageFetch(url)
+    )
     registerIpc()
     try {
       await startMediaServer()
@@ -582,6 +808,8 @@ if (!gotLock) {
       // 种子大文件解析（软件经验 / 演唱默认视频）与每日快照放到首屏之后，
       // 避免 1.2MB JSON 解析和写盘与开窗抢时间；失败只记日志，下次启动再补。
       setTimeout(() => {
+        // 空闲清理：中断写入残留的 *.tmp、旧版硬件缓存、图片 / 接口缓存临时文件
+        void cleanupStaleUserDataFiles()
         void syncSeedExtras()
           .then((changed) => {
             // 新版首次启动：种子里的标题 / 使用经验在开窗后才合并，

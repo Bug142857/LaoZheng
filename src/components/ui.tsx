@@ -347,7 +347,7 @@ export function Modal({
         onClick={(e) => e.stopPropagation()}
       >
         <h3>{title}</h3>
-        {children}
+        <div className="modal-body">{children}</div>
         <div className="modal-actions">{footer}</div>
       </div>
     </div>

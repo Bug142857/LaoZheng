@@ -21,8 +21,8 @@ function strictCspPlugin() {
 
 export default defineConfig({
   main: {
-    // node-html-parser / adm-zip / iconv-lite 打进主进程 bundle：安装包 files 只含 out/**，避免依赖漏打包
-    plugins: [externalizeDepsPlugin({ exclude: ['node-html-parser', 'adm-zip', 'iconv-lite'] })],
+    // node-html-parser / adm-zip / iconv-lite / undici 打进主进程 bundle：安装包 files 只含 out/**，避免依赖漏打包
+    plugins: [externalizeDepsPlugin({ exclude: ['node-html-parser', 'adm-zip', 'iconv-lite', 'undici'] })],
     build: {
       rollupOptions: {
         input: { index: resolve(__dirname, 'electron/main.ts') }

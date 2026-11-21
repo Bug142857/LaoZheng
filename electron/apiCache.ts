@@ -38,6 +38,28 @@ const inflight = new Map<string, Promise<unknown>>()
 const forced = new Map<string, number>()
 const FORCE_WINDOW_MS = 8_000
 /**
+ * 源测试的缓存旁路：窗口期内完全跳过缓存，也不在失败时回退旧缓存，
+ * 避免「第一次测到旧缓存 / 旧成功结果，第二次才测到真实状态」。
+ * prefixes 为空时全局旁路；传了前缀就只影响被测模块，批量测试不再拖慢其他页面。
+ */
+const bypasses: { until: number; prefixes: string[] }[] = []
+
+export function beginApiCacheBypass(ms = 15_000, prefixes: string[] = []): void {
+  // 多模块同时测试时不能互相覆盖：按前缀合并，各自到期后自动失效
+  bypasses.push({ until: Date.now() + ms, prefixes: prefixes.slice(0, 20) })
+  if (bypasses.length > 8) bypasses.splice(0, bypasses.length - 8)
+}
+
+function isBypassing(key: string): boolean {
+  const now = Date.now()
+  for (let i = bypasses.length - 1; i >= 0; i--) {
+    if (now >= bypasses[i].until) bypasses.splice(i, 1)
+  }
+  return bypasses.some(
+    (item) => item.prefixes.length === 0 || item.prefixes.some((prefix) => key.startsWith(prefix))
+  )
+}
+/**
  * 缓存代次：导入 / 云恢复 / 清理缓存时递增。
  * 清理前发出的请求可能晚于清理才返回，不带代次校验会把旧结果重新写回内存和磁盘。
  */
@@ -138,6 +160,23 @@ async function trimDiskCache(): Promise<void> {
     }
   }
   diskBytes = total
+}
+
+/** 启动时清理中断写入留下的临时文件；只删超过 maxAgeMs 的，避免误删正在写的缓存 */
+export async function cleanupStaleApiCacheTemps(maxAgeMs = 60 * 60_000): Promise<number> {
+  let removed = 0
+  const now = Date.now()
+  for (const file of await listDiskCacheFiles()) {
+    if (!file.path.endsWith('.tmp')) continue
+    if (now - file.mtimeMs < maxAgeMs) continue
+    try {
+      await unlink(file.path)
+      removed += 1
+    } catch {
+      // 文件可能已被其他清理流程删除
+    }
+  }
+  return removed
 }
 
 function scheduleDiskTrim(): void {
@@ -287,6 +326,12 @@ export async function cachedResponse<T>(
   const now = Date.now()
   // 本次请求开始时的代次：加载期间缓存被清理过就不再写回
   const at = epoch
+  // 源测试旁路：必须拿到真实结果，不读缓存、失败也不回退旧缓存
+  if (isBypassing(key)) {
+    const value = await load()
+    if (!isFailure(value)) void store(key, value, at)
+    return value
+  }
   // 用户刚点了刷新：这次必须拿新数据，失败时才退回旧缓存
   if (isForced(key)) {
     try {

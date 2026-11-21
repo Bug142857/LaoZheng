@@ -1,8 +1,18 @@
 import { app } from 'electron'
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { readFile, writeFile, rename, mkdir, rm } from 'node:fs/promises'
+import { readFile, writeFile, rename, mkdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { AppData, EMPTY_DATA, mergeLocalPcFields, normalizeData, stripNullFields } from '../src/shared/types'
+import {
+  AppData,
+  EMPTY_DATA,
+  mergeLocalPcFields,
+  missingLocalPcFields,
+  normalizeData,
+  stripNullFields
+} from '../src/shared/types'
+
+/** 导入备份体积上限：超过直接拒绝，避免整份读进内存把主进程撑爆 */
+const MAX_IMPORT_BYTES = 200 * 1024 * 1024
 
 /** 数据文件固定放在 app.getPath('userData') 下，便于备份与排查 */
 export function dataFilePath(): string {
@@ -163,7 +173,16 @@ export async function writeJsonAtomic(file: string, value: unknown): Promise<voi
 }
 
 /** 从手机端导出的 JSON 读取（格式 version 1，必须有 items / lists / listItems） */
-export async function importFromFile(file: string): Promise<AppData> {
+export async function importFromFile(
+  file: string
+): Promise<{ data: AppData; missingLocalFields: string[] }> {
+  const size = await stat(file).then(
+    (info) => info.size,
+    () => 0
+  )
+  if (size > MAX_IMPORT_BYTES) {
+    throw new Error('备份文件超过 200MB，已拒绝导入')
+  }
   // 有些编辑器保存 UTF-8 JSON 时会带 BOM，先去掉再解析
   const text = (await readFile(file, 'utf8')).replace(/^\uFEFF/, '')
   const raw = JSON.parse(text) as Record<string, unknown>
@@ -172,7 +191,10 @@ export async function importFromFile(file: string): Promise<AppData> {
     throw new Error('不是有效的备份文件（items / lists / listItems 必须是数组）')
   }
   // 手机端 / 旧版备份缺的 PC 扩展字段保留本机现值，避免导入后本地快捷方式 / 使用经验被清空
-  return mergeLocalPcFields(raw, normalizeData(raw), await loadData())
+  return {
+    data: mergeLocalPcFields(raw, normalizeData(raw), await loadData()),
+    missingLocalFields: missingLocalPcFields(raw)
+  }
 }
 
 /** 导出为手机端可识别的 JSON（字段与 Android ExportJson.kt 一致） */

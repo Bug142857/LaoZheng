@@ -484,12 +484,12 @@ export function DownloadsPage({
                                 .filter(Boolean)
                                 .join(' · ')}
                     </span>
-                    {task.state === 'running' || task.state === 'queued' ? (
+                    {!task.external && (task.state === 'running' || task.state === 'queued') ? (
                       <button className="icon-btn" title="暂停下载" onClick={() => void pause(task.id)}>
                         <Pause size={14} />
                       </button>
                     ) : null}
-                    {task.state === 'paused' ? (
+                    {!task.external && task.state === 'paused' ? (
                       <button className="icon-btn" title="继续下载" onClick={() => void resume(task.id)}>
                         <Play size={14} />
                       </button>

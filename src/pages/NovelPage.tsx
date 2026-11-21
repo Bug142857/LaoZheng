@@ -52,20 +52,18 @@ const EMPTY_NOVEL_CACHE: NovelListCache = {
   loaded: false
 }
 
-/** 阅读器排版：字号 / 行距 / 页宽 / 背景，按本机持久化（localStorage） */
+/** 阅读器排版：字号 / 行距 / 页宽，按本机持久化（localStorage） */
 interface ReaderSettings {
   fontSize: number
   lineHeight: number
   width: number
-  theme: 'dark' | 'paper' | 'green'
 }
 
 const READER_SETTINGS_KEY = 'lz-novel-reader'
 const DEFAULT_READER_SETTINGS: ReaderSettings = {
   fontSize: 16,
   lineHeight: 1.95,
-  width: 860,
-  theme: 'dark'
+  width: 860
 }
 
 function loadReaderSettings(): ReaderSettings {
@@ -75,12 +73,10 @@ function loadReaderSettings(): ReaderSettings {
     const fontSize = Number(raw.fontSize)
     const lineHeight = Number(raw.lineHeight)
     const width = Number(raw.width)
-    const theme = raw.theme === 'paper' || raw.theme === 'green' ? raw.theme : 'dark'
     return {
       fontSize: Number.isFinite(fontSize) ? Math.min(26, Math.max(13, fontSize)) : 16,
       lineHeight: Number.isFinite(lineHeight) ? Math.min(2.6, Math.max(1.4, lineHeight)) : 1.95,
-      width: Number.isFinite(width) ? Math.min(1200, Math.max(600, width)) : 860,
-      theme
+      width: Number.isFinite(width) ? Math.min(1200, Math.max(600, width)) : 860
     }
   } catch {
     return DEFAULT_READER_SETTINGS
@@ -828,24 +824,6 @@ export function NovelPage({
               />
               <span>{readerSettings.width}px</span>
             </label>
-            <div className="reader-theme-group">
-              <span>背景</span>
-              {(
-                [
-                  ['dark', '深色'],
-                  ['paper', '米黄'],
-                  ['green', '护眼']
-                ] as const
-              ).map(([value, label]) => (
-                <button
-                  key={value}
-                  className={`chip${readerSettings.theme === value ? ' active' : ''}`}
-                  onClick={() => setReaderSettings((prev) => ({ ...prev, theme: value }))}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
           </div>
         ) : null}
 
@@ -864,7 +842,7 @@ export function NovelPage({
         ) : (
           <>
             <article
-              className={`novel-content reader-${readerSettings.theme}`}
+              className="novel-content"
               style={{
                 fontSize: readerSettings.fontSize,
                 lineHeight: readerSettings.lineHeight,

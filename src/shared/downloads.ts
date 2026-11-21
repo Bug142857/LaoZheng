@@ -57,6 +57,8 @@ export interface DownloadTask {
   /** 预计剩余秒数 */
   eta?: number
   error?: string
+  /** 外部模块（Z-Library 等）直接写入磁盘的任务：只展示进度，不占并发名额、不落盘、不能暂停 */
+  external?: boolean
 }
 
 export interface DownloadListResponse {

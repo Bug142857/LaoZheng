@@ -37,7 +37,7 @@ import {
 
 
 
-import { fetchMusicTop, resolveMusic, searchMusic, testMusicSource } from '../music'
+import { fetchMusicLyric, fetchMusicTop, resolveMusic, searchMusic, testMusicSource } from '../music'
 import type { MusicSourceInput } from '../../src/shared/music'
 
 
@@ -731,6 +731,13 @@ export function registerMediaIpc(): void {
       name: typeof input.name === 'string' ? input.name : '',
       baseUrl
     })
+  })
+
+  ipcMain.handle('music:lyric', (_e, input: { songId?: unknown }) => {
+    if (!input || typeof input !== 'object') return { ok: false, error: '参数无效' }
+    const songId = typeof input.songId === 'string' ? input.songId.trim() : ''
+    if (!songId || songId.length > 4000) return { ok: false, error: '歌曲参数无效' }
+    return fetchMusicLyric(songId)
   })
 
   ipcMain.handle('music:saveLyrics', (_e, input: { title?: unknown; artists?: unknown; lrc?: unknown }) => {

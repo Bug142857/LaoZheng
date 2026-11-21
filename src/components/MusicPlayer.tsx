@@ -498,6 +498,57 @@ export function MusicPlayerProvider({ children }: { children: ReactNode }) {
     })
   }, [next, prev, toggle])
 
+  // 把播放状态同步给托盘浮窗，浮窗图标随播放 / 暂停切换
+  useEffect(() => {
+    window.laozheng.trayMusicState(playing)
+  }, [playing])
+
+  // 空格：优先暂停 / 播放当前可见的视频播放器，没有视频时控制音乐
+  useEffect(() => {
+    const isTyping = (element: Element | null): boolean => {
+      if (!(element instanceof HTMLElement)) return false
+      const tag = element.tagName.toLowerCase()
+      return (
+        tag === 'input' ||
+        tag === 'textarea' ||
+        tag === 'select' ||
+        element.isContentEditable
+      )
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.code !== 'Space' || event.repeat) return
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+      if (isTyping(event.target as Element | null)) return
+      const active = document.activeElement
+      if (active instanceof HTMLElement) {
+        if (isTyping(active)) return
+        const tag = active.tagName.toLowerCase()
+        // 按钮 / 链接自己会响应空格；播放器内部交给 ArtPlayer 的快捷键
+        if (tag === 'button' || tag === 'a' || active.closest('.art-video-player')) return
+      }
+      const video = Array.from(document.querySelectorAll('video')).find((item) => {
+        if (!item.isConnected || !item.currentSrc) return false
+        return item.getClientRects().length > 0
+      })
+      if (video) {
+        // ArtPlayer 自带 hotkey 也监听 Space（document 冒泡）；这里捕获阶段拦下，
+        // 否则点过播放器后两个处理器各切一次，空格会看起来没反应
+        event.preventDefault()
+        event.stopPropagation()
+        if (video.paused) void video.play().catch(() => undefined)
+        else video.pause()
+        return
+      }
+      if (current) {
+        event.preventDefault()
+        event.stopPropagation()
+        toggle()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [current, toggle])
+
   // Windows 媒体键 / 系统媒体浮层：标题、封面与播放控制
   useEffect(() => {
     if (!('mediaSession' in navigator)) return

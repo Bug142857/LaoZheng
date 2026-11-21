@@ -39,9 +39,12 @@ import { ListManagerSection } from './ListManagerSection'
 import {
   ACCENT_OPTIONS,
   DEFAULT_UI_SETTINGS,
+  GLASS_OPTIONS,
   THEME_OPTIONS,
+  glassAlphaValue,
   saveUiSettings,
-  syncUiSettings
+  syncUiSettings,
+  windowAlphaValue
 } from '../utils/theme'
 
 const ACCOUNT_STATE_LABEL: Record<string, string> = {
@@ -129,6 +132,7 @@ export function SettingsPage({
   const [downloadDir, setDownloadDir] = useState('')
   const [downloadStats, setDownloadStats] = useState({ count: 0, bytes: 0 })
   const [pendingImport, setPendingImport] = useState<AppData | null>(null)
+  const [pendingImportMissing, setPendingImportMissing] = useState<string[]>([])
   const [snapshots, setSnapshots] = useState<DataSnapshotInfo[]>([])
   const [restoreTarget, setRestoreTarget] = useState<string | null>(null)
   const [restoring, setRestoring] = useState(false)
@@ -140,6 +144,7 @@ export function SettingsPage({
   const [syncPass, setSyncPass] = useState('')
   const [syncBusy, setSyncBusy] = useState<string | null>(null)
   const [pendingSync, setPendingSync] = useState<AppData | null>(null)
+  const [pendingSyncMissing, setPendingSyncMissing] = useState<string[]>([])
   const [uploadConflictAt, setUploadConflictAt] = useState<number | null>(null)
   const [zlib, setZlib] = useState<ZlibStatusResponse | null>(null)
   const [zlibBusy, setZlibBusy] = useState(false)
@@ -149,6 +154,8 @@ export function SettingsPage({
   const [doubanBusy, setDoubanBusy] = useState(false)
   const [logoutDoubanOpen, setLogoutDoubanOpen] = useState(false)
   const [ui, setUi] = useState<UiSettings>(DEFAULT_UI_SETTINGS)
+  /** 透明度滑杆拖动中的临时值：先实时预览，松手再落盘 */
+  const [glassDraft, setGlassDraft] = useState<number | null>(null)
   const [cache, setCache] = useState<CacheInfo | null>(null)
   const [clearOpen, setClearOpen] = useState(false)
   const [clearing, setClearing] = useState(false)
@@ -271,8 +278,17 @@ export function SettingsPage({
   }
 
   const changeUi = async (patch: Partial<UiSettings>) => {
+    if (patch.glassEffect !== undefined) setGlassDraft(null)
     const next = await saveUiSettings(patch)
     setUi(next)
+  }
+
+  /** 滑杆松手 / 失焦时再写设置，避免拖动过程每次像素都落盘 */
+  const commitGlassTransparency = () => {
+    if (glassDraft === null) return
+    const value = glassDraft
+    setGlassDraft(null)
+    void changeUi({ glassTransparency: value })
   }
 
   const doImport = async () => {
@@ -282,17 +298,21 @@ export function SettingsPage({
       onNotice(`导入失败：${res.error}`)
       return
     }
-    if (res.data) setPendingImport(res.data)
+    if (res.data) {
+      setPendingImport(res.data)
+      setPendingImportMissing(res.missingLocalFields ?? [])
+    }
   }
 
   const confirmImport = async () => {
     if (!pendingImport) return
     const imported = pendingImport
     try {
-      await replaceData(imported)
+      await replaceData(imported, 'import', pendingImportMissing)
     } catch (err) {
       onNotice(`导入已取消：${(err as Error).message}`)
       setPendingImport(null)
+      setPendingImportMissing([])
       return
     }
     setUi(await window.laozheng.getUiSettings())
@@ -301,6 +321,7 @@ export function SettingsPage({
       `已导入：${imported.items.length} 个条目 / ${imported.lists.length} 个清单 / ${imported.innerFavs.length} 条收藏（覆盖前已留本地快照）`
     )
     setPendingImport(null)
+    setPendingImportMissing([])
     void refreshSnapshots()
   }
 
@@ -352,7 +373,10 @@ export function SettingsPage({
       onNotice(res.message)
       return
     }
-    if (res.data) setPendingSync(res.data as AppData)
+    if (res.data) {
+      setPendingSync(res.data as AppData)
+      setPendingSyncMissing(res.missingLocalFields ?? [])
+    }
   }
 
   const refreshZlib = async () => {
@@ -451,10 +475,11 @@ export function SettingsPage({
     if (!pendingSync) return
     const restored = pendingSync
     try {
-      await replaceData(restored, 'sync')
+      await replaceData(restored, 'sync', pendingSyncMissing)
     } catch (err) {
       onNotice(`恢复已取消：${(err as Error).message}`)
       setPendingSync(null)
+      setPendingSyncMissing([])
       return
     }
     setUi(await window.laozheng.getUiSettings())
@@ -463,6 +488,7 @@ export function SettingsPage({
       `已从云端恢复：${restored.items.length} 个条目 / ${restored.lists.length} 个清单 / ${restored.innerFavs.length} 条收藏（覆盖前已留本地快照）`
     )
     setPendingSync(null)
+    setPendingSyncMissing([])
     void refreshSnapshots()
   }
 
@@ -476,7 +502,7 @@ export function SettingsPage({
         onNotice(`恢复快照失败：${res.error ?? '未知错误'}`)
         return
       }
-      await replaceData(res.data, 'snapshot')
+      await replaceData(res.data, 'snapshot', res.missingLocalFields ?? [])
       setUi(await window.laozheng.getUiSettings())
       setDownloadDir(await window.laozheng.downloadRoot())
       onNotice(`已恢复本地快照（${restoreTarget}）`)
@@ -719,6 +745,57 @@ export function SettingsPage({
                   ))}
                 </div>
               </section>
+
+              <section className="settings-card">
+                <h3>界面效果</h3>
+                <p className="settings-hint">
+                  Windows 11 22H2 及以上会用系统 Acrylic：开启后拖动「透明度」可透出桌面；旧系统只调节面板透明度。
+                </p>
+                <div className="toolbar" style={{ marginBottom: 0 }}>
+                  {GLASS_OPTIONS.map((option) => (
+                    <button
+                      key={option.key}
+                      className={`chip ${ui.glassEffect === option.key ? 'active' : ''}`}
+                      onClick={() => void changeUi({ glassEffect: option.key })}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                {ui.glassEffect === 'on' ? (
+                  <div className="glass-slider">
+                    <span className="glass-slider-label">透明度</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={glassDraft ?? ui.glassTransparency}
+                      aria-label="毛玻璃透明度"
+                      onChange={(e) => {
+                        const value = Number(e.target.value)
+                        setGlassDraft(value)
+                        document.documentElement.style.setProperty(
+                          '--glass-alpha',
+                          String(glassAlphaValue(value))
+                        )
+                        document.documentElement.style.setProperty(
+                          '--window-alpha',
+                          String(windowAlphaValue(value))
+                        )
+                      }}
+                      onPointerUp={commitGlassTransparency}
+                      onKeyUp={commitGlassTransparency}
+                      onBlur={commitGlassTransparency}
+                    />
+                    <span className="glass-slider-value">{glassDraft ?? ui.glassTransparency}%</span>
+                  </div>
+                ) : (
+                  <p className="settings-hint" style={{ margin: '10px 0 0' }}>
+                    毛玻璃已关闭，界面使用纯色表面。
+                  </p>
+                )}
+              </section>
             </div>
           )}
 
@@ -787,7 +864,7 @@ export function SettingsPage({
                 <p className="settings-hint">
                   与手机端共用同一份备份格式（version 1）。PC 端额外带上电视源、磁力源、
                   下载记录、本机设置（主题 / 下载目录 / 各对话框上次位置），手机端会自动忽略这些字段。
-                  导入会覆盖本机当前数据；导出生成手机端可直接识别的 JSON。
+                  导入会覆盖本机当前数据（下载记录不导入，本机下载记录保持不变）；导出生成手机端可直接识别的 JSON。
                   豆瓣与各站登录态、WebDAV 密码属于本机加密凭据，不写入备份。
                 </p>
                 <div className="settings-row">
@@ -992,10 +1069,8 @@ export function SettingsPage({
           message={`将用备份覆盖本机数据：\n${pendingImport.items.length} 个条目 · ${pendingImport.lists.length} 个清单 · ${pendingImport.innerFavs.length} 条收藏 · ${pendingImport.vodSources.length} 个片源${
             pendingImport.liveSources ? ` · ${pendingImport.liveSources.length} 个电视源` : ''
           }${pendingImport.magnetSources ? ` · ${pendingImport.magnetSources.length} 个磁力源` : ''}${
-            pendingImport.downloads ? ` · ${pendingImport.downloads.length} 条下载记录` : ''
-          }${pendingImport.settings ? ' · 本机设置' : ''}${
-            pendingImport.magnetSearch ? ' · 磁力搜索缓存' : ''
-          }\n\n当前本机数据会被替换，建议先导出一份备份。`}
+            pendingImport.settings ? ' · 本机设置' : ''
+          }${pendingImport.magnetSearch ? ' · 磁力搜索缓存' : ''}\n\n当前本机数据会被替换（下载记录不导入，保持不变），建议先导出一份备份。`}
           confirmText="覆盖导入"
           danger
           onConfirm={confirmImport}
@@ -1023,10 +1098,8 @@ export function SettingsPage({
           message={`将用云端备份覆盖本机数据：\n${pendingSync.items.length} 个条目 · ${pendingSync.lists.length} 个清单 · ${pendingSync.innerFavs.length} 条收藏 · ${pendingSync.vodSources.length} 个片源${
             pendingSync.liveSources ? ` · ${pendingSync.liveSources.length} 个电视源` : ''
           }${pendingSync.magnetSources ? ` · ${pendingSync.magnetSources.length} 个磁力源` : ''}${
-            pendingSync.downloads ? ` · ${pendingSync.downloads.length} 条下载记录` : ''
-          }${pendingSync.settings ? ' · 本机设置' : ''}${
-            pendingSync.magnetSearch ? ' · 磁力搜索缓存' : ''
-          }\n\n当前本机数据会被替换，建议先点「上传到云端」保留一份。`}
+            pendingSync.settings ? ' · 本机设置' : ''
+          }${pendingSync.magnetSearch ? ' · 磁力搜索缓存' : ''}\n\n当前本机数据会被替换（下载记录不导入，保持不变），建议先点「上传到云端」保留一份。`}
           confirmText="覆盖恢复"
           danger
           onConfirm={confirmSyncImport}

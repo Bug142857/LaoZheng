@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Download,
   Pencil,
@@ -76,7 +76,7 @@ import {
   SourceEditModal,
   TrainerSourceModal
 } from './SourceSettingsModals'
-import { probeLatency, testMsgText, withMs } from './sourceSettings/sourceTest'
+import { runSourceTest, testMsgText, withMs } from './sourceSettings/sourceTest'
 import {
   PreferredSortButton,
   SourceCard,
@@ -169,6 +169,42 @@ function newLiveSourceId(url: string): string {
  * 影视源、电视源、短剧源、磁力源统一在这里维护，模块页只负责播放。
  * 四张卡片默认全部折叠，标题右侧显示数量统计。
  */
+/**
+ * 测试中的源 id 集合：整体测试会并发 3~6 个，
+ * 原来共用一个 id 只能显示最后一个，且单个测试结束会把其他飞行中的状态一起清掉。
+ */
+function useTestingIds(): {
+  ids: Set<string>
+  mark: (id: string) => void
+  clear: (id: string) => void
+  clearAll: () => void
+} {
+  const [ids, setIds] = useState<Set<string>>(() => new Set<string>())
+  const mark = useCallback((id: string) => {
+    setIds((prev) => {
+      if (prev.has(id)) return prev
+      const next = new Set(prev)
+      next.add(id)
+      return next
+    })
+  }, [])
+  const clear = useCallback((id: string) => {
+    setIds((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
+  const clearAll = useCallback(() => setIds(new Set<string>()), [])
+  return { ids, mark, clear, clearAll }
+}
+
+/**
+ * 片源管理（配置管理 → 片源管理）：
+ * 影视源、电视源、短剧源、磁力源统一在这里维护，模块页只负责播放。
+ * 四张卡片默认全部折叠，标题右侧显示数量统计。
+ */
 export function SourceSettings({ onNotice }: { onNotice: (text: string) => void }) {
   const { data, update } = useData()
   const sources = data.vodSources
@@ -179,7 +215,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   const [editing, setEditing] = useState<VodSource | 'new' | null>(null)
   const [importing, setImporting] = useState(false)
   const [deleting, setDeleting] = useState<VodSource | null>(null)
-  const [testingId, setTestingId] = useState<string | null>(null)
+  const vodTesting = useTestingIds()
   const [testingAll, setTestingAll] = useState(false)
 
   const [liveSources, setLiveSources] = useState<LiveSource[] | null>(null)
@@ -187,27 +223,27 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   const [addingLive, setAddingLive] = useState(false)
   const [editingLive, setEditingLive] = useState<LiveSource | null>(null)
   const [deletingLive, setDeletingLive] = useState<LiveSource | null>(null)
-  const [testingLiveId, setTestingLiveId] = useState<string | null>(null)
+  const liveTesting = useTestingIds()
   const [testingLiveAll, setTestingLiveAll] = useState(false)
 
   const [editingDrama, setEditingDrama] = useState<DramaSource | 'new' | null>(null)
   const [importingDrama, setImportingDrama] = useState(false)
   const [deletingDrama, setDeletingDrama] = useState<DramaSource | null>(null)
-  const [testingDramaId, setTestingDramaId] = useState<string | null>(null)
+  const dramaTesting = useTestingIds()
   const [testingDramaAll, setTestingDramaAll] = useState(false)
 
   const [novelOpen, setNovelOpen] = useState(false)
   const [editingNovel, setEditingNovel] = useState<NovelSource | 'new' | null>(null)
   const [importingNovel, setImportingNovel] = useState(false)
   const [deletingNovel, setDeletingNovel] = useState<NovelSource | null>(null)
-  const [testingNovelId, setTestingNovelId] = useState<string | null>(null)
+  const novelTesting = useTestingIds()
   const [testingNovelAll, setTestingNovelAll] = useState(false)
 
   const [comicOpen, setComicOpen] = useState(false)
   const [editingComic, setEditingComic] = useState<ComicSource | 'new' | null>(null)
   const [importingComic, setImportingComic] = useState(false)
   const [deletingComic, setDeletingComic] = useState<ComicSource | null>(null)
-  const [testingComicId, setTestingComicId] = useState<string | null>(null)
+  const comicTesting = useTestingIds()
   const [testingComicAll, setTestingComicAll] = useState(false)
 
   const [livePlatformOpen, setLivePlatformOpen] = useState(false)
@@ -216,22 +252,22 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   )
   const [importingLivePlatform, setImportingLivePlatform] = useState(false)
   const [deletingLivePlatform, setDeletingLivePlatform] = useState<LivePlatformSource | null>(null)
-  const [testingLivePlatformId, setTestingLivePlatformId] = useState<string | null>(null)
+  const livePlatformTesting = useTestingIds()
   const [testingLivePlatformAll, setTestingLivePlatformAll] = useState(false)
 
   const [trainerOpen, setTrainerOpen] = useState(false)
   const [editingTrainer, setEditingTrainer] = useState<TrainerSource | 'new' | null>(null)
   const [importingTrainer, setImportingTrainer] = useState(false)
   const [deletingTrainer, setDeletingTrainer] = useState<TrainerSource | null>(null)
-  const [testingTrainerId, setTestingTrainerId] = useState<string | null>(null)
+  const trainerTesting = useTestingIds()
   const [testingTrainerAll, setTestingTrainerAll] = useState(false)
 
   const [musicOpen, setMusicOpen] = useState(false)
   const [editingMusic, setEditingMusic] = useState<MusicSource | 'new' | null>(null)
   const [importingMusic, setImportingMusic] = useState(false)
   const [deletingMusic, setDeletingMusic] = useState<MusicSource | null>(null)
-  const [testingMusicId, setTestingMusicId] = useState<string | null>(null)
-  const [testingMusicBackupId, setTestingMusicBackupId] = useState<string | null>(null)
+  const musicTesting = useTestingIds()
+  const musicBackupTesting = useTestingIds()
   const [testingMusicAll, setTestingMusicAll] = useState(false)
   /** 全部源导入后让磁力源卡片重新读取主进程配置 */
   const [magnetKey, setMagnetKey] = useState(0)
@@ -344,26 +380,32 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const testSource = async (source: VodSource) => {
-    setTestingId(source.id)
-    const latency = probeLatency(source.baseUrl)
-    const res = await window.laozheng.testVodSource(toInput(source))
-    const message = withMs(res.message, await latency)
-    update((d) => ({
-      ...d,
-      vodSources: d.vodSources.map((s) =>
-        s.id === source.id
-          ? {
-              ...s,
-              testStatus: res.status,
-              testMsg: message,
-              testAt: res.testAt,
-              region: s.regionManual ? s.region : res.region
-            }
-          : s
+    vodTesting.mark(source.id)
+    try {
+      const { result: res, ms } = await runSourceTest(
+        () => window.laozheng.testVodSource(toInput(source)),
+        (result) => result.status === 'ok',
+        'vod'
       )
-    }))
-    setTestingId(null)
-    onNotice(`${source.name}：${message}`)
+      const message = withMs(res.message, ms)
+      update((d) => ({
+        ...d,
+        vodSources: d.vodSources.map((s) =>
+          s.id === source.id
+            ? {
+                ...s,
+                testStatus: res.status,
+                testMsg: message,
+                testAt: res.testAt,
+                region: s.regionManual ? s.region : res.region
+              }
+            : s
+        )
+      }))
+      onNotice(`${source.name}：${message}`)
+    } finally {
+      vodTesting.clear(source.id)
+    }
   }
 
   const testAllSources = async () => {
@@ -376,31 +418,41 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       for (;;) {
         const source = queue.shift()
         if (!source) return
-        setTestingId(source.id)
-        const latency = probeLatency(source.baseUrl)
-        const res = await window.laozheng.testVodSource(toInput(source))
-        if (res.status === 'ok') ok += 1
-        else bad += 1
-        const message = withMs(res.message, await latency)
-        update((d) => ({
-          ...d,
-          vodSources: d.vodSources.map((s) =>
-            s.id === source.id
-              ? {
-                  ...s,
-                  testStatus: res.status,
-                  testMsg: message,
-                  testAt: res.testAt,
-                  region: s.regionManual ? s.region : res.region
-                }
-              : s
+        vodTesting.mark(source.id)
+        try {
+          const { result: res, ms } = await runSourceTest(
+            () => window.laozheng.testVodSource(toInput(source)),
+            (result) => result.status === 'ok',
+            'vod'
           )
-        }))
+          if (res.status === 'ok') ok += 1
+          else bad += 1
+          const message = withMs(res.message, ms)
+          update((d) => ({
+            ...d,
+            vodSources: d.vodSources.map((s) =>
+              s.id === source.id
+                ? {
+                    ...s,
+                    testStatus: res.status,
+                    testMsg: message,
+                    testAt: res.testAt,
+                    region: s.regionManual ? s.region : res.region
+                  }
+                : s
+            )
+          }))
+        } finally {
+          vodTesting.clear(source.id)
+        }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker))
-    setTestingId(null)
-    setTestingAll(false)
+    try {
+      await Promise.all(Array.from({ length: Math.min(6, queue.length) }, worker))
+    } finally {
+      vodTesting.clearAll()
+      setTestingAll(false)
+    }
     onNotice(`整体测试完成：有效 ${ok} 个 · 无效 ${bad} 个`)
   }
 
@@ -539,24 +591,30 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const testDramaSource = async (source: DramaSource): Promise<void> => {
-    setTestingDramaId(source.id)
-    const latency = probeLatency(source.baseUrl)
-    const res = await window.laozheng.dramaCatalog(toDramaInput(source), '', 1, '')
-    const status = res.ok ? 'ok' : 'failed'
-    const message = withMs(
-      res.ok ? `可用 · 返回 ${res.items.length} 部` : res.error ?? '不可用',
-      await latency
-    )
-    update((d) => ({
-      ...d,
-      dramaSources: d.dramaSources.map((s) =>
-        s.id === source.id
-          ? { ...s, testStatus: status, testMsg: message, testAt: Date.now() }
-          : s
+    dramaTesting.mark(source.id)
+    try {
+      const { result: res, ms } = await runSourceTest(
+        () => window.laozheng.dramaCatalog(toDramaInput(source), '', 1, ''),
+        (result) => result.ok,
+        'drama'
       )
-    }))
-    setTestingDramaId(null)
-    onNotice(`${source.name}：${message}`)
+      const status = res.ok ? 'ok' : 'failed'
+      const message = withMs(
+        res.ok ? `可用 · 返回 ${res.items.length} 部` : res.error ?? '不可用',
+        ms
+      )
+      update((d) => ({
+        ...d,
+        dramaSources: d.dramaSources.map((s) =>
+          s.id === source.id
+            ? { ...s, testStatus: status, testMsg: message, testAt: Date.now() }
+            : s
+        )
+      }))
+      onNotice(`${source.name}：${message}`)
+    } finally {
+      dramaTesting.clear(source.id)
+    }
   }
 
   const testAllDrama = async (): Promise<void> => {
@@ -569,29 +627,39 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       for (;;) {
         const source = queue.shift()
         if (!source) return
-        setTestingDramaId(source.id)
-        const latency = probeLatency(source.baseUrl)
-        const res = await window.laozheng.dramaCatalog(toDramaInput(source), '', 1, '')
-        const status = res.ok ? 'ok' : 'failed'
-        if (res.ok) ok += 1
-        else bad += 1
-        const message = withMs(
-          res.ok ? `可用 · 返回 ${res.items.length} 部` : res.error ?? '不可用',
-          await latency
-        )
-        update((d) => ({
-          ...d,
-          dramaSources: d.dramaSources.map((s) =>
-            s.id === source.id
-              ? { ...s, testStatus: status, testMsg: message, testAt: Date.now() }
-              : s
+        dramaTesting.mark(source.id)
+        try {
+          const { result: res, ms } = await runSourceTest(
+            () => window.laozheng.dramaCatalog(toDramaInput(source), '', 1, ''),
+            (result) => result.ok,
+            'drama'
           )
-        }))
+          const status = res.ok ? 'ok' : 'failed'
+          if (res.ok) ok += 1
+          else bad += 1
+          const message = withMs(
+            res.ok ? `可用 · 返回 ${res.items.length} 部` : res.error ?? '不可用',
+            ms
+          )
+          update((d) => ({
+            ...d,
+            dramaSources: d.dramaSources.map((s) =>
+              s.id === source.id
+                ? { ...s, testStatus: status, testMsg: message, testAt: Date.now() }
+                : s
+            )
+          }))
+        } finally {
+          dramaTesting.clear(source.id)
+        }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(2, queue.length) }, worker))
-    setTestingDramaId(null)
-    setTestingDramaAll(false)
+    try {
+      await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker))
+    } finally {
+      dramaTesting.clearAll()
+      setTestingDramaAll(false)
+    }
     onNotice(`短剧源测试完成：有效 ${ok} 个 · 无效 ${bad} 个`)
   }
 
@@ -711,19 +779,25 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const testNovel = async (source: NovelSource): Promise<void> => {
-    setTestingNovelId(source.id)
-    const latency = probeLatency(source.baseUrl)
-    const res = await window.laozheng.testNovelSource(toNovelInput(source))
-    const status = res.ok ? 'ok' : 'bad'
-    const message = withMs(res.ok ? res.message ?? '可用' : res.error ?? '不可用', await latency)
-    update((d) => ({
-      ...d,
-      novelSources: d.novelSources.map((s) =>
-        s.id === source.id ? { ...s, testStatus: status, testMsg: message, testAt: Date.now() } : s
+    novelTesting.mark(source.id)
+    try {
+      const { result: res, ms } = await runSourceTest(
+        () => window.laozheng.testNovelSource(toNovelInput(source)),
+        undefined,
+        'novel'
       )
-    }))
-    setTestingNovelId(null)
-    onNotice(`${source.name}：${message}`)
+      const status = res.ok ? 'ok' : 'bad'
+      const message = withMs(res.ok ? res.message ?? '可用' : res.error ?? '不可用', ms)
+      update((d) => ({
+        ...d,
+        novelSources: d.novelSources.map((s) =>
+          s.id === source.id ? { ...s, testStatus: status, testMsg: message, testAt: Date.now() } : s
+        )
+      }))
+      onNotice(`${source.name}：${message}`)
+    } finally {
+      novelTesting.clear(source.id)
+    }
   }
 
   const testAllNovel = async (): Promise<void> => {
@@ -736,26 +810,36 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       for (;;) {
         const source = queue.shift()
         if (!source) return
-        setTestingNovelId(source.id)
-        const latency = probeLatency(source.baseUrl)
-        const res = await window.laozheng.testNovelSource(toNovelInput(source))
-        const status = res.ok ? 'ok' : 'bad'
-        if (res.ok) ok += 1
-        else bad += 1
-        const message = withMs(res.ok ? res.message ?? '可用' : res.error ?? '不可用', await latency)
-        update((d) => ({
-          ...d,
-          novelSources: d.novelSources.map((s) =>
-            s.id === source.id
-              ? { ...s, testStatus: status, testMsg: message, testAt: Date.now() }
-              : s
+        novelTesting.mark(source.id)
+        try {
+          const { result: res, ms } = await runSourceTest(
+            () => window.laozheng.testNovelSource(toNovelInput(source)),
+            undefined,
+            'novel'
           )
-        }))
+          const status = res.ok ? 'ok' : 'bad'
+          if (res.ok) ok += 1
+          else bad += 1
+          const message = withMs(res.ok ? res.message ?? '可用' : res.error ?? '不可用', ms)
+          update((d) => ({
+            ...d,
+            novelSources: d.novelSources.map((s) =>
+              s.id === source.id
+                ? { ...s, testStatus: status, testMsg: message, testAt: Date.now() }
+                : s
+            )
+          }))
+        } finally {
+          novelTesting.clear(source.id)
+        }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(2, queue.length) }, worker))
-    setTestingNovelId(null)
-    setTestingNovelAll(false)
+    try {
+      await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker))
+    } finally {
+      novelTesting.clearAll()
+      setTestingNovelAll(false)
+    }
     onNotice(`小说源测试完成：有效 ${ok} 个 · 无效 ${bad} 个`)
   }
 
@@ -878,19 +962,25 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const testComic = async (source: ComicSource): Promise<void> => {
-    setTestingComicId(source.id)
-    const latency = probeLatency(source.baseUrl)
-    const res = await window.laozheng.testComicSource(toComicInput(source))
-    const status = res.ok ? 'ok' : 'bad'
-    const message = withMs(res.ok ? res.message ?? '可用' : res.error ?? '不可用', await latency)
-    update((d) => ({
-      ...d,
-      comicSources: d.comicSources.map((s) =>
-        s.id === source.id ? { ...s, testStatus: status, testMsg: message, testAt: Date.now() } : s
+    comicTesting.mark(source.id)
+    try {
+      const { result: res, ms } = await runSourceTest(
+        () => window.laozheng.testComicSource(toComicInput(source)),
+        undefined,
+        'comic'
       )
-    }))
-    setTestingComicId(null)
-    onNotice(`${source.name}：${message}`)
+      const status = res.ok ? 'ok' : 'bad'
+      const message = withMs(res.ok ? res.message ?? '可用' : res.error ?? '不可用', ms)
+      update((d) => ({
+        ...d,
+        comicSources: d.comicSources.map((s) =>
+          s.id === source.id ? { ...s, testStatus: status, testMsg: message, testAt: Date.now() } : s
+        )
+      }))
+      onNotice(`${source.name}：${message}`)
+    } finally {
+      comicTesting.clear(source.id)
+    }
   }
 
   const testAllComic = async (): Promise<void> => {
@@ -903,26 +993,36 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       for (;;) {
         const source = queue.shift()
         if (!source) return
-        setTestingComicId(source.id)
-        const latency = probeLatency(source.baseUrl)
-        const res = await window.laozheng.testComicSource(toComicInput(source))
-        const status = res.ok ? 'ok' : 'bad'
-        if (res.ok) ok += 1
-        else bad += 1
-        const message = withMs(res.ok ? res.message ?? '可用' : res.error ?? '不可用', await latency)
-        update((d) => ({
-          ...d,
-          comicSources: d.comicSources.map((s) =>
-            s.id === source.id
-              ? { ...s, testStatus: status, testMsg: message, testAt: Date.now() }
-              : s
+        comicTesting.mark(source.id)
+        try {
+          const { result: res, ms } = await runSourceTest(
+            () => window.laozheng.testComicSource(toComicInput(source)),
+            undefined,
+            'comic'
           )
-        }))
+          const status = res.ok ? 'ok' : 'bad'
+          if (res.ok) ok += 1
+          else bad += 1
+          const message = withMs(res.ok ? res.message ?? '可用' : res.error ?? '不可用', ms)
+          update((d) => ({
+            ...d,
+            comicSources: d.comicSources.map((s) =>
+              s.id === source.id
+                ? { ...s, testStatus: status, testMsg: message, testAt: Date.now() }
+                : s
+            )
+          }))
+        } finally {
+          comicTesting.clear(source.id)
+        }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(2, queue.length) }, worker))
-    setTestingComicId(null)
-    setTestingComicAll(false)
+    try {
+      await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker))
+    } finally {
+      comicTesting.clearAll()
+      setTestingComicAll(false)
+    }
     onNotice(`漫画源测试完成：有效 ${ok} 个 · 无效 ${bad} 个`)
   }
 
@@ -1027,53 +1127,84 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const testTrainer = async (source: TrainerSource) => {
-    setTestingTrainerId(source.id)
-    const latency = probeLatency(source.baseUrl)
+    trainerTesting.mark(source.id)
+    const started = Date.now()
     try {
-      const res = await window.laozheng.testTrainerSource({
-        id: source.id,
-        type: source.type,
-        baseUrl: source.baseUrl,
-        name: source.name
-      })
+      const { result: res, ms } = await runSourceTest(
+        () =>
+          window.laozheng.testTrainerSource({
+            id: source.id,
+            type: source.type,
+            baseUrl: source.baseUrl,
+            name: source.name
+          }),
+        (result) => result.ok,
+        'trainer'
+      )
       patchTrainer(source.id, {
         testStatus: res.ok ? 'ok' : 'bad',
-        testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', await latency),
+        testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', ms),
         testAt: Date.now()
       })
     } catch (err) {
       patchTrainer(source.id, {
         testStatus: 'bad',
-        testMsg: withMs((err as Error).message, await latency),
+        testMsg: withMs((err as Error).message, Date.now() - started),
         testAt: Date.now()
       })
     } finally {
-      setTestingTrainerId(null)
+      trainerTesting.clear(source.id)
     }
   }
 
   const testAllTrainer = async () => {
     if (testingTrainerAll || data.trainerSources.length === 0) return
     setTestingTrainerAll(true)
+    const queue = [...data.trainerSources]
     let ok = 0
     let bad = 0
-    for (const source of data.trainerSources) {
-      const latency = probeLatency(source.baseUrl)
-      const res = await window.laozheng.testTrainerSource({
-        id: source.id,
-        type: source.type,
-        baseUrl: source.baseUrl,
-        name: source.name
-      })
-      if (res.ok) ok += 1
-      else bad += 1
-      patchTrainer(source.id, {
-        testStatus: res.ok ? 'ok' : 'bad',
-        testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', await latency),
-        testAt: Date.now()
-      })
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const source = queue.shift()
+        if (!source) return
+        trainerTesting.mark(source.id)
+        try {
+          const { result: res, ms } = await runSourceTest(
+            () =>
+              window.laozheng.testTrainerSource({
+                id: source.id,
+                type: source.type,
+                baseUrl: source.baseUrl,
+                name: source.name
+              }),
+            (result) => result.ok,
+            'trainer'
+          )
+          if (res.ok) ok += 1
+          else bad += 1
+          patchTrainer(source.id, {
+            testStatus: res.ok ? 'ok' : 'bad',
+            testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', ms),
+            testAt: Date.now()
+          })
+        } catch (err) {
+          bad += 1
+          patchTrainer(source.id, {
+            testStatus: 'bad',
+            testMsg: (err as Error).message,
+            testAt: Date.now()
+          })
+        } finally {
+          trainerTesting.clear(source.id)
+        }
+      }
     }
-    setTestingTrainerAll(false)
+    try {
+      await Promise.all(Array.from({ length: Math.min(3, queue.length) }, worker))
+    } finally {
+      trainerTesting.clearAll()
+      setTestingTrainerAll(false)
+    }
     onNotice(`补丁源测试完成：有效 ${ok} 个 · 无效 ${bad} 个`)
   }
 
@@ -1238,27 +1369,32 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const testMusic = async (source: MusicSource) => {
-    setTestingMusicId(source.id)
-    const latency = probeLatency(source.baseUrl)
+    musicTesting.mark(source.id)
+    const started = Date.now()
     try {
-      const res = await window.laozheng.testMusicSource({
-        id: source.id,
-        name: source.name,
-        baseUrl: source.baseUrl
-      })
+      const { result: res, ms } = await runSourceTest(
+        () =>
+          window.laozheng.testMusicSource({
+            id: source.id,
+            name: source.name,
+            baseUrl: source.baseUrl
+          }),
+        (result) => result.ok,
+        'music'
+      )
       patchMusic(source.id, {
         testStatus: res.ok ? 'ok' : 'bad',
-        testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', await latency),
+        testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', ms),
         testAt: Date.now()
       })
     } catch (err) {
       patchMusic(source.id, {
         testStatus: 'bad',
-        testMsg: withMs((err as Error).message, await latency),
+        testMsg: withMs((err as Error).message, Date.now() - started),
         testAt: Date.now()
       })
     } finally {
-      setTestingMusicId(null)
+      musicTesting.clear(source.id)
     }
   }
 
@@ -1266,69 +1402,113 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   const testMusicBackup = async (source: MusicSource) => {
     const backup = source.backup
     if (!backup) return
-    setTestingMusicBackupId(source.id)
-    const latency = probeLatency(backup.baseUrl)
+    musicBackupTesting.mark(source.id)
+    const started = Date.now()
     try {
-      const res = await window.laozheng.testMusicSource({
-        id: backup.id,
-        name: backup.name,
-        baseUrl: backup.baseUrl
-      })
+      const { result: res, ms } = await runSourceTest(
+        () =>
+          window.laozheng.testMusicSource({
+            id: backup.id,
+            name: backup.name,
+            baseUrl: backup.baseUrl
+          }),
+        (result) => result.ok,
+        'music'
+      )
       patchMusicBackup(source.id, {
         testStatus: res.ok ? 'ok' : 'bad',
-        testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', await latency),
+        testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', ms),
         testAt: Date.now()
       })
     } catch (err) {
       patchMusicBackup(source.id, {
         testStatus: 'bad',
-        testMsg: withMs((err as Error).message, await latency),
+        testMsg: withMs((err as Error).message, Date.now() - started),
         testAt: Date.now()
       })
     } finally {
-      setTestingMusicBackupId(null)
+      musicBackupTesting.clear(source.id)
     }
   }
 
   const testAllMusic = async () => {
     if (testingMusicAll || data.musicSources.length === 0) return
     setTestingMusicAll(true)
+    const queue = [...data.musicSources]
     let ok = 0
     let bad = 0
-    for (const source of data.musicSources) {
-      const latency = probeLatency(source.baseUrl)
-      const res = await window.laozheng.testMusicSource({
-        id: source.id,
-        name: source.name,
-        baseUrl: source.baseUrl
-      })
-      if (res.ok) ok += 1
-      else bad += 1
-      patchMusic(source.id, {
-        testStatus: res.ok ? 'ok' : 'bad',
-        testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', await latency),
-        testAt: Date.now()
-      })
-      if (source.backup) {
-        const backupLatency = probeLatency(source.backup.baseUrl)
-        const backupRes = await window.laozheng.testMusicSource({
-          id: source.backup.id,
-          name: source.backup.name,
-          baseUrl: source.backup.baseUrl
-        })
-        if (backupRes.ok) ok += 1
-        else bad += 1
-        patchMusicBackup(source.id, {
-          testStatus: backupRes.ok ? 'ok' : 'bad',
-          testMsg: withMs(
-            backupRes.ok ? backupRes.message ?? '可用' : backupRes.error ?? '测试失败',
-            await backupLatency
-          ),
-          testAt: Date.now()
-        })
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const source = queue.shift()
+        if (!source) return
+        musicTesting.mark(source.id)
+        try {
+          const { result: res, ms } = await runSourceTest(
+            () =>
+              window.laozheng.testMusicSource({
+                id: source.id,
+                name: source.name,
+                baseUrl: source.baseUrl
+              }),
+            (result) => result.ok,
+            'music'
+          )
+          if (res.ok) ok += 1
+          else bad += 1
+          patchMusic(source.id, {
+            testStatus: res.ok ? 'ok' : 'bad',
+            testMsg: withMs(res.ok ? res.message ?? '可用' : res.error ?? '测试失败', ms),
+            testAt: Date.now()
+          })
+        } catch {
+          bad += 1
+          patchMusic(source.id, { testStatus: 'bad', testMsg: '测试失败', testAt: Date.now() })
+        } finally {
+          musicTesting.clear(source.id)
+        }
+        if (source.backup) {
+          musicBackupTesting.mark(source.id)
+          try {
+            const { result: backupRes, ms: backupMs } = await runSourceTest(
+              () =>
+                window.laozheng.testMusicSource({
+                  id: source.backup!.id,
+                  name: source.backup!.name,
+                  baseUrl: source.backup!.baseUrl
+                }),
+              (result) => result.ok,
+              'music'
+            )
+            if (backupRes.ok) ok += 1
+            else bad += 1
+            patchMusicBackup(source.id, {
+              testStatus: backupRes.ok ? 'ok' : 'bad',
+              testMsg: withMs(
+                backupRes.ok ? backupRes.message ?? '可用' : backupRes.error ?? '测试失败',
+                backupMs
+              ),
+              testAt: Date.now()
+            })
+          } catch {
+            bad += 1
+            patchMusicBackup(source.id, {
+              testStatus: 'bad',
+              testMsg: '测试失败',
+              testAt: Date.now()
+            })
+          } finally {
+            musicBackupTesting.clear(source.id)
+          }
+        }
       }
     }
-    setTestingMusicAll(false)
+    try {
+      await Promise.all(Array.from({ length: Math.min(3, queue.length) }, worker))
+    } finally {
+      musicTesting.clearAll()
+      musicBackupTesting.clearAll()
+      setTestingMusicAll(false)
+    }
     onNotice(`音乐源测试完成：有效 ${ok} 个 · 无效 ${bad} 个`)
   }
 
@@ -1510,14 +1690,19 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const testLivePlatform = async (source: LivePlatformSource) => {
-    setTestingLivePlatformId(source.id)
-    const latency = probeLatency(source.baseUrl)
+    livePlatformTesting.mark(source.id)
+    const started = Date.now()
     try {
-      const res = await window.laozheng.livePlatformTestSource({
-        name: source.name,
-        baseUrl: source.baseUrl
-      })
-      const message = withMs(res.message, await latency)
+      const { result: res, ms } = await runSourceTest(
+        () =>
+          window.laozheng.livePlatformTestSource({
+            name: source.name,
+            baseUrl: source.baseUrl
+          }),
+        (result) => result.status === 'ok',
+        'live'
+      )
+      const message = withMs(res.message, ms)
       patchLivePlatform(source.id, {
         testStatus: res.status,
         testMsg: message,
@@ -1525,7 +1710,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       })
       onNotice(`${source.name}：${message}`)
     } catch (err) {
-      const message = withMs((err as Error).message, await latency)
+      const message = withMs((err as Error).message, Date.now() - started)
       patchLivePlatform(source.id, {
         testStatus: 'dead',
         testMsg: message,
@@ -1533,7 +1718,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       })
       onNotice(`${source.name}：测试失败`)
     } finally {
-      setTestingLivePlatformId(null)
+      livePlatformTesting.clear(source.id)
     }
   }
 
@@ -1547,24 +1732,35 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       for (;;) {
         const source = queue.shift()
         if (!source) return
-        setTestingLivePlatformId(source.id)
-        const latency = probeLatency(source.baseUrl)
-        const res = await window.laozheng.livePlatformTestSource({
-          name: source.name,
-          baseUrl: source.baseUrl
-        })
-        if (res.status === 'ok') ok += 1
-        else bad += 1
-        patchLivePlatform(source.id, {
-          testStatus: res.status,
-          testMsg: withMs(res.message, await latency),
-          testAt: res.testAt
-        })
+        livePlatformTesting.mark(source.id)
+        try {
+          const { result: res, ms } = await runSourceTest(
+            () =>
+              window.laozheng.livePlatformTestSource({
+                name: source.name,
+                baseUrl: source.baseUrl
+              }),
+            (result) => result.status === 'ok',
+            'live'
+          )
+          if (res.status === 'ok') ok += 1
+          else bad += 1
+          patchLivePlatform(source.id, {
+            testStatus: res.status,
+            testMsg: withMs(res.message, ms),
+            testAt: res.testAt
+          })
+        } finally {
+          livePlatformTesting.clear(source.id)
+        }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(3, queue.length) }, worker))
-    setTestingLivePlatformId(null)
-    setTestingLivePlatformAll(false)
+    try {
+      await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker))
+    } finally {
+      livePlatformTesting.clearAll()
+      setTestingLivePlatformAll(false)
+    }
     onNotice(`直播源测试完成：有效 ${ok} 个 · 无效 ${bad} 个`)
   }
 
@@ -1728,17 +1924,23 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
   }
 
   const testLive = async (source: LiveSource) => {
-    setTestingLiveId(source.id)
-    const latency = probeLatency(source.url)
-    const res = await window.laozheng.testLiveSource(source)
-    setTestingLiveId(null)
-    const message = withMs(res.message, await latency)
-    patchLive(source.id, {
-      testStatus: res.ok ? 'ok' : 'failed',
-      testMsg: message,
-      testAt: Date.now()
-    })
-    onNotice(`${source.name}：${message}`)
+    liveTesting.mark(source.id)
+    try {
+      const { result: res, ms } = await runSourceTest(
+        () => window.laozheng.testLiveSource(source),
+        undefined,
+        'live'
+      )
+      const message = withMs(res.message, ms)
+      patchLive(source.id, {
+        testStatus: res.ok ? 'ok' : 'failed',
+        testMsg: message,
+        testAt: Date.now()
+      })
+      onNotice(`${source.name}：${message}`)
+    } finally {
+      liveTesting.clear(source.id)
+    }
   }
 
   const testAllLive = async () => {
@@ -1751,21 +1953,31 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
       for (;;) {
         const source = queue.shift()
         if (!source) return
-        setTestingLiveId(source.id)
-        const latency = probeLatency(source.url)
-        const res = await window.laozheng.testLiveSource(source)
-        if (res.ok) ok += 1
-        else bad += 1
-        patchLive(source.id, {
-          testStatus: res.ok ? 'ok' : 'failed',
-          testMsg: withMs(res.message, await latency),
-          testAt: Date.now()
-        })
+        liveTesting.mark(source.id)
+        try {
+          const { result: res, ms } = await runSourceTest(
+            () => window.laozheng.testLiveSource(source),
+            undefined,
+            'live'
+          )
+          if (res.ok) ok += 1
+          else bad += 1
+          patchLive(source.id, {
+            testStatus: res.ok ? 'ok' : 'failed',
+            testMsg: withMs(res.message, ms),
+            testAt: Date.now()
+          })
+        } finally {
+          liveTesting.clear(source.id)
+        }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(3, queue.length) }, worker))
-    setTestingLiveId(null)
-    setTestingLiveAll(false)
+    try {
+      await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker))
+    } finally {
+      liveTesting.clearAll()
+      setTestingLiveAll(false)
+    }
     onNotice(`电视源测试完成：有效 ${ok} 个 · 无效 ${bad} 个`)
   }
 
@@ -2465,8 +2677,8 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                   <div className="row-meta">{vodHost(s.baseUrl)}</div>
                   <div className="row-meta">{testMsgText(s.testMsg)}</div>
                 </div>
-                <button className="btn" disabled={testingId === s.id} onClick={() => void testSource(s)}>
-                  <RefreshCw size={14} /> {testingId === s.id ? '测试中…' : '测试'}
+                <button className="btn" disabled={vodTesting.ids.has(s.id)} onClick={() => void testSource(s)}>
+                  <RefreshCw size={14} /> {vodTesting.ids.has(s.id) ? '测试中…' : '测试'}
                 </button>
                 <button
                   className="btn"
@@ -2570,10 +2782,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 </div>
                 <button
                   className="btn"
-                  disabled={testingDramaId === source.id}
+                  disabled={dramaTesting.ids.has(source.id)}
                   onClick={() => void testDramaSource(source)}
                 >
-                  <RefreshCw size={14} /> {testingDramaId === source.id ? '测试中…' : '测试'}
+                  <RefreshCw size={14} /> {dramaTesting.ids.has(source.id) ? '测试中…' : '测试'}
                 </button>
                 <button
                   className="btn"
@@ -2674,10 +2886,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                   </div>
                   <button
                     className="btn"
-                    disabled={testingLiveId === s.id}
+                    disabled={liveTesting.ids.has(s.id)}
                     onClick={() => void testLive(s)}
                   >
-                    <RefreshCw size={14} /> {testingLiveId === s.id ? '测试中…' : '测试'}
+                    <RefreshCw size={14} /> {liveTesting.ids.has(s.id) ? '测试中…' : '测试'}
                   </button>
                   <button
                     className="btn"
@@ -2773,11 +2985,11 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 </div>
                 <button
                   className="btn"
-                  disabled={testingLivePlatformId === source.id}
+                  disabled={livePlatformTesting.ids.has(source.id)}
                   onClick={() => void testLivePlatform(source)}
                 >
                   <RefreshCw size={14} />{' '}
-                  {testingLivePlatformId === source.id ? '测试中…' : '测试'}
+                  {livePlatformTesting.ids.has(source.id) ? '测试中…' : '测试'}
                 </button>
                 <button
                   className="btn"
@@ -2883,7 +3095,7 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                   <button
                     className="icon-btn"
                     title={`测试备用线路（${source.backup.name}）`}
-                    disabled={testingMusicBackupId === source.id}
+                    disabled={musicBackupTesting.ids.has(source.id)}
                     onClick={() => void testMusicBackup(source)}
                   >
                     <RefreshCw size={14} />
@@ -2891,10 +3103,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 ) : null}
                 <button
                   className="btn"
-                  disabled={testingMusicId === source.id}
+                  disabled={musicTesting.ids.has(source.id)}
                   onClick={() => void testMusic(source)}
                 >
-                  <RefreshCw size={14} /> {testingMusicId === source.id ? '测试中…' : '测试'}
+                  <RefreshCw size={14} /> {musicTesting.ids.has(source.id) ? '测试中…' : '测试'}
                 </button>
                 <button
                   className="btn"
@@ -2992,10 +3204,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 </div>
                 <button
                   className="btn"
-                  disabled={testingComicId === source.id}
+                  disabled={comicTesting.ids.has(source.id)}
                   onClick={() => void testComic(source)}
                 >
-                  <RefreshCw size={14} /> {testingComicId === source.id ? '测试中…' : '测试'}
+                  <RefreshCw size={14} /> {comicTesting.ids.has(source.id) ? '测试中…' : '测试'}
                 </button>
                 <button
                   className="btn"
@@ -3096,10 +3308,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 </div>
                 <button
                   className="btn"
-                  disabled={testingNovelId === source.id}
+                  disabled={novelTesting.ids.has(source.id)}
                   onClick={() => void testNovel(source)}
                 >
-                  <RefreshCw size={14} /> {testingNovelId === source.id ? '测试中…' : '测试'}
+                  <RefreshCw size={14} /> {novelTesting.ids.has(source.id) ? '测试中…' : '测试'}
                 </button>
                 <button
                   className="btn"
@@ -3198,10 +3410,10 @@ export function SourceSettings({ onNotice }: { onNotice: (text: string) => void 
                 </div>
                 <button
                   className="btn"
-                  disabled={testingTrainerId === source.id}
+                  disabled={trainerTesting.ids.has(source.id)}
                   onClick={() => void testTrainer(source)}
                 >
-                  <RefreshCw size={14} /> {testingTrainerId === source.id ? '测试中…' : '测试'}
+                  <RefreshCw size={14} /> {trainerTesting.ids.has(source.id) ? '测试中…' : '测试'}
                 </button>
                 <button
                   className="btn"

@@ -285,12 +285,20 @@ export function BiliPlayer({
    * 弹幕：用 Danmaku 引擎渲染。轨道分配按每条弹幕的实际宽度做碰撞检测
    * （同轨不重叠、不追尾，顶部 / 底部按停留时间占位），即 B 站弹幕的排版算法；
    * 播放 / 暂停 / 拖动进度由引擎跟随视频自动同步。
-   * 字号与 B 站播放器一致（18 / 25 / 36px 固定），滚屏速度按播放器宽度换算，横穿约 8 秒。
+   * 字号按 B 站档位（18 / 25 / 36px）乘以播放器宽度比例，窗口缩放 / 全屏时跟着画面一起放大缩小；
+   * 滚屏速度同样按播放器宽度换算，横穿约 8 秒。
    */
   useEffect(() => {
     const video = artRef.current?.video
     const layer = danmakuLayerRef.current
     if (!video || !layer || !danmakuOn || !danmaku?.length) return
+
+    /** 以 1200px 播放宽度为基准，限制在 0.5~1.2 倍，避免过小或全屏时过大 */
+    const scaleFor = (width: number): number => Math.min(1.2, Math.max(0.5, width / 1200))
+    const applyScale = (): void => {
+      if (!layer.clientWidth) return
+      layer.style.setProperty('--danmaku-scale', scaleFor(layer.clientWidth).toFixed(3))
+    }
 
     const build = (): Danmaku =>
       new Danmaku({
@@ -309,8 +317,10 @@ export function BiliPlayer({
               | 'rtl',
             style: {
               color: color !== 0xffffff ? `#${color.toString(16).padStart(6, '0')}` : '#ffffff',
-              // B 站字号档位：18 小 / 25 标准 / 36 大
-              fontSize: `${item.size >= 30 ? 36 : item.size > 0 && item.size <= 20 ? 18 : 25}px`,
+              // B 站字号档位：18 小 / 25 标准 / 36 大，再乘以播放器宽度比例
+              fontSize: `calc(${
+                item.size >= 30 ? 36 : item.size > 0 && item.size <= 20 ? 18 : 25
+              }px * var(--danmaku-scale, 1))`,
               lineHeight: '1.2',
               fontWeight: '600',
               textShadow: '0 1px 2px rgba(0, 0, 0, 0.9), 0 0 4px rgba(0, 0, 0, 0.6)'
@@ -319,14 +329,16 @@ export function BiliPlayer({
         })
       })
 
+    applyScale()
     let engine = build()
     let timer = 0
 
-    // 窗口缩放 / 进出全屏：字号固定不变，只需重新分配轨道并更新滚动速度
+    // 窗口缩放 / 进出全屏：先更新字号比例，再重新分配轨道、更新滚动速度
     const resize = (): void => {
       window.clearTimeout(timer)
       timer = window.setTimeout(() => {
         if (!layer.clientWidth) return
+        applyScale()
         engine.resize()
         engine.speed = Math.max(80, layer.clientWidth / 8)
       }, 220)

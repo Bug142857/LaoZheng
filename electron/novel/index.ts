@@ -626,7 +626,9 @@ export async function novelDownload(
     }
 
     let cursor = 0
-    const workers = Array.from({ length: Math.min(5, chapters.length) }, async () => {
+    // 哔咔阅读页限流严格：只开 2 路（主进程还会串行排队），其它源保持 5 路
+    const workerCount = source.template === 'bikahub' ? 2 : 5
+    const workers = Array.from({ length: Math.min(workerCount, chapters.length) }, async () => {
       for (;;) {
         const index = cursor++
         if (index >= chapters.length) return

@@ -359,7 +359,7 @@ export function ListManagerSection({
           </span>
           {list.musicList ? <span className="badge">音乐清单</span> : null}
           <span className="tree-count">
-            {countItems(data, list.id, false)} 件
+            {countItems(data, list.id)} 件
             {kids.length ? ` · ${kids.length} 个子清单` : ''}
           </span>
           <button className="icon-btn" title="重命名" onClick={() => setRenaming(list)}>
@@ -602,7 +602,7 @@ export function ListManagerSection({
             childrenOf(deleting.id).length
               ? `\n其下 ${childrenOf(deleting.id).length} 个子清单也会一并删除。`
               : ''
-          }\n该清单下的 ${countItems(data, deleting.id, false)} 件条目关联会被移除（收藏条目本身保留）。`}
+          }\n该清单下的 ${countItems(data, deleting.id)} 件条目关联会被移除（收藏条目本身保留）。`}
           confirmText="删除"
           danger
           onConfirm={deleteList}

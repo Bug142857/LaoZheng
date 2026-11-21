@@ -8,6 +8,7 @@ import type {
   MagnetTestStatus
 } from '../shared/magnet'
 import { ConfirmDialog, Modal } from '../components/ui'
+import { runSourceTest } from './sourceSettings/sourceTest'
 
 const SAMPLE_API = `{
   "listPath": "data.list",
@@ -48,11 +49,6 @@ function testMsgText(message?: string | null): string {
   return (message ?? '未测试').replace(/\s*·\s*超时\s*$/, '')
 }
 
-function probeLatency(url?: string | null): Promise<number | null | undefined> {
-  if (!url || !/^https?:\/\//i.test(url)) return Promise.resolve(undefined)
-  return window.laozheng.probeSourceLatency(url).catch(() => null)
-}
-
 /** 从测试文案末尾解析延迟（123ms）；没有测速结果返回 null */
 function sourceMs(source: { testMsg?: string | null }): number | null {
   const matched = /·\s*(\d+)ms\s*$/.exec(source.testMsg ?? '')
@@ -76,11 +72,6 @@ function byPreferredOrder<T extends { testMsg?: string | null; testStatus?: stri
     if (sourceGroup(a) !== 0) return 0
     return (sourceMs(a) ?? Number.MAX_SAFE_INTEGER) - (sourceMs(b) ?? Number.MAX_SAFE_INTEGER)
   })
-}
-
-/** 磁力源地址是 {keyword} / {page} 模板，测延迟时替换成和测试一致的首页地址 */
-function magnetProbeUrl(searchUrl: string): string {
-  return searchUrl.replace(/\{keyword\}/g, 'saw').replace(/\{page\}/g, '1')
 }
 
 function newSourceId(): string {
@@ -180,15 +171,19 @@ export function MagnetSettings({ onNotice }: { onNotice: (text: string) => void 
 
   const testSource = async (source: MagnetSource): Promise<void> => {
     setTestingId(source.id)
-    const latency = probeLatency(magnetProbeUrl(source.searchUrl))
+    const started = Date.now()
     try {
-      const result = await window.laozheng.testMagnetSource(source)
-      const message = withMs(result.message, await latency)
+      const { result, ms } = await runSourceTest(
+        () => window.laozheng.testMagnetSource(source),
+        (value) => value.ok,
+        'magnet'
+      )
+      const message = withMs(result.message, ms)
       applyTestResult(source, result.ok, message, result.testAt)
       await window.laozheng.saveMagnetSources(sourcesRef.current)
       onNotice(`${source.name}：${message}`)
     } catch (err) {
-      const message = withMs((err as Error).message, await latency)
+      const message = withMs((err as Error).message, Date.now() - started)
       applyTestResult(source, false, message, Date.now())
       onNotice(`${source.name}：${message}`)
     } finally {
@@ -212,19 +207,28 @@ export function MagnetSettings({ onNotice }: { onNotice: (text: string) => void 
         const source = queue.shift()
         if (!source) return
         setTestingId(source.id)
-        const latency = probeLatency(magnetProbeUrl(source.searchUrl))
+        const started = Date.now()
         try {
-          const result = await window.laozheng.testMagnetSource(source)
+          const { result, ms } = await runSourceTest(
+            () => window.laozheng.testMagnetSource(source),
+            (value) => value.ok,
+            'magnet'
+          )
           if (result.ok) ok += 1
           else bad += 1
-          applyTestResult(source, result.ok, withMs(result.message, await latency), result.testAt)
+          applyTestResult(source, result.ok, withMs(result.message, ms), result.testAt)
         } catch (err) {
           bad += 1
-          applyTestResult(source, false, withMs((err as Error).message, await latency), Date.now())
+          applyTestResult(
+            source,
+            false,
+            withMs((err as Error).message, Date.now() - started),
+            Date.now()
+          )
         }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(2, queue.length) }, worker))
+    await Promise.all(Array.from({ length: Math.min(3, queue.length) }, worker))
     const next = await window.laozheng.saveMagnetSources(sourcesRef.current)
     setState(next)
     setTestingId(null)

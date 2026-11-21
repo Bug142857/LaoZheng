@@ -3,8 +3,16 @@ import { mkdir, readdir, rm, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import type { CacheClearResult, CacheDirResult, CacheInfo } from '../src/shared/settings'
 import { cacheRoot, downloadRoot, setCacheRoot } from './settings'
-import { clearApiCacheMemory, resetApiCacheDiskUsage } from './apiCache'
-import { imageCacheBytes, invalidateImageCacheSize } from './imageCache'
+import {
+  cleanupStaleApiCacheTemps,
+  clearApiCacheMemory,
+  resetApiCacheDiskUsage
+} from './apiCache'
+import {
+  cleanupStaleImageTemps,
+  imageCacheBytes,
+  invalidateImageCacheSize
+} from './imageCache'
 import { clearLxSourceCache } from './lxSource'
 import { hasRunningDownloads } from './downloads'
 
@@ -78,6 +86,48 @@ export async function cleanupUpdatesDir(): Promise<void> {
     }
   } catch {
     // 目录不存在时无需处理
+  }
+}
+
+/**
+ * 启动空闲时清理残留临时文件：
+ * - userData 顶层的 *.tmp（data.json / window-state / 下载队列等原子写残留）
+ * - 接口缓存与图片缓存里中断写入的 .tmp
+ * - 已被 v3 取代的旧版硬件信息缓存
+ */
+export async function cleanupStaleUserDataFiles(): Promise<void> {
+  const userData = app.getPath('userData')
+  const now = Date.now()
+  try {
+    for (const name of await readdir(userData)) {
+      if (!name.toLowerCase().endsWith('.tmp')) continue
+      const full = join(userData, name)
+      const info = await stat(full).catch(() => null)
+      if (!info || !info.isFile()) continue
+      // 只清一小时前的，避免误删另一个进程 / 当前正在写入的临时文件
+      if (now - info.mtimeMs < 60 * 60_000) continue
+      await rm(full, { force: true }).catch(() => undefined)
+    }
+  } catch {
+    // userData 不可读时跳过
+  }
+  // 硬件信息已经升级到 v3：旧缓存不再读取，直接删除
+  const v3 = join(userData, 'system-info-v3.json')
+  const hasV3 = await stat(v3).then(
+    (info) => info.isFile(),
+    () => false
+  )
+  if (hasV3) {
+    await rm(join(userData, 'system-info.json'), { force: true }).catch(() => undefined)
+    await rm(join(userData, 'system-info-v2.json'), { force: true }).catch(() => undefined)
+  }
+  const [apiRemoved, imageRemoved] = await Promise.all([
+    cleanupStaleApiCacheTemps(),
+    cleanupStaleImageTemps()
+  ])
+  if (apiRemoved || imageRemoved) {
+    console.log(`[cache] 已清理残留临时文件：接口 ${apiRemoved} / 图片 ${imageRemoved}`)
+    cacheInfoDirty()
   }
 }
 
@@ -158,7 +208,6 @@ export async function cacheInfo(): Promise<CacheInfo> {
     (async () => {
       let total = 0
       for (const name of USER_DATA_CACHE_DIRS) {
-        if (DATA_CACHE_DIRS.includes(name)) continue
         total += await dirSize(join(app.getPath('userData'), name))
       }
       return total
@@ -271,7 +320,10 @@ export async function clearCache(): Promise<CacheClearResult> {
       }
     }
     cacheInfoDirty()
-    return { ok: true, freed: before.bytes }
+    // 更新包下载中 / 下载任务进行时会有意保留 updates 与 .part：
+    // 用清理后的实际占用相减，不再把保留项也算成“已释放”
+    const after = await cacheInfo()
+    return { ok: true, freed: Math.max(0, before.bytes - after.bytes) }
   } catch (err) {
     return { ok: false, freed: 0, error: (err as Error).message }
   }

@@ -339,6 +339,10 @@ export interface LocalIconResult {
 export interface BackupSettings {
   theme?: string
   accent?: string
+  /** 毛玻璃效果：off / on（旧备份没有时保持本机现值） */
+  glassEffect?: string
+  /** 毛玻璃透明度 0~100（越大越通透） */
+  glassTransparency?: number
   downloadRoot?: string
   lastImageDir?: string
   /** 各类导入 / 导出对话框上次选择的目录 */
@@ -404,6 +408,8 @@ export interface AppData {
 export interface ImportResult {
   canceled: boolean
   data?: AppData
+  /** 备份里缺失的本机 PC 扩展字段；确认覆盖前用渲染层最新数据补齐 */
+  missingLocalFields?: string[]
   error?: string
 }
 
@@ -424,6 +430,8 @@ export interface DataSnapshotCreateResult {
 export interface DataSnapshotRestoreResult {
   ok: boolean
   data?: AppData
+  /** 快照里缺失的本机 PC 扩展字段；确认覆盖前用渲染层最新数据补齐 */
+  missingLocalFields?: string[]
   error?: string
 }
 
@@ -560,8 +568,11 @@ export interface LaozhengApi {
   snapshotData: (reason: string) => Promise<DataSnapshotCreateResult>
   listSnapshots: () => Promise<DataSnapshotInfo[]>
   restoreSnapshot: (name: string) => Promise<DataSnapshotRestoreResult>
-  /** 导入 / 云恢复后，把电视源、下载记录、本机设置一起写回 */
-  applyBackupExtras: (data: AppData) => Promise<void>
+  /** 导入 / 云恢复后写回电视源、磁力源与本机设置；下载记录只在本机快照恢复时整体替换 */
+  applyBackupExtras: (
+    data: AppData,
+    options?: { replaceDownloads?: boolean; skipDownloads?: boolean }
+  ) => Promise<void>
   importData: () => Promise<ImportResult>
   exportData: (data: AppData) => Promise<ExportResult>
   /** 清单管理：清单（含条目）单独导出 / 导入 */
@@ -726,17 +737,26 @@ export interface LaozhengApi {
     quality?: MusicQuality
   ) => Promise<MusicResolveResponse>
   testMusicSource: (source: MusicSourceInput) => Promise<MusicTestResult>
+  /** 只取歌词（不重新解析音频），洛雪 / fish 音源下载歌词时使用 */
+  musicLyric: (songId: string) => Promise<{ ok: boolean; lrc?: string; error?: string }>
   saveMusicLyrics: (input: {
     title: string
     artists?: string
     lrc: string
   }) => Promise<MusicLyricsSaveResult>
+  /** 托盘悬停浮窗的音乐控制 */
+  trayMusic: (command: 'toggle' | 'prev' | 'next') => void
+  trayPopupHover: (inside: boolean) => void
+  /** 把当前音乐播放状态同步给托盘浮窗，切换播放 / 暂停图标 */
+  trayMusicState: (playing: boolean) => void
+  /** 托盘浮窗专用：接收主进程广播的播放状态 */
+  onTrayMusicState: (callback: (playing: boolean) => void) => () => void
   listDownloads: () => Promise<DownloadListResponse>
   /** 刷新下载列表：清理本地已被手动删除的失效记录 */
   refreshDownloads: () => Promise<{ removed: number; total: number }>
   addDownload: (input: DownloadAddInput) => Promise<DownloadAddResult>
   removeDownload: (id: string, deleteFile: boolean) => Promise<DownloadRemoveResult>
-  cancelDownload: (id: string) => Promise<void>
+  cancelDownload: (id: string) => Promise<boolean>
   /** 暂停下载：保留已下载内容 */
   pauseDownload: (id: string) => Promise<void>
   /** 继续已暂停的下载 */
@@ -749,6 +769,8 @@ export interface LaozhengApi {
   clearCache: () => Promise<CacheClearResult>
   /** 点标题 / 刷新按钮时让该模块的接口缓存短时间失效，直接取最新数据 */
   forceRefresh: (scope: string) => Promise<{ ok: boolean }>
+  /** 源测试前调用：短时间绕过接口缓存；传 key 前缀时只影响被测模块 */
+  beginSourceTest: (prefixes?: string[]) => Promise<{ ok: boolean }>
   /** 选择缓存目录；切换后旧目录的图片 / 接口缓存会被清空 */
   chooseCacheDir: () => Promise<CacheDirResult>
   getUiSettings: () => Promise<UiSettings>
@@ -848,7 +870,6 @@ export interface LaozhengApi {
     template: ComicSourceTemplate,
     measure?: boolean
   ) => Promise<ComicMirrorResponse>
-  probeSourceLatency: (url: string) => Promise<number | null>
   trackShuangkanImages: (urls: string[], baseUrl?: string) => Promise<void>
   exportShuangkanSources: (sources: {
     id?: string
@@ -1123,6 +1144,34 @@ function normalizeToolNotes(raw: unknown): Record<string, string> {
   return out
 }
 
+/** 影视源兜底：导入 / 旧备份里缺 id、名称或地址的坏条目直接丢掉，避免进界面后请求异常 */
+function normalizeVodSources(raw: unknown): VodSource[] {
+  const out: VodSource[] = []
+  for (const entry of objectRows<Record<string, unknown>>(raw)) {
+    const id = typeof entry.id === 'string' ? entry.id.trim() : ''
+    const baseUrl = typeof entry.baseUrl === 'string' ? entry.baseUrl.trim() : ''
+    if (!id || !baseUrl) continue
+    // 只按 id 去重：同一地址允许存在国内 / 代理两条（旧数据里常见），不能静默丢掉一条
+    if (out.some((source) => source.id === id)) continue
+    const name =
+      typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : baseUrl
+    out.push({
+      id: id.slice(0, 200),
+      name: name.slice(0, 80),
+      baseUrl: baseUrl.slice(0, 300),
+      enabled: entry.enabled !== false,
+      ...(entry.builtin === true ? { builtin: true } : {}),
+      region: entry.region === 'proxy' ? 'proxy' : 'cn',
+      regionManual: entry.regionManual === true,
+      testStatus: entry.testStatus === 'ok' || entry.testStatus === 'bad' ? entry.testStatus : null,
+      testMsg: typeof entry.testMsg === 'string' ? entry.testMsg : null,
+      testAt:
+        typeof entry.testAt === 'number' && Number.isFinite(entry.testAt) ? entry.testAt : 0
+    })
+  }
+  return out
+}
+
 /** 收藏条目兜底：备份 / 云同步里的字符串字段可能缺失，收藏页搜索 / 排序直接取用会崩 */
 function normalizeInnerFavs(raw: unknown): InnerFav[] {
   const out: InnerFav[] = []
@@ -1185,7 +1234,7 @@ export function normalizeData(raw: unknown): AppData {
     items: objectRows<CollectionItem>(o.items),
     lists: normalizeLists(o.lists),
     listItems: objectRows<ListItem>(o.listItems),
-    vodSources: objectRows<VodSource>(o.vodSources),
+    vodSources: normalizeVodSources(o.vodSources),
     innerFavs: normalizeInnerFavs(o.innerFavs),
     readProgress:
       o.readProgress && typeof o.readProgress === 'object' && !Array.isArray(o.readProgress)
@@ -1259,18 +1308,8 @@ export function normalizeData(raw: unknown): AppData {
     }
     out.config = { ...out.config, novelExtraSeeded: '1' }
   }
-  // 2026-11-05 v0.86：奇书小说 / 新御宅屋 / 黄易小说 / 无极小说首次随老数据补进小说源；删除后不再自动加回
-  if (Array.isArray(o.novelSources) && out.config.novelFreeSeeded !== '1') {
-    if (o.novelSources.length > 0) {
-      const ids = new Set(out.novelSources.map((source) => source.id))
-      const urls = new Set(out.novelSources.map((source) => source.baseUrl))
-      for (const extra of ADDED_NOVEL_SOURCES) {
-        if (ids.has(extra.id) || urls.has(extra.baseUrl)) continue
-        out.novelSources.push({ ...extra })
-      }
-    }
-    out.config = { ...out.config, novelFreeSeeded: '1' }
-  }
+  // 2026-11-05 v0.86 的奇书 / 黄易 / 无极补源与 v0.85 使用同一组内置源，已合并到 novelExtraSeeded，
+  // 这里不再重复补源，避免用户删掉后又被旧标记加回来。
   // 2026-11-05 v0.94：笔趣阁 / 最终小说网 / 搬山人小说网首次随老数据补进小说源；删除后不再自动加回
   if (Array.isArray(o.novelSources) && out.config.novelThirdSeeded !== '1') {
     if (o.novelSources.length > 0) {
@@ -1399,6 +1438,13 @@ const PC_LOCAL_FIELDS = [
   'liveFavorites',
   'liveHistory'
 ] as const satisfies ReadonlyArray<keyof AppData>
+
+/** 备份里缺失的本机 PC 扩展字段；确认覆盖前用渲染层最新数据再补齐一次 */
+export function missingLocalPcFields(raw: unknown): string[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return []
+  const source = raw as Record<string, unknown>
+  return PC_LOCAL_FIELDS.filter((key) => source[key] === undefined)
+}
 
 export function mergeLocalPcFields(raw: unknown, incoming: AppData, current: AppData): AppData {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return incoming

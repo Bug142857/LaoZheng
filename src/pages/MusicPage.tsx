@@ -364,16 +364,22 @@ export function MusicPage({
         url = res.url
         lrc = res.lrc ?? ''
       } else if (downloadWithLyricsRef.current) {
-        // 已经在播放器里拿到直链时不会重新解析，这里单独补一次歌词（洛雪音源也能拿到）
-        const res = await resolveSong(
-          target.id,
-          target.title,
-          target.artists,
-          target.platform,
-          target.baseUrl,
-          quality
-        )
-        lrc = res.lrc ?? ''
+        // 已经在播放器里拿到直链时不会重新解析；洛雪 / fish 音源只补歌词，
+        // 避免二次解析直链失败把整次下载卡成「解析失败」
+        if (target.id.startsWith('lx~')) {
+          const res = await window.laozheng.musicLyric(target.id)
+          lrc = res.ok ? res.lrc ?? '' : ''
+        } else {
+          const res = await resolveSong(
+            target.id,
+            target.title,
+            target.artists,
+            target.platform,
+            target.baseUrl,
+            quality
+          )
+          lrc = res.lrc ?? ''
+        }
       }
       const title = [target.artists, target.title].filter(Boolean).join(' - ')
       const added = await window.laozheng.addDownload({

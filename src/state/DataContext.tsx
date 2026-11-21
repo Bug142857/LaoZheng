@@ -26,7 +26,11 @@ interface DataContextValue {
   getProgressSnapshot: () => Record<string, string>
   /** 订阅进度变化：只让真正用到进度的组件重渲染 */
   subscribeProgress: (listener: () => void) => () => void
-  replaceData: (data: AppData, reason?: string) => Promise<void>
+  replaceData: (
+    data: AppData,
+    reason?: string,
+    missingLocalFields?: string[]
+  ) => Promise<void>
 }
 
 const DataContext = createContext<DataContextValue | null>(null)
@@ -177,7 +181,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
   )
 
   const replaceData = useCallback(
-    async (next: AppData, reason = 'import'): Promise<void> => {
+    async (
+      next: AppData,
+      reason = 'import',
+      missingLocalFields: string[] = []
+    ): Promise<void> => {
       // 先把防抖队列里的最新改动落盘，快照才包含用户此刻看到的完整数据
       if (dirtyRef.current) {
         if (timerRef.current != null) {
@@ -188,6 +196,18 @@ export function DataProvider({ children }: { children: ReactNode }) {
           console.error('[data] 覆盖前保存当前数据失败', err)
         })
         dirtyRef.current = false
+      }
+      // 选文件到确认覆盖之间用户可能又改过软件经验 / 本地快捷方式：
+      // 备份里缺失的 PC 字段用刚 flush 过的最新数据再补一次，避免被旧快照覆盖
+      let incoming = next
+      if (missingLocalFields.length) {
+        const patched: AppData = { ...next }
+        for (const key of missingLocalFields) {
+          ;(patched as unknown as Record<string, unknown>)[key] = (
+            dataRef.current as unknown as Record<string, unknown>
+          )[key]
+        }
+        incoming = patched
       }
       // 覆盖本机数据前先留快照；快照失败直接中止，避免不可回滚
       const snapshot = await window.laozheng.snapshotData(reason).catch((err) => ({
@@ -208,14 +228,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
       window.dispatchEvent(new CustomEvent('laozheng:data-replaced'))
       // 备份没带播放进度时主进程会保留本机进度（见 data:applyExtras），
       // 渲染层保持一致，避免本次会话进度看起来被清空、重启后又重新出现。
-      const nextProgress = Object.keys(next.readProgress ?? {}).length
-        ? next.readProgress
+      const nextProgress = Object.keys(incoming.readProgress ?? {}).length
+        ? incoming.readProgress
         : dataRef.current.readProgress
       // 电视源 / 下载记录 / 磁力源 / 本机设置 / 磁力搜索缓存都由主进程各自存储，
       // 备份里的这些字段已通过 applyBackupExtras 写回；不再落进 data.json，
       // 否则之后恢复快照会把 data.json 里的旧副本重新盖回这些存储。
       const persisted: AppData = {
-        ...next,
+        ...incoming,
         readProgress: nextProgress,
         liveSources: undefined,
         downloads: undefined,
@@ -229,9 +249,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
       notifyProgress()
       setData(persisted)
       flush(persisted)
-      // 导入 / 云恢复：把电视源、下载记录、本机设置一起写回，并立即应用新主题
+      // 导入 / 云恢复：把电视源、磁力源、本机设置一起写回，并立即应用新主题
       return window.laozheng
-        .applyBackupExtras(next)
+        .applyBackupExtras(incoming, {
+          replaceDownloads: reason === 'snapshot',
+          // 手动导入 / 云恢复不导入下载记录；只有本机快照恢复才回滚下载记录
+          skipDownloads: reason !== 'snapshot'
+        })
         .then(() => window.laozheng.getUiSettings())
         .then((settings) => {
           applyUiSettings(settings)

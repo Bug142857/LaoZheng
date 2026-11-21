@@ -5,7 +5,13 @@ import { mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { downloadRoot } from '../settings'
 import { runElevatedProcess } from '../powershell'
-import { registerLocalFile } from '../downloads'
+import {
+  beginExternalDownload,
+  finishExternalDownload,
+  registerLocalFile,
+  setExternalDownloadCancel,
+  updateExternalDownloadProgress
+} from '../downloads'
 import type { InstalledTrainer, TrainerActionResult, TrainerDownloadInput, TrainerDownloadResponse, TrainerLibraryResponse, TrainerSourceType } from '../../src/shared/trainers'
 import { TRAINER_SOURCE_TYPE_LABEL } from '../../src/shared/trainers'
 import { MAX_DOWNLOAD, UA, safeName, sameHost } from './common'
@@ -187,8 +193,34 @@ export async function downloadTrainer(input: TrainerDownloadInput): Promise<Trai
   }
 
   const root = await ensureRoot()
+  const taskId = beginExternalDownload({
+    title: input.title,
+    kind: 'trainer',
+    sourceName: input.sourceName ?? '修改器',
+    sourceUrl: input.url,
+    coverUrl: typeof input.cover === 'string' ? input.cover : ''
+  })
+  // 取消 / 超时都走同一个 AbortController：下载中心点 X 能立刻中断流式请求
+  const controller = new AbortController()
+  let canceled = false
+  let timedOut = false
+  let timeoutTimer: NodeJS.Timeout | null = null
+  const armTimeout = (): void => {
+    if (timeoutTimer) clearTimeout(timeoutTimer)
+    timeoutTimer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, 180_000)
+  }
+  setExternalDownloadCancel(taskId, () => {
+    canceled = true
+    controller.abort()
+    return true
+  })
+
   let buffer: Buffer
   try {
+    armTimeout()
     const res = await fetch(input.url, {
       headers: {
         'User-Agent': UA,
@@ -198,13 +230,53 @@ export async function downloadTrainer(input: TrainerDownloadInput): Promise<Trai
         'Accept-Language': 'zh-CN,zh;q=0.9'
       },
       redirect: 'follow',
-      signal: AbortSignal.timeout(180_000)
+      signal: controller.signal
     })
-    if (!res.ok) return { ok: false, error: `站点返回 HTTP ${res.status}` }
-    buffer = Buffer.from(await res.arrayBuffer())
+    if (!res.ok) {
+      finishExternalDownload(taskId)
+      return { ok: false, error: `站点返回 HTTP ${res.status}` }
+    }
+    const total = Number(res.headers.get('content-length') ?? 0)
+    if (Number.isFinite(total) && total > MAX_DOWNLOAD) {
+      finishExternalDownload(taskId)
+      return { ok: false, error: '文件超过 300MB，已取消下载' }
+    }
+    const reader = res.body?.getReader()
+    if (!reader) {
+      finishExternalDownload(taskId)
+      return { ok: false, error: '下载内容为空' }
+    }
+    const chunks: Buffer[] = []
+    let received = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value?.length) continue
+      received += value.length
+      if (received > MAX_DOWNLOAD) {
+        await reader.cancel().catch(() => undefined)
+        finishExternalDownload(taskId)
+        return { ok: false, error: '文件超过 300MB，已取消下载' }
+      }
+      chunks.push(Buffer.from(value))
+      updateExternalDownloadProgress(taskId, received, total)
+      // 有进度就重置超时：慢速但仍在下载的文件不会被 180 秒总时长误杀
+      armTimeout()
+    }
+    buffer = Buffer.concat(chunks)
   } catch (err) {
+    finishExternalDownload(taskId)
+    if (canceled) return { ok: false, error: '下载已取消' }
+    if (timedOut) return { ok: false, error: '下载超时（180 秒没有新进度）' }
     return { ok: false, error: `下载失败：${(err as Error).message}` }
+  } finally {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer)
+      timeoutTimer = null
+    }
   }
+  finishExternalDownload(taskId)
+  if (canceled) return { ok: false, error: '下载已取消' }
   if (!buffer.length) return { ok: false, error: '下载内容为空' }
   if (buffer.length > MAX_DOWNLOAD) return { ok: false, error: '文件超过 300MB，已取消下载' }
 

@@ -352,26 +352,41 @@ export async function fetchLxLyric(
       const hash = String(musicInfo.hash ?? '').trim()
       const name = String(musicInfo.name ?? '').trim()
       const singer = String(musicInfo.singer ?? '').trim()
-      if (!hash || !name) return ''
+      if (!name) return ''
       const duration = Math.round(Number(musicInfo.duration) || 0)
       const keyword = encodeURIComponent([singer, name].filter(Boolean).join(' '))
-      const searchRaw = await fetchText(
-        `https://krcs.kugou.com/search?ver=1&man=yes&client=mobi&keyword=${keyword}&duration=${duration}&hash=${encodeURIComponent(hash)}`,
-        { Referer: 'https://www.kugou.com/' }
-      )
-      const search = JSON.parse(searchRaw) as {
-        candidates?: { id?: string; accesskey?: string; duration?: number }[]
+      // 鱼声音源给到的 hash 有时不是歌词库里的那一版，带 hash 查不到时再去掉 hash 按歌名 + 时长找
+      const queries = [
+        ...(hash
+          ? [
+              `https://krcs.kugou.com/search?ver=1&man=yes&client=mobi&keyword=${keyword}&duration=${duration}&hash=${encodeURIComponent(hash)}`
+            ]
+          : []),
+        `https://krcs.kugou.com/search?ver=1&man=yes&client=mobi&keyword=${keyword}&duration=${duration}`
+      ]
+      let picked: { id?: string; accesskey?: string } | undefined
+      for (const url of queries) {
+        try {
+          const searchRaw = await fetchText(url, { Referer: 'https://www.kugou.com/' })
+          const search = JSON.parse(searchRaw) as {
+            candidates?: { id?: string; accesskey?: string; duration?: number }[]
+          }
+          picked = (search.candidates ?? [])[0]
+          if (picked?.id && picked.accesskey) break
+        } catch {
+          // 换下一个查询方式
+        }
       }
-      const candidates = search.candidates ?? []
-      const picked = candidates[0]
       if (!picked?.id || !picked.accesskey) return ''
       const downloadRaw = await fetchText(
         `https://lyrics.kugou.com/download?ver=1&client=pc&id=${encodeURIComponent(picked.id)}&accesskey=${encodeURIComponent(picked.accesskey)}&fmt=lrc&charset=utf8`,
         { Referer: 'https://www.kugou.com/' }
       )
-      const download = JSON.parse(downloadRaw) as { content?: string }
+      const download = JSON.parse(downloadRaw) as { content?: string; fmt?: string }
       if (!download.content) return ''
-      return Buffer.from(download.content, 'base64').toString('utf8').trim()
+      const lrc = Buffer.from(download.content, 'base64').toString('utf8').trim()
+      // 酷狗个别曲目只有 KRC 加密歌词，写进 .lrc 会是乱码，宁可跳过
+      return /^\[krc\]/i.test(lrc) ? '' : lrc
     }
     return ''
   } catch {

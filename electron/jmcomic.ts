@@ -472,14 +472,27 @@ function parseChapters(html: string): YumanhuaChapter[] {
   const root = parse(html)
   const items: YumanhuaChapter[] = []
   const seen = new Set<string>()
-  let index = 0
-  for (const node of root.querySelectorAll('#episode-block .episode a[href*="/photo/"]')) {
-    const matched = /\/photo\/(\d+)/.exec(attr(node, 'href'))
-    if (!matched || seen.has(matched[1])) continue
+  const push = (href: string, label: string): void => {
+    const matched = /\/photo\/(\d+)/.exec(href)
+    if (!matched || seen.has(matched[1])) return
     seen.add(matched[1])
-    const name = text(node.querySelector('h3')?.text) || `第${index + 1}话`
-    items.push({ id: matched[1], name, index, size: 0 })
-    index += 1
+    const name = text(label) || `第${items.length + 1}话`
+    items.push({ id: matched[1], name, index: items.length, size: 0 })
+  }
+  for (const node of root.querySelectorAll('#episode-block .episode a[href*="/photo/"]')) {
+    push(attr(node, 'href'), node.querySelector('h3')?.text ?? '')
+  }
+  // 新版单话 / 短篇页面不再渲染 #episode-block，只有一个「开始阅读 / 開始閱讀」入口
+  if (!items.length) {
+    for (const node of root.querySelectorAll('a.reading[href*="/photo/"]')) {
+      push(attr(node, 'href'), '')
+    }
+  }
+  if (!items.length) {
+    for (const node of root.querySelectorAll('a[href*="/photo/"]')) {
+      if (!/阅读|閱讀/.test(text(node.text))) continue
+      push(attr(node, 'href'), '')
+    }
   }
   return items
 }

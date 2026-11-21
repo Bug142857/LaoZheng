@@ -110,11 +110,38 @@ export function GameCheatPage({
   const [detail, setDetail] = useState<DetailState | null>(null)
   useDetailScrollRestore(!!detail, 'gamecheat')
   const [downloading, setDownloading] = useState<string | null>(null)
+  const [downloadPercent, setDownloadPercent] = useState<number | null>(null)
   const [showAllOptions, setShowAllOptions] = useState(false)
   const [showAllShots, setShowAllShots] = useState(false)
 
   const requestSeq = useRef(0)
   const detailSeq = useRef(0)
+
+  // 修改器下载走主进程流式写入：从下载中心任务里读实时进度，按钮上直接显示百分比
+  useEffect(() => {
+    if (!downloading) {
+      setDownloadPercent(null)
+      return
+    }
+    let alive = true
+    const sync = async (): Promise<void> => {
+      try {
+        const res = await window.laozheng.listDownloads()
+        const task = res.tasks.find((entry) => entry.external && entry.url === downloading)
+        if (!alive) return
+        setDownloadPercent(task && task.progress >= 0 ? Math.round(task.progress * 100) : null)
+      } catch {
+        // 下载服务尚未就绪时忽略
+      }
+    }
+    void sync()
+    // 主进程会按 400ms 节流推送 downloads:changed，不再固定轮询
+    const off = window.laozheng.onDownloadsChanged(() => void sync())
+    return () => {
+      alive = false
+      off()
+    }
+  }, [downloading])
 
   /** 当前过滤条件下要查询的源；全部源 = 所有已启用源 */
   const sourceInputs = (filter: string): TrainerSourceInput[] => {
@@ -477,7 +504,11 @@ export function GameCheatPage({
                           onClick={() => void download(file.url)}
                         >
                           <Download size={14} />
-                          {downloading === file.url ? '下载中…' : '下载并解压'}
+                          {downloading === file.url
+                            ? downloadPercent !== null
+                              ? `下载中 ${downloadPercent}%`
+                              : '下载中…'
+                            : '下载并解压'}
                         </button>
                       )}
                     </div>
